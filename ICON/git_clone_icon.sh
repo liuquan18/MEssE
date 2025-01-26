@@ -1,1 +1,2 @@
+module load git
 git clone git@gitlab.dkrz.de:icon/icon-model.git
