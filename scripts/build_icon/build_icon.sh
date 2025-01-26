@@ -1,9 +1,9 @@
 #!/bin/bash
-# perfom in source build
+# perfom out-of-source build
 
-export ICONDIR=../ICON/icon-model  # relative path to ICON source code
+export ICONDIR=../../ICON/icon-model  # relative path to ICON source code
 
-mkdir -p ../build/gcc && cd ../build/gcc
+mkdir -p ../../build/gcc && cd $_ 
 
 $ICONDIR/config/dkrz/levante.gcc -q --enable-comin
 
