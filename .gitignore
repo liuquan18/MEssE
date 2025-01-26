@@ -171,4 +171,4 @@ cython_debug/
 .pypirc
 
 # ICON from gitlab
-ICON/
+ICON/icon-model/
