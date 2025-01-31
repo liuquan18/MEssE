@@ -1,5 +1,6 @@
 #!/bin/bash
 # perfom out-of-source build
+module load git
 
 export ICONDIR=../../ICON/icon-model  # relative path to ICON source code
 
