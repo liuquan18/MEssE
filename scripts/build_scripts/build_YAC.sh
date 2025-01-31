@@ -4,7 +4,7 @@
 
 # Create a work directory and setup the environment
 mkdir -p ../../build/YAC
-source activate_levante_env
+source ../../environment/activate_levante_env
 
 # Environment
 python -m venv ${workdir}/.venv
