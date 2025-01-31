@@ -26,4 +26,9 @@ Discussion:
 - Words that could go into name: Deep leraning, machine, nodes, GPU, supervisor, assistant, super computer, AI, ESM, climate change, global warming, intelligence, diagnostic, time travel machine, DestinE, Couplearning, **coupler**, dynamical core, intial conditions, external forcing, internal variability, Intelligent VariAIblility, convection, overtunring, mixing, Nodes, cores, CPUS, MPI, HPC, Parameterisation, **Couplearning**, Dual, Interface, Exchange, **Fluxes**, Climate sensitivity, **Feedback**, twin, Adaptor, Plugin, online, training, onion, Layer, eddy, wave, fluid dynaimcs, radiation, Filter, **Distill**, Distillearning, DistilE, Extract, DISTILL, capture,
 - Quan spoke to Florian about potential funding. Turns out to be difficult to find funding for two postdocs simulataneously
 - Given that, it might be a good idea to speak to Daniel about funding possibilities. Either fellowship plus Daniel as host or full funding by Daniel.
-- 
+
+FOR NEXT TIME:
+- Quan: Continue working on reproducing results. Add description of workflow to README file. 
+- Arjun: Continue writing template grant proposal. Familiarise myself with Quan's code.
+- Both: Think of name
+
