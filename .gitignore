@@ -175,3 +175,6 @@ ICON/icon-model/
 
 # output of ICON
 data/
+
+# data in experiments
+experiment/
