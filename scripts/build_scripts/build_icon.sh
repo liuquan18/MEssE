@@ -2,6 +2,9 @@
 # perfom out-of-source build
 module load git
 
+if [ ! -d "../../ICON/icon-model" ]; then
+    git clone git@gitlab.dkrz.de:icon/icon-model.git ../../ICON/icon-model
+fi
 export ICONDIR=../../ICON/icon-model  # relative path to ICON source code
 
 mkdir -p ../../build/gcc && cd $_ 
