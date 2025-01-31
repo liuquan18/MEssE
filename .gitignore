@@ -169,3 +169,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# ICON from gitlab
+ICON/icon-model/
+
+# output of ICON
+data/
+
+# data in experiments
+experiment/
