@@ -17,3 +17,13 @@ FOR NEXT TIME:
 
 
 
+31-01-2025
+
+Discussion:
+- Question about making github repository open source
+- Need appropriate name before we make it open source
+- Potential names: 1) ICON co pilot, ESM co pilot, deep warming, open warming,
+- Words that could go into name: Deep leraning, machine, nodes, GPU, supervisor, assistant, super computer, AI, ESM, climate change, global warming, intelligence, diagnostic, time travel machine, DestinE, Couplearning, **coupler**, dynamical core, intial conditions, external forcing, internal variability, Intelligent VariAIblility, convection, overtunring, mixing, Nodes, cores, CPUS, MPI, HPC, Parameterisation, **Couplearning**, Dual, Interface, Exchange, **Fluxes**, Climate sensitivity, **Feedback**, twin, Adaptor, Plugin, online, training, onion, Layer, eddy, wave, fluid dynaimcs, radiation, Filter, **Distill**, Distillearning, DistilE, Extract, DISTILL, capture,
+- Quan spoke to Florian about potential funding. Turns out to be difficult to find funding for two postdocs simulataneously
+- Given that, it might be a good idea to speak to Daniel about funding possibilities. Either fellowship plus Daniel as host or full funding by Daniel.
+- 
