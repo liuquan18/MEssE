@@ -1,43 +1,6 @@
 #!/bin/bash
-
-# Base directory for ICON sources and binaries
-export SCRATCHDIR=/scratch/${USER::1}/$USER
-# export ICONDIR=${SCRATCHDIR}/icon
-export ICONDIR=/work/mh0033/m300883/ComIn/icon-model
-
-# Absolute path to directory with plenty of space
-export EXPDIR=${SCRATCHDIR}/icon_exercise_comin
-if [ ! -d $EXPDIR ]; then
-    mkdir -p $EXPDIR
-fi
-
-# Preparing necessary data in the output directory
-export SCRIPTDIR=$HOME/comin-training-exercises/exercise
-cp $SCRIPTDIR/prepared/icon_master.namelist $EXPDIR/
-cp $SCRIPTDIR/prepared/NAMELIST_ICON $EXPDIR/
-cp $SCRIPTDIR/prepared/icon-lam.sbatch $EXPDIR/
-
-# Directory with input grids and external data
-export GRIDDIR=/pool/data/ICON/ICON_training/exercise_lam/grids
-# Directory with initial data
-export DATADIR=/pool/data/ICON/ICON_training/exercise_lam/data_lam
-
-cd ${EXPDIR}
-
-# Link data needed for radiation
-ln -sf ${ICONDIR}/externals/ecrad/data ecrad_data
-
-# Grid files: link to output directory
-ln -sf ${GRIDDIR}/*.nc .
-# Data files
-ln -sf ${DATADIR}/* .
-
-# Dictionaries for the mapping: DWD GRIB2 names <-> ICON internal names
-ln -sf ${ICONDIR}/run/ana_varnames_map_file.txt .
-ln -sf ${GRIDDIR}/../exercise_lam/map_file.latbc .
-
-# For output: Dictionary for the mapping: names specified in the output nml <-> ICON internal names
-ln -sf ${ICONDIR}/run/dict.output.dwd dict.output.dwd
+export ICONDIR=../../build/gcc
+export EXPDIR=../../experiment
 
 # Adding a new output namelist
 cat >> $EXPDIR/NAMELIST_ICON << EOF
@@ -56,13 +19,14 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
  remap                       = 1                     ! 1: remap to lat-lon grid
  reg_lon_def                 = 0.8,0.1,17.2
  reg_lat_def                 = 43.9,0.1,57.7
- ml_varlist                  = "RHI_MAX", "QI_MAX"
+ ml_varlist                  = "RHI_MAX", "QI_MAX"    ! list of variables to be written to the output file
 
 /
 EOF
 
 # Adding comin_nml
-export SCRIPTDIR=$HOME/comin-training-exercises/exercise/scripts
+export SCRIPTDIR=../plugin/scripts
+
 cat >> $EXPDIR/NAMELIST_ICON << EOF
 &comin_nml
    plugin_list(1)%name           = "comin_plugin"
@@ -72,11 +36,5 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
 EOF
 
 # The ICON batch job
-cd $EXPDIR
-pwd
-echo $ICONDIR
-
-export ICONDIR=$ICONDIR
-export EXPDIR=$EXPDIR
 
 cd $EXPDIR && sbatch --account $SLURM_JOB_ACCOUNT icon-lam.sbatch
