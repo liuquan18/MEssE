@@ -1,4 +1,6 @@
-# AICON_demo
+# Model Essence Extractor (MEssE)
+
+# Structure
 ```bash
 .
 ├── build                       # external location for building ICON
