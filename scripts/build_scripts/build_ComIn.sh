@@ -1,5 +1,5 @@
 #!/bin/bash
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" # where the repository is located
+BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 export ICON_BUILD_DIR=$BASE_DIR/build/gcc  # relative path to ICON build directory
 
 source $BASE_DIR/environment/spack_initialize.sh

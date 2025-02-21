@@ -1,6 +1,6 @@
 #!/bin/bash
 # perfom out-of-source build
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" # where the repository is located
+BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
 module load git
 
