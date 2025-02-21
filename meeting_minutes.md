@@ -41,4 +41,5 @@ Discussion:
 
 FOR NEXT TIME:
 - Arjun: Continue working on grant proposal. Familiarise myself with Quan's code/workflow. Raise issues if anything doesn't work.
-- Quan: Clean up machine learning algorithm in python script (comin_plugin.py). Summarise problems so that we can ask for help. 
+- Quan: Clean up machine learning algorithm in python script (comin_plugin.py). Summarise problems so that we can ask for help.
+- Both: Think of logo design
