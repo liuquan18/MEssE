@@ -1,5 +1,5 @@
 #!/bin/bash
-
+module load git
 # Build YAC
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 # Create a work directory and setup the environment

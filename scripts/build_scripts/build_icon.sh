@@ -1,4 +1,5 @@
 #!/bin/bash
+module load git
 # perfom out-of-source build
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
