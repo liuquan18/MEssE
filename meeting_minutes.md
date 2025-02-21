@@ -32,3 +32,13 @@ FOR NEXT TIME:
 - Arjun: Continue writing template grant proposal. Familiarise myself with Quan's code.
 - Both: Think of name
 
+
+21-02-2025
+
+Discussion:
+- Decided on MEssE as name (Model Essence Extractor) and used this name for github repository
+- Jason Huang's keynote speech about Omniverse and Cosmos with ideas similar to what we're working on (i.e. AI model cosmos learns from the physical model omniverse)
+
+FOR NEXT TIME:
+- Arjun: Continue working on grant proposal. Familiarise myself with Quan's code/workflow. Raise issues if anything doesn't work.
+- Quan: Clean up machine learning algorithm in python script (comin_plugin.py). Summarise problems so that we can ask for help. 
