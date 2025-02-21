@@ -1,10 +1,10 @@
 #!/bin/bash
-
+module load git
 # Build YAC
-
+BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 # Create a work directory and setup the environment
-mkdir -p ../../build/YAC
-source ../../environment/activate_levante_env
+mkdir -p $BASE_DIR/build/YAC
+source $BASE_DIR/environment/activate_levante_env
 
 # Environment
 python -m venv ${workdir}/.venv
