@@ -1,7 +1,8 @@
 #!/bin/bash
-export ICON_BUILD_DIR=../../build/gcc  # relative path to ICON build directory
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" # where the repository is located
+export ICON_BUILD_DIR=$BASE_DIR/build/gcc  # relative path to ICON build directory
 
-source ../../environment/spack_initialize.sh
+source $BASE_DIR/environment/spack_initialize.sh
 cd $ICON_BUILD_DIR
 
 spack load py-mpi4py  # issue: should we load the python environment here?

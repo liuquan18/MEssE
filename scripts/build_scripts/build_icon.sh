@@ -1,13 +1,15 @@
 #!/bin/bash
 # perfom out-of-source build
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" # where the repository is located
+
 module load git
 
 if [ ! -d "../../ICON/icon-model" ]; then
     git clone git@gitlab.dkrz.de:icon/icon-model.git ../../ICON/icon-model
 fi
-export ICONDIR=../../ICON/icon-model  # relative path to ICON source code
+export ICONDIR=$BASE_DIR/ICON/icon-model  # relative path to ICON source code
 
-mkdir -p ../../build/gcc && cd $_ 
+mkdir -p $BASE_DIR/build/gcc && cd $_ 
 
 $ICONDIR/config/dkrz/levante.gcc -q --enable-comin
 
