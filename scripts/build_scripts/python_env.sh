@@ -1,4 +1,5 @@
 #!/bin/bash
+module load git
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
 spack load /fwv # this loads a proper python installation
