@@ -13,9 +13,9 @@ if [ ! -d $EXPDIR ]; then
 fi
 
 # Preparing necessary data in the output directory (data from workshop)
-cp /home/m/m300883/comin-training-exercises/exercise/prepared/icon_master.namelist $EXPDIR/
-cp /home/m/m300883/comin-training-exercises/exercise/prepared/NAMELIST_ICON $EXPDIR/
-cp /home/m/m300883/comin-training-exercises/exercise/prepared/icon-lam.sbatch $EXPDIR/
+cp /work/mh0033/m300883/comin-training-exercises/exercise/prepared/icon_master.namelist $EXPDIR/
+cp /work/mh0033/m300883/comin-training-exercises/exercise/prepared/NAMELIST_ICON $EXPDIR/
+cp /work/mh0033/m300883/comin-training-exercises/exercise/prepared/icon-lam.sbatch $EXPDIR/
 
 
 # Directory with input grids and external data
