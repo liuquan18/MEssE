@@ -13,12 +13,12 @@ pip install --upgrade pip
 pip install wheel cython pyyaml isodate numpy matplotlib mpi4py netcdf4 xarray cartopy
 
 # YAXT
-pushd ../../build/YAC
+pushd $BASE_DIR/build/YAC
 git clone --depth=1 -b "release-0.11.1" https://gitlab.dkrz.de/dkrz-sw/yaxt.git "yaxt"
 popd
 
 # Configure, build and install YAXT
-pushd ../../build/YAC/yaxt
+pushd $BASE_DIR/build/YAC/yaxt
 yaxt_install_dir=`pwd -P`/install
 mkdir -p build
 cd build
@@ -28,17 +28,17 @@ make install
 popd
 
 # Run the test suite of YAXT (optional)
-pushd ../../build/YAC/yaxt/build
+pushd $BASE_DIR/build/YAC/yaxt/build
 make check
 popd
 
 # YAC
-pushd ../../build/YAC
+pushd $BASE_DIR/build/YAC
 git clone --depth=1 -b "release-3.2.0" https://gitlab.dkrz.de/dkrz-sw/yac.git "yac"
 popd
 
 # Configure, build and Install YAC
-pushd ../../build/YAC/yac
+pushd $BASE_DIR/build/YAC/yac
 yac_install_dir=`pwd -P`/install
 mkdir -p build
 cd build
@@ -53,10 +53,10 @@ make install
 popd
 
 # Install YAC also in python venv
-pip install ../../build/YAC/yac/build/python
+pip install $BASE_DIR/build/YAC/yac/build/python
 
 # Run the test suite of YAC (optional)
-pushd ../../build/YAC/yac/build
+pushd $BASE_DIR/build/YAC/yac/build
 make check
 popd
 
