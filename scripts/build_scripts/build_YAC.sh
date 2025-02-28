@@ -4,6 +4,7 @@ module load git
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 # Create a work directory and setup the environment
 mkdir -p $BASE_DIR/build/YAC
+
 source $BASE_DIR/environment/activate_levante_env
 
 # Environment
