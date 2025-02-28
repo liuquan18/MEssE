@@ -3,8 +3,6 @@ module load git
 # perfom out-of-source build
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
-module load git
-
 if [ ! -d "../../ICON/icon-model" ]; then
     git clone git@gitlab.dkrz.de:icon/icon-model.git ../../ICON/icon-model
 fi
