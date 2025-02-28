@@ -4,5 +4,7 @@ BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
 spack load /fwv # this loads a proper python installation
 python -m venv $BASE_DIR/environment/python/py_venv
-$BASE_DIR/environment/python/py_venv/bin/activate
+
+# activate the environment
+source $BASE_DIR/environment/python/py_venv/bin/activate
 pip install pandas
