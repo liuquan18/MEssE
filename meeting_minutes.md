@@ -47,9 +47,13 @@ FOR NEXT TIME:
 28-02-2025
 
 Discussion:
--
--
--
+- Quan checked that code to build environment works. Also worked for Arjun.
+- Question of how to debug code. Don't want to wait until SLURM job has completed to find out run has crashed.
+- Another open open question is how to deal with the ICON grid and how to use CNN on ICON data.
+- And how to use data from other domains.  
+- Need to find an open source machine learning model that has already been used on ICON data.
+- Ask Fabricio for name of person at DKRZ doing machine learning stuff in his project
 
 FOR NEXT TIME:
-
+- Quan: Check python scripts
+- Arjun: 
