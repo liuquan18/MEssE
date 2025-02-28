@@ -1,6 +1,10 @@
 #!/bin/bash
-export ICONDIR=../../build/gcc
-export EXPDIR=../../experiment
+module load git
+
+BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
+
+export ICONDIR=$BASE_DIR/build/gcc
+export EXPDIR=$BASE_DIR/experiment
 
 # Adding a new output namelist
 cat >> $EXPDIR/NAMELIST_ICON << EOF
