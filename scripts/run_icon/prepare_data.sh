@@ -1,10 +1,13 @@
 #!/bin/bash
+module load git
+
+BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
 # Base directory for ICON sources and binaries
-export ICONDIR=../../build/gcc
+export ICONDIR=$BASE_DIR/build/gcc
 
 # Absolute path to directory with plenty of space
-export EXPDIR=../../experiment
+export EXPDIR=$BASE_DIR/experiment
 if [ ! -d $EXPDIR ]; then
     mkdir -p $EXPDIR
 fi
