@@ -173,6 +173,10 @@ cython_debug/
 # ICON from gitlab
 ICON/icon-model/
 
+# environment
+environment/
+
+
 # output of ICON
 data/
 
