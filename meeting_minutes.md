@@ -57,3 +57,11 @@ Discussion:
 FOR NEXT TIME:
 - Quan: Check python scripts
 - Arjun: 
+
+21-03-2025
+
+Discussion:
+- Quan says that continuing with project is useful for his career prospects
+- Arjun is open to continuing with project after joining the BSH, but needs to see how time constraints develop. Access to Levante should not be a problem for a year or so
+- Can potentially ask Helmut for help with interpolation of ICON data onto a regular grid.
+- Fixing path errors in build and run scripts
