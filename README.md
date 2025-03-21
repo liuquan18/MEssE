@@ -21,7 +21,7 @@
 
 If the icon-model is not cloned, the scripts will automatically clone the icon-model from the github repository.
 
-2. Build ComIn `./scripts/build_scripts/build_comin.sh`
+2. Build ComIn `./scripts/build_scripts/build_ComIn.sh`
 
 3. Build YAC `./scripts/build_scripts/build_yac.sh`
 
