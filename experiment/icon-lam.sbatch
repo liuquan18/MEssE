@@ -39,9 +39,7 @@ module load eccodes
 export ECCODES_DEFINITION_PATH=/pool/data/ICON/ICON_training/eccodes/definitions.edzw-2.27.0-1:$ECCODES_DEFINITION_PATH
 export OMP_NUM_THREADS=1
 export MODEL=$ICONDIR/build/bin/icon
-
-source /scratch/m/m300883/icon_exercise_comin/activate_levante_env
-source /scratch/m/m300883/icon_exercise_comin/YAC/.venv/bin/activate
-
+spack load py-mpi4py
+spack load py-cartopy
 srun -l --cpu_bind=verbose --hint=nomultithread --distribution=block:cyclic $MODEL
 
