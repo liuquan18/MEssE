@@ -1,0 +1,9 @@
+python YAC/yac/tools/plot_weights.py \
+    icon:grids/icon_grid_0036_R02B04_O.nc \
+    icon:grids/icon_grid_0030_R02B03_G.nc \
+    sst_weights.nc \
+    --save_as sst_weights.png \
+    --center -84 10 \
+    --target_idx 2046 \
+    --zoom 2
+echo "<img src='sst_weights.png' />" | displayHTML
