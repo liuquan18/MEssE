@@ -10,3 +10,4 @@ python -m venv $BASE_DIR/environment/python/py_venv
 # activate the environment
 source $BASE_DIR/environment/python/py_venv/bin/activate
 pip install pandas numpy mpi4py xarray
+pip install -e $BASE_DIR/scripts/plugin # make the functions in /src available in the venv
