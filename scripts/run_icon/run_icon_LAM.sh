@@ -34,7 +34,7 @@ export SCRIPTDIR=../plugin/scripts
 cat >> $EXPDIR/NAMELIST_ICON << EOF
 &comin_nml
    plugin_list(1)%name           = "comin_plugin"
-   plugin_list(1)%plugin_library = "$ICONDIR/build/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
+   plugin_list(1)%plugin_library = "$ICONDIR/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
    plugin_list(1)%options        = "$SCRIPTDIR/comin_plugin.py"
 /
 EOF
