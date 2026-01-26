@@ -41,7 +41,6 @@ export OMP_NUM_THREADS=1
 export MODEL=$ICONDIR/build/bin/icon
 
 source /scratch/m/m300883/icon_exercise_comin/activate_levante_env
-source /scratch/m/m300883/icon_exercise_comin/YAC/.venv/bin/activate
 
 srun -l --cpu_bind=verbose --hint=nomultithread --distribution=block:cyclic $MODEL
 
