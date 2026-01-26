@@ -193,8 +193,8 @@ class Net(nn.Module):
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
-    # print("get_batch_callback called!", file=sys.stderr)
-
+    global net, optimizer, losses  # Add these as globals to persist across calls
+    
     RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
     QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
 
@@ -204,9 +204,7 @@ def get_batch_callback():
     current_time = comin.current_get_datetime()
     current_time_np = pd.to_datetime(current_time)
 
-
     if rank == 0:
-
         B = 5  # batch size
         C = 1  # channel
         H = 30  # height
@@ -219,21 +217,24 @@ def get_batch_callback():
         # number of batches
         num_batches = total_size // one_batch_size
 
-        # select sample data
-
-        net = Net()
-        learning_rate = 0.01
-        lossfunc = torch.nn.MSELoss()
-        optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
-        losses = []
-
-        # save model's state_dict
-        if current_time_np > start_time_np:
-            # Load model and optimizer state
+        # Initialize model only at the first timestep
+        if current_time_np == start_time_np:
+            net = Net()
+            learning_rate = 0.01
+            optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
+            print(f"Model initialized with random weights at {current_time_np}", file=sys.stderr)
+        else:
+            # Load model and optimizer state at subsequent timesteps
             checkpoint = torch.load(f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth")
+            if 'net' not in globals():  # Safety check in case model wasn't initialized
+                net = Net()
+                optimizer = torch.optim.SGD(net.parameters(), lr=0.01)
             net.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            print(f"model's state_dict loaded at {current_time_np}", file=sys.stderr)
+            print(f"Model loaded from checkpoint at {current_time_np}", file=sys.stderr)
+
+        lossfunc = torch.nn.MSELoss()
+        losses = []
 
         for i in range(num_batches):
             x_batch_np = RHI_MAX_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
