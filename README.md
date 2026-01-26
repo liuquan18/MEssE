@@ -1,5 +1,9 @@
 # Model Essence Extractor (MEssE)
 
+## Contributing
+
+This repository uses branch protection on the main branch. All changes must go through pull requests and be reviewed by @liuquan18 before merging. See [.github/BRANCH_PROTECTION.md](.github/BRANCH_PROTECTION.md) for details.
+
 # Structure
 ```bash
 .
