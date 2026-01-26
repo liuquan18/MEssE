@@ -1,0 +1,59 @@
+# Copyright (c) 2024 The YAC Authors
+#
+# SPDX-License-Identifier: CC-BY-4.0
+
+definitions:
+  - &time_config
+    src_lag: 0
+    tgt_lag: 0
+    coupling_period: 1
+  - &atm2ocn
+    <<: *time_config
+    src_component: atm_comp
+    src_grid: atm_grid
+    tgt_component: ocn_comp
+    tgt_grid: ocn_grid
+  - &ocn2atm
+    <<: *time_config
+    src_component: ocn_comp
+    src_grid: ocn_grid
+    tgt_component: atm_comp
+    tgt_grid: atm_grid
+  - interp_stacks:
+    - &hcsbb_interp_stack
+      interpolation:
+        - bernstein_bezier
+        - nnn:
+            n: 4
+            weighted: arithmetic_average
+        - fixed:
+            user_value: -999.9
+    - &conserv_interp_stack
+      interpolation:
+        - conservative:
+            order: 1
+            enforced_conservation: false
+            partial_coverage: true
+            normalisation: fracarea
+        - fixed:
+            user_value: -999.9
+
+start_date: 2000-01-01T00:00:00
+end_date: 2000-01-01T00:00:05
+timestep_unit: second
+calendar: proleptic-gregorian
+coupling:
+  - <<: [ *atm2ocn, *hcsbb_interp_stack ]
+    field: [surface_downward_eastward_stress,
+            surface_downward_northward_stress]
+  - <<: [ *atm2ocn, *conserv_interp_stack ]
+    field: [surface_fresh_water_flux,
+            surface_temperature,
+            total_heat_flux,
+            atmosphere_sea_ice_bundle]
+  - <<: [ *ocn2atm, *conserv_interp_stack ]
+    field: [sea_surface_temperature,
+            ocean_sea_ice_bundle]
+  - <<: [ *ocn2atm, *conserv_interp_stack ]
+    field: [eastward_sea_water_velocity,
+            northward_sea_water_velocity]

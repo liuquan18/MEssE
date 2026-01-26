@@ -1,0 +1,189 @@
+# Copyright (c) 2024 The YAC Authors
+#
+# SPDX-License-Identifier: CC-BY-4.0
+
+start_date: 2000-01-01T00:00:00
+end_date: 2000-01-01T00:00:05
+calendar: proleptic-gregorian
+timestep_unit: ISO_format
+coupling:
+- src_component: atm_comp
+  tgt_component: ocn_comp
+  src_grid: atm_grid
+  tgt_grid: ocn_grid
+  field: atmosphere_sea_ice_bundle
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: atm_comp
+  tgt_component: ocn_comp
+  src_grid: atm_grid
+  tgt_grid: ocn_grid
+  field: surface_downward_eastward_stress
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - bernstein_bezier
+  - nnn:
+      n: 4
+  - fixed:
+      user_value: -999.9
+- src_component: atm_comp
+  tgt_component: ocn_comp
+  src_grid: atm_grid
+  tgt_grid: ocn_grid
+  field: surface_downward_northward_stress
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - bernstein_bezier
+  - nnn:
+      n: 4
+  - fixed:
+      user_value: -999.9
+- src_component: atm_comp
+  tgt_component: ocn_comp
+  src_grid: atm_grid
+  tgt_grid: ocn_grid
+  field: surface_fresh_water_flux
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: atm_comp
+  tgt_component: ocn_comp
+  src_grid: atm_grid
+  tgt_grid: ocn_grid
+  field: surface_temperature
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: atm_comp
+  tgt_component: ocn_comp
+  src_grid: atm_grid
+  tgt_grid: ocn_grid
+  field: total_heat_flux
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: ocn_comp
+  tgt_component: atm_comp
+  src_grid: ocn_grid
+  tgt_grid: atm_grid
+  field: eastward_sea_water_velocity
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: ocn_comp
+  tgt_component: atm_comp
+  src_grid: ocn_grid
+  tgt_grid: atm_grid
+  field: northward_sea_water_velocity
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: ocn_comp
+  tgt_component: atm_comp
+  src_grid: ocn_grid
+  tgt_grid: atm_grid
+  field: ocean_sea_ice_bundle
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
+- src_component: ocn_comp
+  tgt_component: atm_comp
+  src_grid: ocn_grid
+  tgt_grid: atm_grid
+  field: sea_surface_temperature
+  coupling_period: PT01.000S
+  time_reduction: none
+  src_lag: 0
+  tgt_lag: 0
+  mapping_side: source
+  scale_factor: 1
+  scale_summand: 0
+  interpolation:
+  - conservative:
+      partial_coverage: true
+      normalisation: fracarea
+  - fixed:
+      user_value: -999.9
