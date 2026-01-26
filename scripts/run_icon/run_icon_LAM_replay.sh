@@ -29,13 +29,19 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
 EOF
 
 # Adding comin_nml
-export SCRIPTDIR=$BASE_DIR/scripts/plugin/scripts
+export SCRIPTDIR=../plugin/scripts
 
 cat >> $EXPDIR/NAMELIST_ICON << EOF
+&replay_tool_nml
+  replay_data_path = "path/to/the/replay_data/"
+  msg_level        = 42
+/
 &comin_nml
-   plugin_list(1)%name           = "comin_plugin"
-   plugin_list(1)%plugin_library = "$ICONDIR/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
-   plugin_list(1)%options        = "$SCRIPTDIR/comin_plugin.py"
+  plugin_list(1)%name           = "var_replay_plugin"
+  plugin_list(1)%plugin_library = "$COMIN_DIR/build/replay_tool/libcomin_var_replay_plugin.so"
+  plugin_list(2)%name           = "simple_python_plugin"
+  plugin_list(2)%plugin_library = "libpython_adapter.so"
+  plugin_list(2)%options        = "$PLUGINDIR/simple_python_plugin.py"
 /
 EOF
 

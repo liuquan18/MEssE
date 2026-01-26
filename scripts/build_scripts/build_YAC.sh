@@ -7,11 +7,12 @@ mkdir -p $BASE_DIR/build/YAC
 
 source $BASE_DIR/environment/activate_levante_env
 
-# Environment
-python -m venv ${workdir}/.venv
-# no need to activate the env. PATH variable is already set in env
-pip install --upgrade pip
-pip install wheel cython pyyaml isodate numpy matplotlib mpi4py netcdf4 xarray cartopy
+# Environment - use the project's Python virtual environment
+source $BASE_DIR/environment/python/py_venv/bin/activate
+
+# Upgrade pip and install dependencies
+$BASE_DIR/environment/python/py_venv/bin/pip install --upgrade pip
+$BASE_DIR/environment/python/py_venv/bin/pip install wheel cython pyyaml isodate numpy matplotlib mpi4py netcdf4 xarray cartopy
 
 # YAXT
 pushd $BASE_DIR/build/YAC
@@ -54,7 +55,7 @@ make install
 popd
 
 # Install YAC also in python venv
-pip install $BASE_DIR/build/YAC/yac/build/python
+$BASE_DIR/environment/python/py_venv/bin/pip install $BASE_DIR/build/YAC/yac/build/python
 
 # Run the test suite of YAC (optional)
 pushd $BASE_DIR/build/YAC/yac/build
@@ -63,13 +64,13 @@ popd
 
 # Make
 # Build the toy atmosphere and ocean model
-make
+# make
 
-# Run the models separately
-mpirun -n 4 toy_atm.x
-mpirun -n 5 toy_ocn.x
+# # Run the models separately
+# mpirun -n 4 toy_atm.x
+# mpirun -n 5 toy_ocn.x
 
-# Run them simultaneously
-mpirun -n 4 toy_atm.x : -n 5 toy_ocn.x
+# # Run them simultaneously
+# mpirun -n 4 toy_atm.x : -n 5 toy_ocn.x
 
-# Question: Why does it fail?
+# # Question: Why does it fail?
