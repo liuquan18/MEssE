@@ -29,10 +29,12 @@ branches:
           teams: []
       
       # Require status checks to pass before merging (optional)
+      # Note: Set to null if no CI/CD status checks are configured
+      # When enabled, add specific check names to the contexts array
       required_status_checks:
         # Require branches to be up to date before merging
-        strict: true
-        # List of required status checks (add as needed)
+        strict: false
+        # List of required status checks (add as needed, e.g., "ci/test", "ci/build")
         contexts: []
       
       # Enforce all configured restrictions for administrators

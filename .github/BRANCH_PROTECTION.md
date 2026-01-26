@@ -20,8 +20,8 @@ All pull requests automatically request review from `@liuquan18` (defined in `.g
 
 ### 3. Additional Recommendations
 - **Require conversation resolution before merging**: ✓ (enabled)
-- **Require branches to be up to date before merging**: ✓ (enabled)
-- **Do not allow bypassing the above settings**: ✓ (enabled for non-admins)
+- **Require linear history**: Optional (not required, but can help maintain a clean git history)
+- **Do not allow bypassing the above settings**: Optional (admins can bypass if needed for emergency fixes)
 
 ## How to Configure Branch Protection
 
@@ -38,8 +38,8 @@ All pull requests automatically request review from `@liuquan18` (defined in `.g
      - ✅ Dismiss stale pull request approvals when new commits are pushed
      - ✅ Require review from Code Owners
    - ✅ **Require conversation resolution before merging**
-   - ✅ **Require linear history** (optional, but recommended)
-   - ✅ **Do not allow bypassing the above settings** (optional)
+   - ⬜ **Require linear history** (optional - not required by default)
+   - ⬜ **Do not allow bypassing the above settings** (optional - admins can bypass by default)
 7. Click **Create** or **Save changes**
 
 ### Method 2: Via GitHub API
