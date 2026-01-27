@@ -144,7 +144,7 @@ def calculate_rhi_qi():
     # calculate QI_MAX
     QI_MAX_np = np.squeeze(QI_MAX)
     QI_MAX_np[:, :] = np.max(qi_np, axis=1)
-    print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr)
+    print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr) #(8, 16)
 
 
 # help function to collect the data from all processes
