@@ -25,7 +25,7 @@ If the icon-model is not cloned, the scripts will automatically clone the icon-m
 
 3. <del> Build YAC `./scripts/build_scripts/build_YAC.sh`
 
-4. Build python environment `./scripts/build_scripts/python_env.sh`
+4. Build python environment `./scripts/build_scripts/build_pyenv.sh`
 
 
 ## Run
