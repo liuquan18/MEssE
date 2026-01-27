@@ -23,7 +23,7 @@ If the icon-model is not cloned, the scripts will automatically clone the icon-m
 
 2. Build ComIn `./scripts/build_scripts/build_ComIn.sh`
 
-3. Build YAC `./scripts/build_scripts/build_YAC.sh`
+3. <del> Build YAC `./scripts/build_scripts/build_YAC.sh`
 
 4. Build python environment `./scripts/build_scripts/python_env.sh`
 
@@ -33,4 +33,6 @@ If the icon-model is not cloned, the scripts will automatically clone the icon-m
 
 2. Prepare the input data `./scripts/run_icon/prepare_data.sh`
 
-3. Run ICON `./scripts/run_icon/run_icon_LAM.sh`
+3. Run ICON `./scripts/run_icon/run_icon_LAM.sh`, *replace the `--account mh0033` with `--account <your_account>` in the last line of the script.*
+
+the output log file will be in /experiment/ directory.
