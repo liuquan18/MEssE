@@ -2,7 +2,8 @@
 module load git
 
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
-export ICON_BUILD_DIR=$BASE_DIR/build/messe_env/build_dir/icon-model  # relative path to ICON build directory
+# export ICON_BUILD_DIR=$BASE_DIR/build/messe_env/build_dir/icon-model  # relative path to ICON build directory
+export ICON_BUILD_DIR=$BASE_DIR/build/gcc  # relative path to ICON build directory
 
 spack load py-mpi4py  # issue: should we load the python environment here?
 
