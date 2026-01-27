@@ -41,9 +41,6 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
 /
 EOF
 
-# eidit sbatch
-
-
 
 # The ICON batch job
 cd $EXPDIR && sbatch --account mh0033 icon-lam.sbatch
