@@ -40,9 +40,7 @@ export ECCODES_DEFINITION_PATH=/pool/data/ICON/ICON_training/eccodes/definitions
 export OMP_NUM_THREADS=1
 export MODEL=$ICONDIR/bin/icon
 
-spack load py-mpi4py
-source /work/mh0033/m300883/Project_week/MEssE/environment/python/py_venv/bin/activate
-pip install pandas numpy torch
+source $PYENVS/bin/activate
 
 srun -l --cpu_bind=verbose --hint=nomultithread --distribution=block:cyclic $MODEL
 
