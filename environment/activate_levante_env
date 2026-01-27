@@ -30,7 +30,11 @@ module load \
   netcdf-c/4.8.1-openmpi-4.1.2-gcc-11.2.0 \
   git
 
-spack load /fwv # python
+# Activate the Python virtual environment
+BASE_DIR=$(realpath $(dirname "$BASH_SOURCE")/..)
+source $BASE_DIR/environment/python/py_venv/bin/activate
+
+spack load /fwv # python - needed for build dependencies
 spack load libfyaml
 
 # amend modules with more env vars
@@ -45,8 +49,8 @@ path_prepend LD_LIBRARY_PATH /sw/spack-levante/netcdf-c-4.8.1-6qheqr/lib
 path_prepend LD_LIBRARY_PATH ${workdir}/yaxt/install/lib
 path_prepend PKG_CONFIG_PATH ${workdir}/yac/install/lib/pkgconfig
 
-# python
-path_prepend PATH ${workdir}/.venv/bin
+# Ensure venv Python is used (already activated above, but prepend to be sure)
+path_prepend PATH $BASE_DIR/environment/python/py_venv/bin
 
 # openmpi stuff (see https://docs.dkrz.de/doc/levante/running-jobs/runtime-settings.html)
 export OMPI_MCA_osc="ucx"

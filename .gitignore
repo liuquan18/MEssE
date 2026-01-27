@@ -182,3 +182,8 @@ data/
 
 # data in experiments
 experiment/
+experiment/NAMELIST_ICON
+
+*.out
+/scripts/run_icon/tmp/*
+scripts/run_icon/_run_icon_LAM_replay.sh

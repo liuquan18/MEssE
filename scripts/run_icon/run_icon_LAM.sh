@@ -5,13 +5,14 @@ BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
 export ICONDIR=$BASE_DIR/build/gcc
 export EXPDIR=$BASE_DIR/experiment
+export PYENVS=$BASE_DIR/build/messe_env/py_env
 
 # Adding a new output namelist
 cat >> $EXPDIR/NAMELIST_ICON << EOF
 ! output_nml: specifies an output stream --------------------------------------
 &output_nml
  filetype                    = 4                     ! netcdf
- dom                         = 1
+ dom                         = -1
  output_bounds               = 0., 10000000., 3600.  ! start, end, increment
  steps_per_file              = 5
  mode                        = 1
@@ -29,16 +30,20 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
 EOF
 
 # Adding comin_nml
-export SCRIPTDIR=../plugin/scripts
+export SCRIPTDIR=$BASE_DIR/scripts/plugin/scripts
 
 cat >> $EXPDIR/NAMELIST_ICON << EOF
 &comin_nml
    plugin_list(1)%name           = "comin_plugin"
-   plugin_list(1)%plugin_library = "$ICONDIR/build/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
+   plugin_list(1)%plugin_library = "$ICONDIR/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
    plugin_list(1)%options        = "$SCRIPTDIR/comin_plugin.py"
+/
 /
 EOF
 
-# The ICON batch job
+# eidit sbatch
 
-cd $EXPDIR && sbatch --account $SLURM_JOB_ACCOUNT icon-lam.sbatch
+
+
+# The ICON batch job
+cd $EXPDIR && sbatch --account mh0033 icon-lam.sbatch
