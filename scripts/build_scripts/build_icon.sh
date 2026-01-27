@@ -16,7 +16,7 @@ git submodule update --init --recursive
 
 mkdir -p $BASE_DIR/build/gcc && cd $_ 
 
-$ICONDIR/config/dkrz/levante.gcc -q --enable-comin
+$ICONDIR/config/dkrz/levante.gcc -q --enable-comin --enable-mixed-precision --enable-openmp --enable-bundled-python='mtime','yac','comin'
 
 # make -j4 2>&1 > compile.log
 make -j8
