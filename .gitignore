@@ -183,3 +183,6 @@ data/
 # data in experiments
 experiment/
 experiment/NAMELIST_ICON
+
+*.out
+/scripts/run_icon/tmp/*

@@ -24,6 +24,14 @@ import getpass
 user = getpass.getuser()
 torch.manual_seed(0)
 
+# test start
+glob = comin.descrdata_get_global()
+n_dom=glob.n_dom
+# make n_dom as np array
+n_dom = np.array(n_dom)
+print("number of domains:", n_dom, file=sys.stderr)
+# test end
+
 
 jg = 1  # set the domain id
 
@@ -136,7 +144,7 @@ def calculate_rhi_qi():
     # calculate QI_MAX
     QI_MAX_np = np.squeeze(QI_MAX)
     QI_MAX_np[:, :] = np.max(qi_np, axis=1)
-    # print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr)
+    print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr)
 
 
 # help function to collect the data from all processes
