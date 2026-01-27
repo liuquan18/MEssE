@@ -1,11 +1,12 @@
-""" 
+"""
 This is a ComIn Python plugin designed for use in the ICON 2024 training course.
 """
 
 # %%
 import comin
 import sys
-#%%
+
+# %%
 import numpy as np
 import numpy.ma as ma
 import pandas as pd
@@ -21,12 +22,13 @@ import torch.nn.functional as F
 from mpi4py import MPI
 
 import getpass
+
 user = getpass.getuser()
 torch.manual_seed(0)
 
 # test start
 glob = comin.descrdata_get_global()
-n_dom=glob.n_dom
+n_dom = glob.n_dom
 # make n_dom as np array
 n_dom = np.array(n_dom)
 print("number of domains:", n_dom, file=sys.stderr)
@@ -144,7 +146,7 @@ def calculate_rhi_qi():
     # calculate QI_MAX
     QI_MAX_np = np.squeeze(QI_MAX)
     QI_MAX_np[:, :] = np.max(qi_np, axis=1)
-    print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr) #(8, 16)
+    # print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr)  # (8, 16)
 
 
 # help function to collect the data from all processes
@@ -184,6 +186,51 @@ def util_gather(data_array: np.ndarray, root=0):
         return None
 
 
+def interpolate_to_regular_grid(
+    cx_glb, cy_glb, data_glb, resolution=0.1, method="linear"
+):
+    """
+    Interpolate unstructured ICON grid data to a regular lat-lon grid.
+
+    Parameters:
+    -----------
+    cx_glb : np.ndarray
+        1D array of longitudes (degrees)
+    cy_glb : np.ndarray
+        1D array of latitudes (degrees)
+    data_glb : np.ndarray
+        1D array of data values
+    resolution : float
+        Grid resolution in degrees (default: 0.1)
+    method : str
+        Interpolation method: 'linear', 'nearest', or 'cubic' (default: 'linear')
+
+    Returns:
+    --------
+    lon_grid : np.ndarray
+        2D array of longitudes
+    lat_grid : np.ndarray
+        2D array of latitudes
+    data_grid : np.ndarray
+        2D array of interpolated data
+    """
+    from scipy.interpolate import griddata
+
+    # Define regular grid
+    lon_min, lon_max = cx_glb.min(), cx_glb.max()
+    lat_min, lat_max = cy_glb.min(), cy_glb.max()
+
+    lon_1d = np.arange(lon_min, lon_max, resolution)
+    lat_1d = np.arange(lat_min, lat_max, resolution)
+    lon_grid, lat_grid = np.meshgrid(lon_1d, lat_1d)
+
+    # Interpolate
+    points = np.column_stack((cx_glb, cy_glb))
+    data_grid = griddata(points, data_glb, (lon_grid, lat_grid), method=method)
+
+    return lon_grid, lat_grid, data_grid
+
+
 class Net(nn.Module):
     def __init__(self, n_inputs=30, n_outputs=30, n_hidden=32):
         super(Net, self).__init__()
@@ -202,9 +249,15 @@ class Net(nn.Module):
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
     global net, optimizer, losses  # Add these as globals to persist across calls
-    
+
     RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
     QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
+
+    # Get cell coordinates (longitude, latitude)
+    cx = np.rad2deg(domain.cells.clon)
+    cx_glb = util_gather(cx)
+    cy = np.rad2deg(domain.cells.clat)
+    cy_glb = util_gather(cy)
 
     start_time = comin.descrdata_get_simulation_interval().run_start
     start_time_np = pd.to_datetime(start_time)
@@ -213,6 +266,21 @@ def get_batch_callback():
     current_time_np = pd.to_datetime(current_time)
 
     if rank == 0:
+        # Optional: Interpolate to regular grid for visualization or analysis
+        # Uncomment the following lines to use regular grid interpolation:
+        lon_grid, lat_grid, RHI_MAX_grid = interpolate_to_regular_grid(
+            cx_glb, cy_glb, RHI_MAX_np_glb, resolution=2.5, method='linear'
+        )
+        lon_grid, lat_grid, QI_MAX_grid = interpolate_to_regular_grid(
+            cx_glb, cy_glb, QI_MAX_np_glb, resolution=2.5, method='linear'
+        )
+        print(f"Interpolated grid shape: {RHI_MAX_grid.shape}", file=sys.stderr)
+        #
+        # # Now RHI_MAX_grid and QI_MAX_grid are 2D regular grids
+        # # You can flatten them for your neural network:
+        # RHI_MAX_np_glb = RHI_MAX_grid.ravel()
+        # QI_MAX_np_glb = QI_MAX_grid.ravel()
+
         B = 5  # batch size
         C = 1  # channel
         H = 30  # height
@@ -230,15 +298,20 @@ def get_batch_callback():
             net = Net()
             learning_rate = 0.01
             optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
-            print(f"Model initialized with random weights at {current_time_np}", file=sys.stderr)
+            print(
+                f"Model initialized with random weights at {current_time_np}",
+                file=sys.stderr,
+            )
         else:
             # Load model and optimizer state at subsequent timesteps
-            checkpoint = torch.load(f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth")
-            if 'net' not in globals():  # Safety check in case model wasn't initialized
+            checkpoint = torch.load(
+                f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth"
+            )
+            if "net" not in globals():  # Safety check in case model wasn't initialized
                 net = Net()
                 optimizer = torch.optim.SGD(net.parameters(), lr=0.01)
-            net.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            net.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             print(f"Model loaded from checkpoint at {current_time_np}", file=sys.stderr)
 
         lossfunc = torch.nn.MSELoss()
@@ -273,10 +346,13 @@ def get_batch_callback():
             print(f"loss: {loss.item()}", file=sys.stderr)
 
         # save state_dict
-        torch.save({
-            'model_state_dict': net.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-        }, f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth")
+        torch.save(
+            {
+                "model_state_dict": net.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+            },
+            f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth",
+        )
 
         # print(f"model's state_dict saved at {current_time_np}", file=sys.stderr)
 
@@ -287,4 +363,3 @@ def get_batch_callback():
         ) as f:
             for item in losses:
                 f.write("%s\n" % item)
-
