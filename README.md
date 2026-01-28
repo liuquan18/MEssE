@@ -37,3 +37,12 @@ If the icon-model is not cloned, the scripts will automatically clone the icon-m
 3. Run ICON `./scripts/run_icon/run_icon_LAM.sh`, *replace the `--account mh0033` with `--account <your_account>` in the last line of the script.*
 
 the output log file will be in /experiment/ directory.
+
+## Online interface
+
+```bash
+cd /work/mh0033/m300883/Project_week/MEssE/scripts/plugin/monitor
+./start_monitor.sh
+```
+
+Then access: **http://localhost:5000**
