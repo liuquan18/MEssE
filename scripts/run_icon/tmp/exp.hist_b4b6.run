@@ -118,7 +118,7 @@ thisdir=$(pwd)
 export basedir="/work/mh0033/m300883/Project_week/MEssE/build/messe_env/build_dir/icon-model"
 export icondata="/pool/data/ICON/releases/2.6.4"
 # experiments_dir can be predefined in a machine specific run_target_* header
-experiments_dir="/work/mh0033/m300883/Project_week/MEssE/experiment/global_run/experiments"
+experiments_dir="/work/mh0033/m300883/Project_week/MEssE/experiment_global"
 mkdir -p ${experiments_dir}/${EXPNAME}
 
 #
