@@ -7,6 +7,9 @@ export ICONDIR=$BASE_DIR/build/gcc
 export EXPDIR=$BASE_DIR/experiment
 export PYENVS=$BASE_DIR/build/messe_env/py_env
 
+# Ensure we have a fresh NAMELIST_ICON by copying the prepared version
+cp /work/mh0033/m300883/comin-training-exercises/exercise/prepared/NAMELIST_ICON $EXPDIR/
+
 # Adding a new output namelist
 cat >> $EXPDIR/NAMELIST_ICON << EOF
 ! output_nml: specifies an output stream --------------------------------------
