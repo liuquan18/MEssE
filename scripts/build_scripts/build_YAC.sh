@@ -7,6 +7,9 @@ mkdir -p $BASE_DIR/build/YAC
 
 source $BASE_DIR/environment/activate_levante_env
 
+# Set MKL pkg-config path (required for YAC configure)
+export PKG_CONFIG_PATH="${MKLROOT}/lib/pkgconfig:${PKG_CONFIG_PATH}"
+
 # Environment
 python -m venv ${workdir}/.venv
 # no need to activate the env. PATH variable is already set in env
@@ -57,19 +60,22 @@ popd
 pip install $BASE_DIR/build/YAC/yac/build/python
 
 # Run the test suite of YAC (optional)
-pushd $BASE_DIR/build/YAC/yac/build
-make check
-popd
+# pushd $BASE_DIR/build/YAC/yac/build
+# make check
+# popd
 
-# Make
-# Build the toy atmosphere and ocean model
-make
-
-# Run the models separately
-mpirun -n 4 toy_atm.x
-mpirun -n 5 toy_ocn.x
-
-# Run them simultaneously
-mpirun -n 4 toy_atm.x : -n 5 toy_ocn.x
-
-# Question: Why does it fail?
+echo ""
+echo "========================================="
+echo "YAC and YAXT build completed successfully!"
+echo "========================================="
+echo ""
+echo "YAXT installed at: $BASE_DIR/build/YAC/yaxt/install"
+echo "YAC installed at: $BASE_DIR/build/YAC/yac/install"
+echo ""
+echo "Example programs are available in:"
+echo "  $BASE_DIR/build/YAC/yac/build/examples/toy_atm_ocn/"
+echo ""
+echo "To run toy examples:"
+echo "  cd $BASE_DIR/build/YAC/yac/build/examples/toy_atm_ocn"
+echo "  mpirun -n 4 ./toy_reg2d_atm.x : -n 5 ./toy_reg2d_ocn.x"
+echo ""

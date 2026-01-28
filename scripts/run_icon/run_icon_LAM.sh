@@ -1,10 +1,18 @@
 #!/bin/bash
-module load git
+# module load git
 
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 
 export ICONDIR=$BASE_DIR/build/gcc
 export EXPDIR=$BASE_DIR/experiment
+
+# Backup and reset NAMELIST_ICON from master
+if [ -f "$EXPDIR/icon_master.namelist" ]; then
+    cp "$EXPDIR/icon_master.namelist" "$EXPDIR/NAMELIST_ICON"
+    echo "Reset NAMELIST_ICON from icon_master.namelist"
+else
+    echo "Warning: icon_master.namelist not found, appending to existing NAMELIST_ICON"
+fi
 
 # Adding a new output namelist
 cat >> $EXPDIR/NAMELIST_ICON << EOF
@@ -29,16 +37,17 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
 EOF
 
 # Adding comin_nml
-export SCRIPTDIR=../plugin/scripts
+# Use absolute path for plugin script directory
+export SCRIPTDIR=$BASE_DIR/scripts/plugin/scripts
 
 cat >> $EXPDIR/NAMELIST_ICON << EOF
 &comin_nml
    plugin_list(1)%name           = "comin_plugin"
-   plugin_list(1)%plugin_library = "$ICONDIR/build/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
+   plugin_list(1)%plugin_library = "$ICONDIR/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
    plugin_list(1)%options        = "$SCRIPTDIR/comin_plugin.py"
 /
 EOF
 
 # The ICON batch job
 
-cd $EXPDIR && sbatch --account $SLURM_JOB_ACCOUNT icon-lam.sbatch
+cd $EXPDIR && sbatch --account mh1498 icon-lam.sbatch

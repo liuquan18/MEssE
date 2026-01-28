@@ -13,3 +13,122 @@
   model_max_rank=65536
   model_inc_rank=1
 /
+&parallel_nml
+ nproma          =  8
+ p_test_run      = .false.
+ l_test_openmp   = .false.
+ l_log_checks    = .false.
+ num_io_procs    =  2
+ num_restart_procs = 0
+ iorder_sendrecv =  3
+/
+&grid_nml
+ dynamics_grid_filename  = 'iconR3B08_DOM01.nc'
+ radiation_grid_filename = 'iconR3B07_DOM00.nc'
+ dynamics_parent_grid_id = 0,1
+ lredgrid_phys           = .true.
+ lfeedback               = .true.
+ l_limited_area          = .true.
+ ifeedback_type          = 2
+/
+&initicon_nml
+ init_mode                    = 7
+ zpbl1                        = 500.
+ zpbl2                        = 1000.
+ lread_ana                    = .false.
+ dwdfg_filename               = "init_ML_20210714T000000Z.nc"
+ ana_varnames_map_file        = "ana_varnames_map_file.txt"
+ ltile_coldstart              = .TRUE.
+ ltile_init                   = .TRUE.
+/
+&limarea_nml
+ itype_latbc     = 1
+ dtime_latbc     = 7200.
+ latbc_varnames_map_file = 'map_file.latbc'
+ latbc_filename  = 'forcing_ML_<y><m><d>T<h>0000Z_lbc.nc'
+/
+&io_nml
+ itype_pres_msl               = 4
+ itype_rh                     = 1
+ lmask_boundary               = .true.
+/
+&run_nml
+ num_lev        = 65
+ lvert_nest     = .false.
+ nsteps         = 1440
+ dtime          = 60.
+ ldynamics      = .TRUE.
+ ltransport     = .true.
+ ntracer        = 5
+ iforcing       = 3
+ ltestcase      = .false.
+ msg_level      = 12
+ ltimer         = .true.
+ timers_level   = 10
+ output         = "nml"
+/
+&nwp_phy_nml
+inwp_gscp       = 2
+inwp_convection = 1
+inwp_radiation  = 1
+inwp_cldcover   = 1
+inwp_turb       = 1
+inwp_satad      = 1
+inwp_sso        = 1
+inwp_surface    = 1
+latm_above_top  = .true.
+dt_rad    = 720.
+dt_conv   = 180.
+/
+&turbdiff_nml
+  tkhmin        = 0.75
+  tkmmin        = 0.75
+  pat_len       = 750.
+  ltkesso       = .true.
+  frcsmot       = 0.2
+  imode_frcsmot = 2
+  itype_sher    = 0
+/
+&lnd_nml
+  ntiles         = 3
+  nlev_snow      = 3
+  lmulti_snow    = .false.
+  lsnowtile      = .true.
+  lseaice        = .true.
+  llake          = .true.
+/
+&radiation_nml
+  irad_o3     = 7
+  irad_aero   = 6
+  albedo_type = 2
+/
+&nonhydrostatic_nml
+  iadv_rhotheta   = 2
+  ivctype         = 2
+  itime_scheme    = 4
+  exner_expol     = 0.333
+  vwind_offctr    = 0.2
+  damp_height     = 15000.
+  rayleigh_coeff  = 0.75
+  divdamp_fac     = 0.004
+  igradp_method   = 3
+  l_zdiffu_t      = .true.
+  thslp_zdiffu    = 0.02
+  thhgtd_zdiffu   = 125.
+  htop_moist_proc = 22500.
+  hbot_qvsubstep  = 22500
+/
+&sleve_nml
+ min_lay_thckn   = 20.
+ top_height      = 22000.
+ stretch_fac     = 0.9
+ decay_scale_1   = 4000.
+ decay_scale_2   = 2500.
+ decay_exp       = 1.2
+ flat_height     = 16000.
+/
+&extpar_nml
+ itopo          = 1
+ n_iter_smooth_topo = 1
+ heightdiff_threshold = 3000.
+/

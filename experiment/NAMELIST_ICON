@@ -1,267 +1,157 @@
+&master_nml
+ lrestart = .false.
+/
+&time_nml
+ ini_datetime_string = "2021-07-14T00:00:00.000"
+ dt_restart          = 5184000       ! dummy value to avoid crashes
+/
+&master_model_nml
+  model_type=1
+  model_name="ATMO"
+  model_namelist_filename="NAMELIST_ICON"
+  model_min_rank=1
+  model_max_rank=65536
+  model_inc_rank=1
+/
+&parallel_nml
+ nproma          =  8
+ p_test_run      = .false.
+ l_test_openmp   = .false.
+ l_log_checks    = .false.
+ num_io_procs    =  2
+ num_restart_procs = 0
+ iorder_sendrecv =  3
+/
 &grid_nml
- dynamics_grid_filename  = 'dom1_DOM01.nc'
- radiation_grid_filename = 'dom1_DOM01.parent.nc'
+ dynamics_grid_filename  = 'iconR3B08_DOM01.nc'
+ radiation_grid_filename = 'iconR3B07_DOM00.nc'
  dynamics_parent_grid_id = 0,1
- lredgrid_phys           = .true.,.true.,  ! ,.true. (second value: nest)
+ lredgrid_phys           = .true.
  lfeedback               = .true.
- l_limited_area          = .TRUE.
+ l_limited_area          = .true.
  ifeedback_type          = 2
 /
 &initicon_nml
- init_mode               = 7      ! start from interpolated initialized ICON analysis
- zpbl1                   = 500. 
- zpbl2                   = 1000. 
- dwdfg_filename          = 'init_ML_20210714T000000Z.nc'
- lread_ana               = .false. 
- ana_varnames_map_file   = 'ana_varnames_map_file.txt'
- lp2cintp_incr           = .true.
- lp2cintp_sfcana         = .true.
- ltile_coldstart         = .TRUE
- ltile_init              = .FALSE.
- qcana_mode              = 2
- qiana_mode              = 0  ! due to KENDA, before: 1
- icpl_da_sfcevap         = 3
+ init_mode                    = 7
+ zpbl1                        = 500.
+ zpbl2                        = 1000.
+ lread_ana                    = .false.
+ dwdfg_filename               = "init_ML_20210714T000000Z.nc"
+ ana_varnames_map_file        = "ana_varnames_map_file.txt"
+ ltile_coldstart              = .TRUE.
+ ltile_init                   = .TRUE.
 /
 &limarea_nml
- dtime_latbc             = 7200.
- init_latbc_from_fg      = .true.                 ! always
- itype_latbc             = 1
- latbc_boundary_grid     = ''
+ itype_latbc     = 1
+ dtime_latbc     = 7200.
  latbc_varnames_map_file = 'map_file.latbc'
- latbc_filename          = 'forcing_ML_<y><m><d>T<h>0000Z_lbc.nc'
- nretries                = 1200    ! If LatBC data is unavailable: number of retries
- retry_wait_sec          = 2       ! If LatBC data is unavailable: idle wait seconds between retries 
- fac_latbc_presbiascor   = 1
-/
-&parallel_nml
- nproma                  = 8
- p_test_run              = .false.
- l_test_openmp           = .true.
- l_log_checks            = .true.
- num_io_procs            = 3
- num_io_procs_radar      = 0
- num_restart_procs       = 0
- num_prefetch_proc       = 1
- iorder_sendrecv         = 3
- num_dist_array_replicas = 4
- proc0_shift             = 0
- use_omp_input           = .true.
+ latbc_filename  = 'forcing_ML_<y><m><d>T<h>0000Z_lbc.nc'
 /
 &io_nml
- dt_checkpoint                 = 863913600
- echotop_meta(1)%time_interval = 900.0             ! Reset der Druckminimumbestimmung auf domain 1 alle 15'
- echotop_meta(1)%dbzthresh     = 18.               ! Liste der dbz-thresholds (hier nur einer) fuer domain 1 
- itype_pres_msl                = 5                 ! (1) 3: IFS-type extrapolation
- itype_rh                      = 1                 ! (1) 2: mixed phase (water and ice)
- lmask_boundary                = .true.  ! main -> .true., KENDA = .false.
- maxt_interval                 = 'PT06H'
- output_nml_dict               = 'dict.output.dwd'
+ itype_pres_msl               = 4
+ itype_rh                     = 1
+ lmask_boundary               = .true.
 /
 &run_nml
- dtime              = 60      ! timestep in seconds
- iforcing           = 3       ! NWP forcing
- lart               = .false. ! ICON-ART main switch
- ldass_lhn          = .true.  ! latent heat nudging
- luse_radarfwo(1)   = .false.
- ldynamics          = .true.  ! dynamics
- ltestcase          = .false. ! false: run with real data
- ltimer             = .true.
- ltransport         = .true.
- lvert_nest         = .false.
- msg_level          = 7       ! 7: print maximum wind speeds every time step
- nsteps             = 720     ! = 12h
- ntracer            = 5       ! default: 0
- num_lev            = 65
- output             = "nml"
- timers_level       = 5       ! can be increased up to 10 for detailed timer output
+ num_lev        = 65
+ lvert_nest     = .false.
+ nsteps         = 1440
+ dtime          = 60.
+ ldynamics      = .TRUE.
+ ltransport     = .true.
+ ntracer        = 5
+ iforcing       = 3
+ ltestcase      = .false.
+ msg_level      = 12
+ ltimer         = .true.
+ timers_level   = 10
+ output         = "nml"
 /
 &nwp_phy_nml
- cldopt_filename    = 'rrtm_cldopt.nc'
- dt_conv            = 120,90
- dt_gwd             = 120
- dt_rad             = 720
- dt_sso             = 120,360
- efdt_min_raylfric  = 7200.
- icapdcycl          = 3
- icpl_aero_conv     = 1
- icpl_aero_gscp     = 1
- icpl_o3_tp         = 1
- inwp_cldcover      = 1
- inwp_convection    = 1,0
- inwp_gscp          = 2,2
- inwp_gwd           = 0,0
- inwp_radiation     = 4
- inwp_satad         = 1
- inwp_sso           = 1,0
- inwp_surface       = 1
- inwp_turb          = 1
- itype_z0           = 2
- latm_above_top     = .true.
- ldetrain_conv_prec = .true.
- lrtm_filename      = 'rrtmg_lw.nc'
- mu_rain            = 0.5
- rain_n0_factor     = 0.1
- lshallowconv_only  = .false.
- lgrayzone_deepconv = .true.
-/
-&nwp_tuning_nml
- itune_albedo      = 1
- tune_box_liq_asy  = 4.0
- tune_gfrcrit      = 0.333
- tune_gkdrag       = 0.0
- tune_gkwake       = 0.25
- tune_gust_factor  = 7.0
- tune_minsnowfrac  = 0.3
- tune_sgsclifac    = 1.0
- tune_rcucov       = 0.075
- tune_rhebc_land   = 0.825
- tune_zvz0i        = 0.85
- icpl_turb_clc     = 2
- max_calibfac_clcl = 2.0
- tune_box_liq      = 0.04
+inwp_gscp       = 2
+inwp_convection = 1
+inwp_radiation  = 1
+inwp_cldcover   = 1
+inwp_turb       = 1
+inwp_satad      = 1
+inwp_sso        = 1
+inwp_surface    = 1
+latm_above_top  = .true.
+dt_rad    = 720.
+dt_conv   = 180.
 /
 &turbdiff_nml
- a_hshr               = 2.0
- frcsmot              = 0.2   ! these 2 switches together apply vertical smoothing of the TKE source terms
- icldm_turb           = 2
- imode_frcsmot        = 2     ! in the tropics (only), which reduces the moist bias in the tropical lower troposphere
- imode_tkesso         = 2
-! use horizontal shear production terms with 1/SQRT(Ri) scaling to prevent unwanted side effects:
- itype_sher           = 2    
- ltkeshs              = .true.
- ltkesso              = .true.
- pat_len              = 750.
- q_crit               = 2.0
- rat_sea              = 0.8
- tkhmin               = 0.5
- tkmmin               = 0.75
- tur_len              = 300.
- rlam_heat            = 10.0
- alpha1               = 0.125
+  tkhmin        = 0.75
+  tkmmin        = 0.75
+  pat_len       = 750.
+  ltkesso       = .true.
+  frcsmot       = 0.2
+  imode_frcsmot = 2
+  itype_sher    = 0
 /
 &lnd_nml
- c_soil               = 1.25
- c_soil_urb           = 0.5
- cwimax_ml            = 5.e-4
- idiag_snowfrac       = 20
- itype_evsl           = 4
- itype_heatcond       = 3
- itype_lndtbl         = 4
- itype_root           = 2
- itype_snowevap       = 3
- itype_trvg           = 3
- llake                = .true.
- lmulti_snow          = .false.
- lprog_albsi          = .true.
- itype_canopy         = 2
- lseaice              = .true.
- lsnowtile            = .true.
- nlev_snow            = 3
- ntiles               = 3
- sstice_mode          = 2
+  ntiles         = 3
+  nlev_snow      = 3
+  lmulti_snow    = .false.
+  lsnowtile      = .true.
+  lseaice        = .true.
+  llake          = .true.
 /
 &radiation_nml
-  albedo_type         = 2          ! Modis albedo
-  irad_o3             = 79
-  irad_aero           = 6
-  islope_rad          = 0
-  vmr_co2             = 390.e-06   ! values representative for 2012
-  vmr_ch4             = 1800.e-09
-  vmr_n2o             = 322.0e-09
-  vmr_o2              = 0.20946
-  vmr_cfc11           = 240.e-12
-  vmr_cfc12           = 532.e-12 
-  direct_albedo_water = 3
-  albedo_whitecap     = 1
-  ecrad_data_path     = "./ecrad_data"       ! Path to folder containing ecRad optical property files
+  irad_o3     = 7
+  irad_aero   = 6
+  albedo_type = 2
 /
 &nonhydrostatic_nml
-  damp_height         = 12250.
-  divdamp_fac         = 0.004   ! 0.004 for R19B07
-  divdamp_order       = 24
-  divdamp_type        = 32
-  exner_expol         = 0.333
-  hbot_qvsubstep      = 22500 ! r3b7: 19000.  else: 22500.
-  htop_moist_proc     = 22500.
-  iadv_rhotheta       = 2
-  igradp_method       = 3
-  itime_scheme        = 4
-  ivctype             = 2
-  l_zdiffu_t          = .true.
-  rayleigh_coeff      = 5.0
-  thhgtd_zdiffu       = 125.
-  thslp_zdiffu        = 0.02
-  vwind_offctr        = 0.2
+  iadv_rhotheta   = 2
+  ivctype         = 2
+  itime_scheme    = 4
+  exner_expol     = 0.333
+  vwind_offctr    = 0.2
+  damp_height     = 15000.
+  rayleigh_coeff  = 0.75
+  divdamp_fac     = 0.004
+  igradp_method   = 3
+  l_zdiffu_t      = .true.
+  thslp_zdiffu    = 0.02
+  thhgtd_zdiffu   = 125.
+  htop_moist_proc = 22500.
+  hbot_qvsubstep  = 22500
 /
 &sleve_nml
- decay_exp            = 1.2
- decay_scale_1        = 4000.
- decay_scale_2        = 2500.
- flat_height          = 16000.
- itype_laydistr       = 1
- min_lay_thckn        = 20.
- stretch_fac          = 0.65
- top_height           = 22000.
-/
-&dynamics_nml
- divavg_cntrwgt       = 0.50
- iequations           = 3
- lcoriolis            = .true.
-/
-&transport_nml
- ctracer_list         = '12345'
- ivadv_tracer         = 3,3,3,3,3,3
- itype_hlimit         = 3,4,4,4,4,4
- ihadv_tracer         = 52,2,2,2,2,2
- llsq_svd             = .TRUE.
- beta_fct             = 1.005
-/
-&diffusion_nml
- hdiff_efdt_ratio     = 24     ! 24.0  for R2B6; recommendation for R3B7: 30.0
- hdiff_order          = 5
- hdiff_smag_fac       = 0.025  ! 0.025 for R2B6; recommendation for R3B7: 0.02
- itype_t_diffu        = 2
- itype_vn_diffu       = 1
- lhdiff_temp          = .true.
- lhdiff_vn            = .true.
-/
-&interpol_nml
- nudge_zone_width     = 10
- nudge_max_coeff      = 0.075
- lsq_high_ord         = 3
- l_intp_c2l           = .true.
- l_mono_c2l           = .true.
-!support_baryctr_intp = .true.
-/
-&gridref_nml
- grf_intmethod_e      = 6
- grf_intmethod_ct     = 2
- grf_tracfbk          = 2
- denom_diffu_v        = 150.
+ min_lay_thckn   = 20.
+ top_height      = 22000.
+ stretch_fac     = 0.9
+ decay_scale_1   = 4000.
+ decay_scale_2   = 2500.
+ decay_exp       = 1.2
+ flat_height     = 16000.
 /
 &extpar_nml
- extpar_filename         = "external_parameter_icon_dom1_DOM01_tiles.nc"
- itopo                   = 1
- itype_vegetation_cycle  = 2
- n_iter_smooth_topo      = 1,1,1,1,1,1
- heightdiff_threshold    = 2250.,1500.
- hgtdiff_max_smooth_topo = 750.,750.,750.,750.,750.,750.
- read_nc_via_cdi         = .true.
- itype_lwemiss           = 2
+ itopo          = 1
+ n_iter_smooth_topo = 1
+ heightdiff_threshold = 3000.
 /
-&gribout_nml
- backgroundProcess               = 0
- generatingProcessIdentifier     = 11, 12                            ! 12 .. nest
- ldate_grib_act                  = .true.
- lgribout_24bit                  = .false.
- localNumberOfExperiment         = 1
- localTypeOfEnsembleForecast     = -1     ! -1, etyp
- numberOfForecastsInEnsemble     = -1     ! -1, nr_member
- perturbationNumber              = -1              ! -1, member
- preset                          = "deterministic"
- productionStatusOfProcessedData = 0
- tablesVersion                   = 19
+! output_nml: specifies an output stream --------------------------------------
+&output_nml
+ filetype                    = 4                     ! netcdf
+ dom                         = 1
+ output_bounds               = 0., 10000000., 3600.  ! start, end, increment
+ steps_per_file              = 5
+ mode                        = 1
+ include_last                = .FALSE.
+ steps_per_file_inclfirst    = .FALSE.
+ output_filename             = 'NWP_LAM'
+ filename_format             = '<output_filename>_DOM<physdom>_<datetime2>'
+ output_grid                 = .FALSE.
+ remap                       = 1                     ! 1: remap to lat-lon grid
+ reg_lon_def                 = 0.8,0.1,17.2
+ reg_lat_def                 = 43.9,0.1,57.7
+ ml_varlist                  = "RHI_MAX", "QI_MAX"    ! list of variables to be written to the output file
+
 /
-&nudging_nml
- nudge_type = 0
+&comin_nml
+   plugin_list(1)%name           = "comin_plugin"
+   plugin_list(1)%plugin_library = "/work/mh1498/m301257/work/MEssE/build/gcc/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
+   plugin_list(1)%options        = "/work/mh1498/m301257/work/MEssE/scripts/plugin/scripts/comin_plugin.py"
 /

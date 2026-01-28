@@ -1,0 +1,6 @@
+
+		begin
+      f = addfile("/work/mh1498/m301257/work/MEssE/experiment/rrtmg_sw.nc","r")
+      print(f)
+		end
+    

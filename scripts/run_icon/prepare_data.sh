@@ -1,5 +1,5 @@
 #!/bin/bash
-module load git
+# module load git
 
 BASE_DIR="$(git rev-parse --show-toplevel)" # where the repository is located
 

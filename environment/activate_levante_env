@@ -1,5 +1,8 @@
 module purge
-spack unload --all
+# Only unload spack if spack shell support is available
+if command -v spack >/dev/null 2>&1 && spack --version >/dev/null 2>&1; then
+    spack unload --all 2>/dev/null || true
+fi
 
 # from https://stackoverflow.com/questions/24515385
 
@@ -12,13 +15,18 @@ path_remove $1 $2
 eval export $1="$2:\$$1"
 }
 
-workdir=$(realpath $(dirname "$BASH_SOURCE"))/YAC
+# Get the repository root directory and workdir
+if [ -n "$BASH_SOURCE" ]; then
+  SCRIPT_DIR=$(realpath $(dirname "$BASH_SOURCE"))
+else
+  SCRIPT_DIR=$(realpath $(dirname "$0"))
+fi
+REPO_ROOT=$(dirname "$SCRIPT_DIR")
+workdir="${REPO_ROOT}/build/YAC"
 echo "workdir=$workdir"
 
-if [ ! -d "$workdir" ]; then
-  echo "$workdir does not exist."
-  return 1
-fi
+# Create workdir if it doesn't exist
+mkdir -p "$workdir"
 
 
 # load modules
@@ -30,8 +38,11 @@ module load \
   netcdf-c/4.8.1-openmpi-4.1.2-gcc-11.2.0 \
   git
 
-spack load /fwv # python
-spack load libfyaml
+# Load spack packages if spack is available
+if command -v spack >/dev/null 2>&1; then
+    spack load /fwv 2>/dev/null || true  # python
+    spack load libfyaml 2>/dev/null || true
+fi
 
 # amend modules with more env vars
 
@@ -43,7 +54,13 @@ path_prepend LIBRARY_PATH /sw/spack-levante/netcdf-c-4.8.1-6qheqr/lib
 path_prepend LD_LIBRARY_PATH /sw/spack-levante/netcdf-c-4.8.1-6qheqr/lib
 
 path_prepend LD_LIBRARY_PATH ${workdir}/yaxt/install/lib
+path_prepend LD_LIBRARY_PATH ${workdir}/yac/install/lib
+path_prepend PKG_CONFIG_PATH ${workdir}/yaxt/install/lib/pkgconfig
 path_prepend PKG_CONFIG_PATH ${workdir}/yac/install/lib/pkgconfig
+path_prepend C_INCLUDE_PATH ${workdir}/yaxt/install/include
+path_prepend C_INCLUDE_PATH ${workdir}/yac/install/include
+path_prepend CPATH ${workdir}/yaxt/install/include
+path_prepend CPATH ${workdir}/yac/install/include
 
 # python
 path_prepend PATH ${workdir}/.venv/bin
