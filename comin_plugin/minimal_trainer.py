@@ -35,123 +35,29 @@ print("number of domains:", n_dom, file=sys.stderr)
 
 jg = 1  # set the domain id
 
-## primary constructor
-# request to register the variable
-RHI_MAX_descriptor = ("RHI_MAX", jg)
-QI_MAX_descriptor = ("QI_MAX", jg)
-log_descriptor = ("log", jg)
-
-comin.var_request_add(RHI_MAX_descriptor, lmodexclusive=False)
-comin.var_request_add(QI_MAX_descriptor, lmodexclusive=False)
-comin.var_request_add(log_descriptor, lmodexclusive=False)
-
 
 domain = comin.descrdata_get_domain(jg)
 domain_np = np.asarray(domain.cells.decomp_domain)
 
 
-# Set metadata
-comin.metadata_set(
-    RHI_MAX_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_2D,
-    long_name="Maximum relative humidity over ice",
-    units="%",
-)
-
-comin.metadata_set(
-    QI_MAX_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_2D,
-    long_name="Maximum cloud ice content",
-    units="kg/kg",
-)
-
-comin.metadata_set(
-    log_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_2D,
-    long_name="Log file",
-    units="",
-)
-
 
 ## secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
-    global RHI_MAX, QI_MAX, temp, qv, exner, qi, log
-    RHI_MAX = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        RHI_MAX_descriptor,
-        flag=comin.COMIN_FLAG_WRITE,
-    )
-    QI_MAX = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        QI_MAX_descriptor,
-        flag=comin.COMIN_FLAG_WRITE,
-    )
-
-    log = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        log_descriptor,
-        flag=comin.COMIN_FLAG_WRITE,
-    )
-
+    global temp, tas, sfcwind
     temp = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", jg), flag=comin.COMIN_FLAG_READ
     )
-    qv = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("qv", jg), flag=comin.COMIN_FLAG_READ
+    tas = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ
     )
-    exner = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("exner", jg), flag=comin.COMIN_FLAG_READ
+    sfcwind = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ
     )
-    qi = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("qi", jg), flag=comin.COMIN_FLAG_READ
-    )
-
-
-## help function
-# help function to calculate RHI_MAX and QI_MAX
-def rhi(temp, qv, p_ex):
-    import numpy as np
-
-    rdv = (rd := 287.04) / (rv := 461.51)
-    pres = (p0ref := 100000) * np.exp(((cpd := 1004.64) / rd) * np.ma.log(p_ex))
-    e_s = 610.78 * np.ma.exp(21.875 * (temp - 273.15) / (temp - 7.66))
-    e = pres * qv / (rdv + (1.0 - (rd / rv)) * qv)
-    return 100.0 * e / e_s
-
-
-## callback function
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_AFTER)
-def calculate_rhi_qi():
-    # print("simple_python_callbackfct called!", file=sys.stderr)
-
-    # create mask
-    mask2d = domain_np != 0
-    mask3d = np.repeat(mask2d[:, None, :], domain.nlev, axis=1)
-
-    # apply mask to temp, qv, exner, qi
-    temp_np = ma.masked_array(np.squeeze(temp), mask=mask3d)
-    qv_np = ma.masked_array(np.squeeze(qv), mask=mask3d)
-    exner_np = ma.masked_array(np.squeeze(exner), mask=mask3d)
-    qi_np = ma.masked_array(np.squeeze(qi), mask=mask3d)
-
-    # calculate RHI_MAX
-    RHI_MAX_np = np.squeeze(RHI_MAX)
-    RHI_MAX_3d = rhi(temp_np, qv_np, exner_np)
-    RHI_MAX_np[:, :] = np.max(RHI_MAX_3d, axis=1)
-    # print("RHI_MAX_np shape", RHI_MAX_np.shape, file=sys.stderr)
-
-    # calculate QI_MAX
-    QI_MAX_np = np.squeeze(QI_MAX)
-    QI_MAX_np[:, :] = np.max(qi_np, axis=1)
-    print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr)
-
 
 # help function to collect the data from all processes
-
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 rank = comm.Get_rank()
-
 
 def util_gather(data_array: np.ndarray, root=0):
 
@@ -203,8 +109,9 @@ class Net(nn.Module):
 def get_batch_callback():
     global net, optimizer, losses  # Add these as globals to persist across calls
     
-    RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
-    QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
+    temp_np_glb = util_gather(np.asarray(temp))
+    sfcwind_np_glb = util_gather(np.asarray(sfcwind))
+    tas_np_glb = util_gather(np.asarray(tas))
 
     start_time = comin.descrdata_get_simulation_interval().run_start
     start_time_np = pd.to_datetime(start_time)
@@ -220,7 +127,7 @@ def get_batch_callback():
         one_batch_size = B * C * H
 
         # total number of batches
-        total_size = RHI_MAX_np_glb.shape[0]
+        total_size = temp_np_glb.shape[0]
 
         # number of batches
         num_batches = total_size // one_batch_size
@@ -245,8 +152,8 @@ def get_batch_callback():
         losses = []
 
         for i in range(num_batches):
-            x_batch_np = RHI_MAX_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
-            y_batch_np = QI_MAX_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
+            x_batch_np = sfcwind_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
+            y_batch_np = tas_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
 
             # reshape
             x_batch_np = x_batch_np.reshape(B, C, H)

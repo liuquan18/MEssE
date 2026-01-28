@@ -3,36 +3,21 @@
 # Structure
 ```bash
 .
-├── build                       # external location for building ICON
-├── data                        # output of icon
-├── environment                 # Environment setup scripts
-├── experiment                  # Experiment data 
-├── ICON                        # ICON source code
-└── scripts                      # Scripts 
-    ├── build_icon              # scripts for building ICON, ComIn, YAC 
-    ├── plugin                  # Python scripts for ComIn     
-    └── run_icon                # scripts for running ICON
+├── comin_plugin                # python scripts used as comin plugin
+└── scripts                     # scripts 
+    ├── build_env.sh            # script for building ICON, ComIn, YAC and preparing python env
+    └── run_icon                # script for running ICON
 ```
 # Workflow
 
 ## Build
 
-1. Build ICON `./scripts/build_scripts/build_icon.sh`
-
-If the icon-model is not cloned, the scripts will automatically clone the icon-model from the github repository.
-
-2. Build ComIn `./scripts/build_scripts/build_ComIn.sh`
-
-3. <del> Build YAC `./scripts/build_scripts/build_YAC.sh`
-
-4. Build python environment `./scripts/build_scripts/build_pyenv.sh`
-
+Prepare environment using `./scripts/build_env.sh ${desired_path}`
+On successful completion of the script, a py_venv is created under ${desired_path}
 
 ## Run
-1. make sure that no bug in plugin `./scripts/plugin/`
+Run ICON with the plugin like so: `./scripts/run_icon.sh $ICON_BUILD_DIR $COMIN_PLUGIN_PATH $LEVANTE_ACCOUNT`
 
-2. Prepare the input data `./scripts/run_icon/prepare_data.sh`
-
-3. Run ICON `./scripts/run_icon/run_icon_LAM.sh`, *replace the `--account mh0033` with `--account <your_account>` in the last line of the script.*
-
-the output log file will be in /experiment/ directory.
+`ICON_BUILD_DIR` can be found under `${desired_path}/build_dir`
+`COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin/minimal_trainer.py`
+`LEVANTE_ACCOUNT` is your levante project id
