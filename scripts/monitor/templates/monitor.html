@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MEssE v1.0 - Real-time Training Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 50%, #8b5cf6 100%);
+            background-attachment: fixed;
+            min-height: 100vh;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+
+        /* Header Styles */
+        .header {
+            background: rgba(255, 255, 255, 0.98);
+            padding: 24px 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            margin-bottom: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            animation: slideDown 0.6s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .logo-icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            font-weight: 800;
+            color: white;
+            box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+            }
+            50% {
+                transform: scale(1.05);
+                box-shadow: 0 12px 32px rgba(59, 130, 246, 0.6);
+            }
+        }
+
+        .logo-text-container {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .logo {
+            font-size: 32px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 50%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            letter-spacing: -1px;
+        }
+
+        .logo-subtitle {
+            font-size: 13px;
+            color: #64748b;
+            font-weight: 500;
+            margin-top: 2px;
+        }
+
+        .status-container {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+            border-radius: 12px;
+            border: 2px solid #86efac;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #22c55e;
+            box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+            animation: sonar 2s ease-out infinite;
+        }
+
+        @keyframes sonar {
+            0% {
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+            }
+            100% {
+                box-shadow: 0 0 0 16px rgba(34, 197, 94, 0);
+            }
+        }
+
+        .status-text {
+            font-size: 14px;
+            font-weight: 600;
+            color: #166534;
+        }
+
+        .refresh-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #64748b;
+            font-weight: 500;
+        }
+
+        .refresh-icon {
+            animation: rotate 2s linear infinite;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* Main Container */
+        .container {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            gap: 24px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        /* Panel Styles */
+        .panel {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 20px;
+            padding: 28px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            animation: fadeInUp 0.6s ease-out;
+            animation-fill-mode: both;
+        }
+
+        .panel:nth-child(1) { animation-delay: 0.1s; }
+        .panel:nth-child(2) { animation-delay: 0.2s; }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .panel-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 2px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            letter-spacing: -0.5px;
+        }
+
+        .icon {
+            font-size: 26px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+        }
+
+        /* Info Grid Styles */
+        .info-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 18px;
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+            border-radius: 12px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid transparent;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .info-row::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            transform: scaleY(0);
+            transition: transform 0.3s ease;
+        }
+
+        .info-row:hover {
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            transform: translateX(8px);
+            border-color: #e0e7ff;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+        }
+
+        .info-row:hover::before {
+            transform: scaleY(1);
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #475569;
+            font-size: 14px;
+            letter-spacing: -0.2px;
+        }
+
+        .info-value {
+            font-weight: 600;
+            color: #0f172a;
+            font-size: 15px;
+            font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+            padding: 4px 12px;
+            background: rgba(59, 130, 246, 0.08);
+            border-radius: 6px;
+        }
+
+        /* Metric Cards */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 70%);
+            animation: shimmer 3s ease-in-out infinite;
+        }
+
+        @keyframes shimmer {
+            0%, 100% { transform: translate(0, 0); }
+            50% { transform: translate(-30%, -30%); }
+        }
+
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px rgba(59, 130, 246, 0.4);
+        }
+
+        .metric-label {
+            font-size: 13px;
+            opacity: 0.95;
+            margin-bottom: 8px;
+            font-weight: 500;
+            letter-spacing: 0.3px;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: 800;
+            font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+            letter-spacing: -1px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .metric-trend {
+            font-size: 12px;
+            margin-top: 4px;
+            opacity: 0.9;
+            font-weight: 500;
+        }
+
+        /* Chart Container */
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-top: 24px;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .chart-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #1e293b;
+        }
+
+        .chart-legend {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
+        /* Waiting State */
+        .waiting-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748b;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #e2e8f0;
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .waiting-text {
+            font-size: 16px;
+            font-weight: 500;
+            color: #475569;
+        }
+
+        /* GNN Architecture Section */
+        .architecture-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .architecture-item {
+            padding: 12px 16px;
+            background: linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%);
+            border-radius: 10px;
+            border-left: 3px solid #8b5cf6;
+        }
+
+        .architecture-label {
+            font-size: 11px;
+            color: #6b21a8;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .architecture-value {
+            font-size: 16px;
+            font-weight: 700;
+            color: #5b21b6;
+        }
+
+        /* Stats Bar */
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 16px;
+            background: linear-gradient(135deg, #fefce8 0%, #fef3c7 100%);
+            border-radius: 12px;
+            border: 1px solid #fde047;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 800;
+            color: #854d0e;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #a16207;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        /* Timestamp */
+        .timestamp {
+            font-size: 12px;
+            color: #94a3b8;
+            text-align: right;
+            margin-top: 16px;
+            font-weight: 500;
+        }
+
+        /* Right Panel Specific */
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-section {
+            flex: 1;
+            min-height: 0;
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .metrics-grid,
+            .architecture-grid,
+            .stats-bar {
+                grid-template-columns: 1fr;
+            }
+            
+            .header {
+                flex-direction: column;
+                gap: 16px;
+                text-align: center;
+            }
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 12px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+            position: relative;
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer-progress 2s infinite;
+        }
+
+        @keyframes shimmer-progress {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo-section">
+            <div class="logo-icon">M</div>
+            <div class="logo-text-container">
+                <div class="logo">MEssE v1.0</div>
+                <div class="logo-subtitle">Machine Learning-Enhanced Simulation Engine</div>
+            </div>
+        </div>
+        <div class="status-container">
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span class="status-text" id="statusText">Initializing...</span>
+            </div>
+            <div class="refresh-info">
+                <span class="refresh-icon">🔄</span>
+                <span>Auto-refresh: 2s</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Left Panel: Simulation & Training Info -->
+        <div class="panel">
+            <div class="panel-title">
+                <span class="icon">🌍</span>
+                ICON Simulation
+            </div>
+            <div id="simulationContent">
+                <div class="waiting-state">
+                    <div class="spinner"></div>
+                    <p class="waiting-text">Loading simulation data...</p>
+                </div>
+            </div>
+
+            <div class="panel-title" style="margin-top: 32px;">
+                <span class="icon">🧠</span>
+                GNN Architecture
+            </div>
+            <div id="architectureContent">
+                <div class="waiting-state">
+                    <div class="spinner"></div>
+                    <p class="waiting-text">Loading architecture info...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Training Metrics & Charts -->
+        <div class="panel right-panel">
+            <div class="panel-title">
+                <span class="icon">📊</span>
+                Training Dashboard
+            </div>
+            <div id="trainingContent">
+                <div class="waiting-state">
+                    <div class="spinner"></div>
+                    <p class="waiting-text">Loading training data...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let lossChart = null;
+        let batchChart = null;
+        let startTime = null;
+        
+        function updateStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'running') {
+                        document.getElementById('statusText').textContent = 'Live Training';
+                        document.getElementById('statusDot').style.background = '#22c55e';
+                        
+                        updateSimulationPanel(data.simulation);
+                        updateArchitecturePanel(data.training);
+                        updateTrainingPanel(data.training, data.losses);
+                    } else {
+                        document.getElementById('statusText').textContent = 'Waiting for Data';
+                        document.getElementById('statusDot').style.background = '#f59e0b';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    document.getElementById('statusText').textContent = 'Connection Error';
+                    document.getElementById('statusDot').style.background = '#ef4444';
+                });
+        }
+
+        function formatDuration(timeString) {
+            // Convert "X day, HH:MM:SS" or "HH:MM:SS" to human readable
+            if (!timeString) return 'N/A';
+            const parts = timeString.split(',');
+            if (parts.length > 1) {
+                const days = parts[0].trim();
+                const time = parts[1].trim();
+                return `${days}, ${time}`;
+            }
+            return timeString;
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(2) + 'M';
+            } else if (num >= 1000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toString();
+        }
+
+        function updateSimulationPanel(sim) {
+            if (!sim) return;
+            
+            const html = `
+                <div class="info-grid">
+                    <div class="info-row">
+                        <span class="info-label">⏰ Start Time</span>
+                        <span class="info-value">${sim.start_time || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">🕐 Current Time</span>
+                        <span class="info-value">${sim.current_time || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">⏱️ Elapsed Time</span>
+                        <span class="info-value">${formatDuration(sim.elapsed_time)}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">🌐 Domains</span>
+                        <span class="info-value">${sim.n_domains || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">📍 Grid Points</span>
+                        <span class="info-value">${formatNumber(sim.total_points || 0)}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">📤 Output Steps</span>
+                        <span class="info-value">${sim.output_count || 'N/A'}</span>
+                    </div>
+                </div>
+                <div class="timestamp">Last updated: ${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            document.getElementById('simulationContent').innerHTML = html;
+        }
+
+        function updateArchitecturePanel(training) {
+            if (!training) return;
+            
+            const modelType = training.model_type || 'Unknown';
+            const batchSize = training.batches_per_timestep > 0 ? 
+                Math.floor((training.total_batches || 0) / (training.batches_per_timestep || 1) * 5000) : 
+                5000;
+            
+            const html = `
+                <div class="architecture-grid">
+                    <div class="architecture-item">
+                        <div class="architecture-label">Model Type</div>
+                        <div class="architecture-value">${modelType}</div>
+                    </div>
+                    <div class="architecture-item">
+                        <div class="architecture-label">Learning Rate</div>
+                        <div class="architecture-value">${training.learning_rate || '0.01'}</div>
+                    </div>
+                    <div class="architecture-item">
+                        <div class="architecture-label">Batch Size</div>
+                        <div class="architecture-value">${formatNumber(batchSize)} nodes</div>
+                    </div>
+                    <div class="architecture-item">
+                        <div class="architecture-label">Batches/Step</div>
+                        <div class="architecture-value">${training.batches_per_timestep || 'N/A'}</div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('architectureContent').innerHTML = html;
+        }
+
+        function updateTrainingPanel(training, losses) {
+            if (!training) return;
+            
+            const currentLoss = losses.length > 0 ? losses[losses.length - 1] : 0;
+            const avgLoss = losses.length > 0 
+                ? (losses.reduce((a, b) => a + b, 0) / losses.length) 
+                : 0;
+            const minLoss = losses.length > 0 ? Math.min(...losses) : 0;
+            const maxLoss = losses.length > 0 ? Math.max(...losses) : 0;
+            
+            // Calculate convergence trend
+            const recentLosses = losses.slice(-10);
+            const trend = recentLosses.length >= 2 ? 
+                (recentLosses[recentLosses.length - 1] < recentLosses[0] ? '↓ Improving' : '↑ Diverging') : 
+                '— Stable';
+            
+            const html = `
+                <!-- Metrics Grid -->
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">Current Loss</div>
+                        <div class="metric-value">${currentLoss.toExponential(3)}</div>
+                        <div class="metric-trend">${trend}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Average Loss</div>
+                        <div class="metric-value">${avgLoss.toExponential(3)}</div>
+                        <div class="metric-trend">Last ${losses.length} batches</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Minimum Loss</div>
+                        <div class="metric-value">${minLoss.toExponential(3)}</div>
+                        <div class="metric-trend">Best achieved</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Maximum Loss</div>
+                        <div class="metric-value">${maxLoss.toExponential(3)}</div>
+                        <div class="metric-trend">Peak value</div>
+                    </div>
+                </div>
+
+                <!-- Statistics Bar -->
+                <div class="stats-bar">
+                    <div class="stat-item">
+                        <div class="stat-value">${training.total_batches || 0}</div>
+                        <div class="stat-label">Total Batches</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${training.batches_per_timestep || 0}</div>
+                        <div class="stat-label">Batches/Step</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${(training.learning_rate || 0.01).toFixed(4)}</div>
+                        <div class="stat-label">Learn Rate</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${training.model_type && training.model_type.includes('MLP') ? 'MLP' : 'GNN'}</div>
+                        <div class="stat-label">Model</div>
+                    </div>
+                </div>
+
+                <!-- Loss Chart -->
+                <div class="chart-section">
+                    <div class="chart-header">
+                        <div class="chart-title">Training Loss Evolution</div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="lossChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="timestamp">Real-time monitoring • Updated: ${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            document.getElementById('trainingContent').innerHTML = html;
+            
+            // Update chart
+            updateLossChart(losses);
+        }
+
+        function updateLossChart(losses) {
+            const ctx = document.getElementById('lossChart');
+            if (!ctx) return;
+            
+            if (lossChart) {
+                lossChart.destroy();
+            }
+            
+            lossChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: losses.map((_, i) => i + 1),
+                    datasets: [{
+                        label: 'Training Loss',
+                        data: losses,
+                        borderColor: 'rgba(147, 51, 234, 1)',
+                        backgroundColor: function(context) {
+                            const ctx = context.chart.ctx;
+                            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+                            gradient.addColorStop(0, 'rgba(147, 51, 234, 0.4)');
+                            gradient.addColorStop(0.5, 'rgba(59, 130, 246, 0.3)');
+                            gradient.addColorStop(1, 'rgba(59, 130, 246, 0.1)');
+                            return gradient;
+                        },
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 4,
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: 'rgba(147, 51, 234, 1)',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: 'rgba(147, 51, 234, 1)',
+                        pointHoverBorderWidth: 3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 750,
+                        easing: 'easeInOutQuart'
+                    },
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                color: '#ffffff',
+                                font: {
+                                    size: 13,
+                                    weight: '500',
+                                    family: 'Inter'
+                                },
+                                padding: 15,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            enabled: true,
+                            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                            titleColor: '#ffffff',
+                            bodyColor: '#e2e8f0',
+                            borderColor: 'rgba(147, 51, 234, 0.5)',
+                            borderWidth: 1,
+                            padding: 12,
+                            displayColors: true,
+                            callbacks: {
+                                label: function(context) {
+                                    return 'Loss: ' + context.parsed.y.toExponential(4);
+                                },
+                                title: function(context) {
+                                    return 'Batch ' + context[0].label;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)',
+                                drawBorder: false
+                            },
+                            ticks: {
+                                color: '#cbd5e1',
+                                font: {
+                                    size: 11,
+                                    family: 'Inter'
+                                },
+                                callback: function(value) {
+                                    return value.toExponential(2);
+                                },
+                                padding: 8
+                            },
+                            title: {
+                                display: true,
+                                text: 'Loss Value',
+                                color: '#cbd5e1',
+                                font: {
+                                    size: 12,
+                                    weight: '600',
+                                    family: 'Inter'
+                                },
+                                padding: 10
+                            }
+                        },
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)',
+                                drawBorder: false
+                            },
+                            ticks: {
+                                color: '#cbd5e1',
+                                font: {
+                                    size: 11,
+                                    family: 'Inter'
+                                },
+                                maxTicksLimit: 10,
+                                padding: 8
+                            },
+                            title: {
+                                display: true,
+                                text: 'Batch Number',
+                                color: '#cbd5e1',
+                                font: {
+                                    size: 12,
+                                    weight: '600',
+                                    family: 'Inter'
+                                },
+                                padding: 10
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update every 2 seconds
+        updateStatus();
+        setInterval(updateStatus, 2000);
+    </script>
+</body>
+</html>
