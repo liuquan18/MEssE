@@ -194,4 +194,3 @@ def get_batch_callback():
         ) as f:
             for item in losses:
                 f.write("%s\n" % item)
-
