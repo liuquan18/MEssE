@@ -288,13 +288,18 @@
         function updateTrainingPanel(training, losses) {
             if (!training) return;
             
-            const currentLoss = losses.length > 0 ? losses[losses.length - 1].toFixed(6) : 'N/A';
+            const currentLoss = losses.length > 0 ? losses[losses.length - 1].toExponential(4) : 'N/A';
             const avgLoss = losses.length > 0 
-                ? (losses.reduce((a, b) => a + b, 0) / losses.length).toFixed(6) 
+                ? (losses.reduce((a, b) => a + b, 0) / losses.length).toExponential(4) 
                 : 'N/A';
-            const minLoss = losses.length > 0 ? Math.min(...losses).toFixed(6) : 'N/A';
+            const minLoss = losses.length > 0 ? Math.min(...losses).toExponential(4) : 'N/A';
+            const maxLoss = losses.length > 0 ? Math.max(...losses).toExponential(4) : 'N/A';
             
             const html = `
+                <div class="chart-container">
+                    <canvas id="lossChart"></canvas>
+                </div>
+                
                 <div class="metric-card">
                     <div class="metric-label">Current Loss</div>
                     <div class="metric-value">${currentLoss}</div>
@@ -302,8 +307,16 @@
                 
                 <div class="info-grid">
                     <div class="info-row">
+                        <span class="info-label">Model Type</span>
+                        <span class="info-value">${training.model_type || 'Unknown'}</span>
+                    </div>
+                    <div class="info-row">
                         <span class="info-label">Total Batches Trained</span>
                         <span class="info-value">${training.total_batches || losses.length}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Batches/Timestep</span>
+                        <span class="info-value">${training.batches_per_timestep || 'N/A'}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Average Loss</span>
@@ -314,13 +327,13 @@
                         <span class="info-value">${minLoss}</span>
                     </div>
                     <div class="info-row">
+                        <span class="info-label">Maximum Loss</span>
+                        <span class="info-value">${maxLoss}</span>
+                    </div>
+                    <div class="info-row">
                         <span class="info-label">Learning Rate</span>
                         <span class="info-value">${training.learning_rate || '0.01'}</span>
                     </div>
-                </div>
-                
-                <div class="chart-container">
-                    <canvas id="lossChart"></canvas>
                 </div>
                 
                 <div class="timestamp">Last updated: ${new Date().toLocaleTimeString()}</div>

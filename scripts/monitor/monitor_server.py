@@ -89,8 +89,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  MEssE v1.0 - Monitoring Server Starting...")
     print("=" * 60)
-    print(f"\n  🌐 Access the interface at: http://localhost:5000")
+    print(f"\n  🌐 Access the interface at: http://localhost:5001")
     print(f"  📁 Data directory: {SCRATCH_DIR}")
     print("\n" + "=" * 60 + "\n")
 
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5001, debug=False)
