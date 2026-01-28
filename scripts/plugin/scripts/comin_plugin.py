@@ -662,6 +662,8 @@ def get_batch_callback():
         try:
             import json
 
+            elapsed_time = current_time - start_time
+
             status_data = {
                 "timestamp": current_time.isoformat(),
                 "simulation": {
