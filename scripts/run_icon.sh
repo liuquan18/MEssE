@@ -30,11 +30,9 @@ if [[ ! -f "$COMIN_PLUGIN_SCRIPT" ]]; then
 fi
 
 pushd ${ICON_BUILD_DIR}
-cd ${ICON_BUILD_DIR}
 ./make_runscripts esm_bb_ruby0
 
 ICON_RUN_SCRIPT=${ICON_BUILD_DIR}/run/exp.esm_bb_ruby0.run
-
 
 # Add comin_nml to the atmo_namelist block in the generated run script
 sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
@@ -43,8 +41,7 @@ sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
    plugin_list(1)%plugin_library = \"${ICON_BUILD_DIR}/externals/comin/build/plugins/python_adapter/libpython_adapter.so\"\\
    plugin_list(1)%options        = \"$COMIN_PLUGIN_SCRIPT\"\\
 /
-}" ${ICON_BUILD_DIR}/run/exp.esm_bb_ruby0.run
-
+}" ${ICON_RUN_SCRIPT}
 
 sbatch --account=$LEVANTE_ACCOUNT $ICON_RUN_SCRIPT
 

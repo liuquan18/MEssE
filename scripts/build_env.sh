@@ -37,7 +37,7 @@ $PY_BIN -m venv $PY_ENV_DIR
 source $PY_ENV_DIR/bin/activate
 
 pip install --upgrade pip
-pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib mpi4py netcdf4 xarray cartopy
+pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib mpi4py netcdf4 xarray torch cartopy
 
 # clone the repositories
 ICON_DIR_NAME=icon-model
@@ -68,15 +68,6 @@ $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.intel-2021.5.0 ICON_BUNDLED_CFLAGS='
 make -j $(nproc)
 popd
 
-
-# mpi-version
-export MPI_ROOT=/sw/spack-levante/openmpi-4.1.2-mnmady
-export CC="${MPI_ROOT}/bin/mpicc"
-export CXX="${MPI_ROOT}/bin/mpicxx"
-export FC="${MPI_ROOT}/bin/mpif90"
-export MPI_LAUNCH="${MPI_ROOT}/bin/mpiexec"
-
-#pip install -e $BASE_DIR/scripts/plugin # make the functions in /src available in the venv
 
 echo "Setup complete."
 echo "The python environment is here: $PY_ENV_DIR"
