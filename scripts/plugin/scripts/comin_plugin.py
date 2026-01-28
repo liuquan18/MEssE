@@ -248,7 +248,7 @@ class Net(nn.Module):
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
-    global net, optimizer, losses  # Add these as globals to persist across calls
+    global net, optimizer, losses, output_counter  # Add these as globals to persist across calls
 
     RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
     QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
@@ -265,14 +265,19 @@ def get_batch_callback():
     current_time = comin.current_get_datetime()
     current_time_np = pd.to_datetime(current_time)
 
+    # Initialize output counter on first call
+    if "output_counter" not in globals():
+        output_counter = 0
+    output_counter += 1
+
     if rank == 0:
         # Optional: Interpolate to regular grid for visualization or analysis
         # Uncomment the following lines to use regular grid interpolation:
         lon_grid, lat_grid, RHI_MAX_grid = interpolate_to_regular_grid(
-            cx_glb, cy_glb, RHI_MAX_np_glb, resolution=2.5, method='linear'
+            cx_glb, cy_glb, RHI_MAX_np_glb, resolution=2.5, method="linear"
         )
         lon_grid, lat_grid, QI_MAX_grid = interpolate_to_regular_grid(
-            cx_glb, cy_glb, QI_MAX_np_glb, resolution=2.5, method='linear'
+            cx_glb, cy_glb, QI_MAX_np_glb, resolution=2.5, method="linear"
         )
         print(f"Interpolated grid shape: {RHI_MAX_grid.shape}", file=sys.stderr)
         #
@@ -363,3 +368,32 @@ def get_batch_callback():
         ) as f:
             for item in losses:
                 f.write("%s\n" % item)
+
+        # Write status file for web monitoring
+        import json
+
+        elapsed_time = current_time_np - start_time_np
+        status_data = {
+            "timestamp": current_time_np.isoformat(),
+            "simulation": {
+                "start_time": start_time_np.strftime("%Y-%m-%d %H:%M:%S"),
+                "current_time": current_time_np.strftime("%Y-%m-%d %H:%M:%S"),
+                "elapsed_time": str(elapsed_time),
+                "n_domains": int(n_dom[0]) if len(n_dom) > 0 else 1,
+                "total_points": int(total_size),
+                "output_count": output_counter,
+            },
+            "training": {
+                "current_loss": float(losses[-1]) if losses else 0.0,
+                "total_batches": len(losses),
+                "learning_rate": 0.01,
+                "avg_loss": float(sum(losses) / len(losses)) if losses else 0.0,
+                "min_loss": float(min(losses)) if losses else 0.0,
+            },
+        }
+
+        with open(
+            f"/scratch/{user[0]}/{user}/icon_exercise_comin/monitor_status.json",
+            "w",
+        ) as f:
+            json.dump(status_data, f, indent=2)
