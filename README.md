@@ -17,15 +17,16 @@
 
 ## Build
 
-1. Build ICON `./scripts/build_scripts/build_icon.sh`
+1. Build python environment `./scripts/build_scripts/build_pyenv.sh`
+
+2. Build ICON `./scripts/build_scripts/build_icon.sh`
 
 If the icon-model is not cloned, the scripts will automatically clone the icon-model from the github repository.
 
-2. Build ComIn `./scripts/build_scripts/build_ComIn.sh`
+3. Build ComIn `./scripts/build_scripts/build_ComIn.sh`
 
-3. <del> Build YAC `./scripts/build_scripts/build_YAC.sh`
+4. <del> Build YAC `./scripts/build_scripts/build_YAC.sh`
 
-4. Build python environment `./scripts/build_scripts/build_pyenv.sh`
 
 
 ## Run
