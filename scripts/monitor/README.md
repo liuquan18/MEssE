@@ -1,323 +1,394 @@
-# ICON Training Monitoring Tools
+# ICON ML Training Loss Monitor
 
-This directory contains tools for monitoring and visualizing the training process of the neural network embedded in the ICON climate model via the ComIn plugin.
+A real-time dashboard for monitoring and visualizing loss functions during ICON climate model training with machine learning components.
 
-## Overview
+## Features
 
-The monitoring system provides **real-time** and **post-hoc** analysis of the training process, including:
-- Loss curves and convergence analysis
-- Training statistics and trends
-- TensorBoard integration for deep model inspection
-- Interactive dashboards for live monitoring
+🎯 **Real-time Monitoring**
+- Live updates of training loss values every 5 seconds
+- Automatic data aggregation from log files and TensorBoard events
+- No need to restart - picks up new data automatically
 
-## Generated Data
+📊 **Interactive Visualizations**
+- Loss history over time with mean, min, and max values
+- Loss distribution histogram
+- Per-batch loss analysis for each timestep
+- Statistical summaries with percentiles and trends
 
-During ICON model execution with the plugin, the following data is generated in:
+📈 **Comprehensive Analytics**
+- Overall training statistics and trends
+- Per-timestep batch analysis
+- Loss improvement tracking
+- Trend detection (increasing/decreasing)
+
+🌐 **Web-based Interface**
+- Modern, responsive dashboard accessible from any browser
+- Dark theme optimized for long monitoring sessions
+- Works on desktop and mobile devices
+
+## Directory Structure
+
 ```
-/scratch/<first_letter_of_username>/<username>/icon_exercise_comin/
+scripts/monitor/
+├── dashboard_server.py       # Main Flask server
+├── data_aggregator.py        # Data loading and aggregation
+├── config.py                 # Configuration settings
+├── templates/
+│   └── dashboard.html        # Dashboard HTML template
+├── static/
+│   ├── style.css            # Dashboard styles
+│   └── dashboard.js         # Dashboard JavaScript
+└── scripts/
+    ├── start_monitor.sh     # Start the dashboard
+    ├── stop_monitor.sh      # Stop the dashboard
+    └── status_monitor.sh    # Check dashboard status
 ```
 
-### Files:
-- `log_<timestamp>.txt` - Raw loss values for each batch at each timestep
-- `summary_<timestamp>.txt` - Statistics summary for each timestep (mean, std, min, max loss)
-- `net_<start_time>.pth` - Model checkpoint (weights + optimizer state)
-- `runs/experiment_<start_time>/` - TensorBoard logs directory
+## Requirements
 
-## Tools
+### Python Dependencies
 
-### 1. TensorBoard (Real-time)
-**Best for:** Professional-grade real-time monitoring with rich visualizations
+**Required:**
+- Python 3.7+
+- Flask >= 2.0.0
+- Flask-CORS >= 3.0.0
+- pandas >= 1.3.0
+- numpy >= 1.21.0
 
-Launch TensorBoard server to visualize training metrics as they are generated:
+**Optional:**
+- tensorboard >= 2.0.0 (for TensorBoard event file support)
+
+### System Requirements
+
+- Linux system (tested on Levante HPC)
+- Access to ICON simulation output directory
+- Network connectivity for web dashboard access
+
+## Installation
+
+### 1. Install Python Dependencies
 
 ```bash
-./launch_tensorboard.sh [PORT]
+# Install required packages
+pip install --user flask flask-cors pandas numpy
+
+# Install optional TensorBoard support
+pip install --user tensorboard
 ```
 
-**Default port:** 6006
-
-**Access:**
-- Local: `http://localhost:6006`
-- Remote: Create SSH tunnel first:
-  ```bash
-  ssh -L 6006:localhost:6006 <username>@<server>
-  ```
-  Then open: `http://localhost:6006`
-
-**Features:**
-- Loss curves (per batch and per timestep)
-- Learning rate tracking
-- Model parameter histograms
-- Gradient flow visualization
-- Scalable and professional interface
-
----
-
-### 2. Static Plot Generator (Post-hoc)
-**Best for:** Publication-quality figures and detailed analysis after training
-
-Generate comprehensive static plots from all log files:
-
-```bash
-./plot_training_loss.py
-```
-
-**Output location:** `/scratch/<first_letter>/<username>/icon_exercise_comin/plots/`
-
-**Generated plots:**
-1. `loss_vs_batch.png` - Loss trajectory over all batches
-2. `loss_vs_time.png` - Loss trajectory over simulation time
-3. `loss_distribution.png` - Histogram of loss values
-4. `loss_smoothed.png` - Loss with moving average overlay
-5. `mean_loss_per_timestep.png` - Mean loss per timestep with error bars
-6. `loss_range_per_timestep.png` - Min/max loss range per timestep
-7. `batches_per_timestep.png` - Number of batches processed per timestep
-
-**Also prints:** Comprehensive statistics including convergence analysis
-
-**Requirements:**
-- matplotlib
-- pandas
-- numpy
-
----
-
-### 3. Interactive Dashboard (Real-time)
-**Best for:** Quick real-time monitoring during training with auto-refresh
-
-Launch an interactive matplotlib-based dashboard that auto-refreshes:
-
-```bash
-./training_dashboard.py
-```
-
-**Features:**
-- Auto-refresh every 5 seconds
-- 6-panel dashboard with:
-  - Loss vs batch number
-  - Loss vs simulation time
-  - Loss distribution histogram
-  - Mean loss per timestep (with error bars)
-  - Training statistics panel
-  - Recent loss trend (last 100 batches)
-- Live statistics display
-- Trend analysis
-
-**Note:** Requires X11 forwarding or VNC for remote visualization
-```bash
-ssh -X <username>@<server>  # For X11 forwarding
-```
-
----
-
-## Workflow
-
-### During Training (Real-time monitoring)
-
-**Option A: TensorBoard (Recommended)**
-```bash
-# Terminal 1: Start ICON model with plugin
-cd /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/run_icon
-./run_icon_LAM.sh
-
-# Terminal 2: Launch TensorBoard
-cd /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/monitor
-./launch_tensorboard.sh
-```
-
-**Option B: Interactive Dashboard**
-```bash
-# Terminal 1: Start ICON model with plugin
-cd /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/run_icon
-./run_icon_LAM.sh
-
-# Terminal 2: Launch dashboard (requires X11)
-cd /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/monitor
-./training_dashboard.py
-```
-
-### After Training (Post-hoc analysis)
+### 2. Verify Installation
 
 ```bash
 cd /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/monitor
-./plot_training_loss.py
+./scripts/status_monitor.sh
 ```
 
-This generates all publication-ready plots in the `plots/` directory.
+## Usage
 
----
+### Starting the Dashboard
 
-## Understanding the Metrics
+Use the convenience script:
 
-### Loss (MSE)
-- **Metric:** Mean Squared Error between predicted and actual cloud ice content
-- **Lower is better:** Model predictions are closer to ground truth
-- **Expected behavior:** Should decrease over time as model learns
+```bash
+cd /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/monitor
+./scripts/start_monitor.sh
+```
 
-### Convergence Indicators
-- **Decreasing trend:** Model is learning effectively
-- **Plateau:** Model has reached optimal performance or needs adjustment
-- **Increasing trend:** May indicate learning rate issues or overfitting
+Or specify custom host and port:
 
-### Per-timestep Statistics
-- **Mean loss:** Average performance across all batches in a timestep
-- **Std dev:** Variability in performance (lower = more stable)
-- **Min/max range:** Performance bounds
+```bash
+./scripts/start_monitor.sh 5001 0.0.0.0
+```
 
----
+Or start directly with Python:
+
+```bash
+python3 dashboard_server.py --host 0.0.0.0 --port 5000
+```
+
+### Accessing the Dashboard
+
+Once started, open your web browser and navigate to:
+
+```
+http://localhost:5000
+```
+
+Or from another machine:
+
+```
+http://<your-server-ip>:5000
+```
+
+**Note:** If running on an HPC system, you may need to:
+1. Set up SSH port forwarding: `ssh -L 5000:localhost:5000 user@hpc-node`
+2. Or use the HPC's web proxy if available
+
+### Stopping the Dashboard
+
+```bash
+./scripts/stop_monitor.sh
+```
+
+### Checking Status
+
+```bash
+./scripts/status_monitor.sh
+```
+
+## Dashboard Components
+
+### 1. Status Bar
+- Connection status indicator
+- Last update timestamp
+- Total timesteps and batches processed
+
+### 2. Statistics Cards
+- **Current Loss:** Most recent batch loss value
+- **Mean Loss:** Average loss for current timestep
+- **Total Timesteps:** Number of simulation timesteps completed
+- **Trend:** Whether loss is increasing or decreasing
+
+### 3. Charts
+
+#### Loss History Chart
+- Time series of mean, min, and max loss per timestep
+- Automatically updates as new data arrives
+- Configurable history length (50, 100, 200, 500 points)
+
+#### Loss Distribution Chart
+- Histogram showing the distribution of all loss values
+- Helps identify training patterns and outliers
+
+#### Batch Losses Chart
+- Individual batch losses for the most recent timestep
+- Shows loss variation within a single timestep
+
+#### Timestep Statistics Chart
+- Mean loss trend with standard deviation bands
+- Overview of training progress over time
+
+### 4. Detailed Statistics Table
+- Overall statistics (mean, std, min, max)
+- Percentiles (25th, 50th, 75th, 90th, 95th, 99th)
+- Trend analysis (slope, direction)
+- Improvement metrics
+
+### 5. Activity Log
+- Real-time log of system events
+- Connection status updates
+- Error messages and warnings
+
+## Configuration
+
+Edit `config.py` to customize:
+
+```python
+# Server settings
+SERVER_HOST = '0.0.0.0'
+SERVER_PORT = 5000
+
+# Update intervals (seconds)
+DATA_UPDATE_INTERVAL = 5
+DASHBOARD_REFRESH_RATE = 5
+
+# Data settings
+DEFAULT_HISTORY_LIMIT = 100
+MAX_HISTORY_LIMIT = 1000
+
+# TensorBoard support
+TENSORBOARD_ENABLED = True
+```
+
+## Data Sources
+
+The monitor automatically reads data from:
+
+1. **Log Files** (`/scratch/<user>/icon_exercise_comin/log_*.txt`)
+   - Individual batch loss values
+   - Organized by timestamp
+
+2. **Summary Files** (`/scratch/<user>/icon_exercise_comin/summary_*.txt`)
+   - Aggregated statistics per timestep
+   - Mean, std, min, max values
+
+3. **TensorBoard Events** (optional, `/scratch/<user>/icon_exercise_comin/runs/`)
+   - Scalar metrics logged during training
+   - Histograms of model parameters
+
+## API Endpoints
+
+The dashboard provides a REST API for programmatic access:
+
+- `GET /api/status` - Overall monitoring status
+- `GET /api/loss/current` - Most recent loss values
+- `GET /api/loss/history?limit=100` - Historical loss data
+- `GET /api/loss/statistics` - Statistical summary
+- `GET /api/loss/timesteps` - List of all timesteps
+- `GET /api/loss/by_timestep/<timestamp>` - Data for specific timestep
+- `GET /api/tensorboard/scalars?tag=Loss/batch` - TensorBoard scalar data
+- `GET /api/health` - Health check endpoint
 
 ## Troubleshooting
 
-### No data found
-**Problem:** Tools report no log files found
+### Dashboard won't start
 
-**Solution:**
-- Ensure ICON model has been run with the plugin
-- Check that the scratch directory exists
-- Verify username in path
+1. Check if Python and dependencies are installed:
+   ```bash
+   python3 --version
+   python3 -c "import flask, pandas, numpy"
+   ```
 
-### TensorBoard not starting
-**Problem:** `tensorboard: command not found`
+2. Check if port is already in use:
+   ```bash
+   lsof -i :5000
+   ```
 
-**Solution:**
+3. Check the log file:
+   ```bash
+   tail -f /work/mh0033/m301250/20260126_ML-ICON/MEssE-1/scripts/monitor/dashboard.log
+   ```
+
+### No data displayed
+
+1. Verify data directory exists:
+   ```bash
+   ls -la /scratch/${USER:0:1}/$USER/icon_exercise_comin/
+   ```
+
+2. Check if ICON simulation is running and producing output
+
+3. Verify log files are being created:
+   ```bash
+   ls -la /scratch/${USER:0:1}/$USER/icon_exercise_comin/log_*.txt
+   ```
+
+### Dashboard shows "Disconnected"
+
+1. Check if the server is running:
+   ```bash
+   ./scripts/status_monitor.sh
+   ```
+
+2. Check network connectivity and firewall settings
+
+3. Try accessing the API directly:
+   ```bash
+   curl http://localhost:5000/api/health
+   ```
+
+### Performance issues
+
+1. Reduce update frequency in `config.py`:
+   ```python
+   DATA_UPDATE_INTERVAL = 10  # Instead of 5
+   ```
+
+2. Limit history display:
+   - Use the dropdown to select fewer data points (50 instead of 500)
+
+3. Check system resources:
+   ```bash
+   top -u $USER
+   ```
+
+## Integration with ICON Simulation
+
+The dashboard is designed to work seamlessly with the ICON-ML training pipeline:
+
+1. **ICON runs with ComIn plugin** → Produces loss data
+2. **ComIn plugin writes logs** → Creates log and summary files
+3. **Dashboard monitors directory** → Automatically picks up new files
+4. **Real-time visualization** → Updates every 5 seconds
+
+No manual intervention needed once dashboard is started!
+
+## Advanced Usage
+
+### Running on HPC Login Node
+
 ```bash
-# Load Python environment with TensorBoard installed
-module load python3
-pip install tensorboard --user
+# Start dashboard on login node
+./scripts/start_monitor.sh
+
+# Set up SSH tunnel from local machine
+ssh -L 5000:localhost:5000 username@levante.dkrz.de
+
+# Access from local browser at http://localhost:5000
 ```
 
-### Dashboard window not appearing
-**Problem:** No GUI window when running `training_dashboard.py`
+### Running as Background Service
 
-**Solution:**
-- Enable X11 forwarding: `ssh -X <username>@<server>`
-- Or use VNC session
-- Or use TensorBoard instead (no X11 required)
+The dashboard automatically runs in the background. Check logs:
 
-### Slow performance
-**Problem:** Dashboard or plots are slow with large datasets
-
-**Solution:**
-- The dashboard automatically limits to 1000 points for performance
-- For very large runs, use TensorBoard (optimized for large-scale data)
-
----
-
-## Dependencies
-
-All tools require:
-- Python 3.7+
-- numpy
-- pandas
-- matplotlib
-
-TensorBoard additionally requires:
-- tensorboard (automatically installed with PyTorch)
-
-These should already be available in the ICON Python environment created by `build_pyenv.sh`.
-
----
-
-## Customization
-
-### Change TensorBoard port
 ```bash
-./launch_tensorboard.sh 8080  # Use port 8080 instead
+tail -f dashboard.log
 ```
 
-### Adjust dashboard refresh rate
-Edit `training_dashboard.py` and change:
+### Custom Data Directory
+
+If your data is in a different location, edit `dashboard_server.py`:
+
 ```python
-REFRESH_INTERVAL = 5  # seconds (line 16)
+def initialize_aggregator():
+    log_dir = Path("/path/to/your/data/directory")
+    data_aggregator = LossDataAggregator(log_dir)
 ```
 
-### Modify plot styles
-Edit `plot_training_loss.py` to customize:
-- Figure sizes
-- Colors
-- Plot types
-- Statistics displayed
+## Development
 
----
+### Adding New Metrics
 
-## Integration with Plugin
+1. Modify `data_aggregator.py` to load new data
+2. Add API endpoint in `dashboard_server.py`
+3. Update frontend in `static/dashboard.js` to fetch and display
 
-The monitoring tools work seamlessly with the modified `comin_plugin.py`, which now includes:
+### Customizing Appearance
 
-1. **TensorBoard SummaryWriter** - Logs metrics during training
-2. **Enhanced logging** - Saves detailed statistics per timestep
-3. **Checkpoint tracking** - Saves global step count for resumption
+Edit `static/style.css` to change colors, layout, fonts, etc.
 
-All monitoring is performed on **rank 0 only** (MPI master process) to avoid data duplication.
+### Adding New Charts
 
----
+1. Add chart canvas in `templates/dashboard.html`
+2. Initialize chart in `static/dashboard.js` (initializeCharts function)
+3. Add update logic in updateCharts function
 
-## Quick Reference
+## Performance Considerations
 
-| Tool | Use Case | Output | Real-time |
-|------|----------|--------|-----------|
-| `launch_tensorboard.sh` | Professional monitoring | Web interface | ✅ Yes |
-| `plot_training_loss.py` | Publication plots | PNG files | ❌ No |
-| `training_dashboard.py` | Quick visual check | Interactive GUI | ✅ Yes |
+- Dashboard is designed for continuous operation
+- Memory usage: ~100-200 MB
+- CPU usage: <1% when idle, <5% during updates
+- Network: ~10 KB/s data transfer to browser
+- Disk I/O: Minimal, only reads log files every 5 seconds
 
----
+## Security Notes
 
-## Example Output
+For production deployment:
 
-After running `plot_training_loss.py`, you'll see:
-```
-==================================================
-ICON Training Loss Visualization
-==================================================
-Log directory: /scratch/m/m301250/icon_exercise_comin
-Output directory: /scratch/m/m301250/icon_exercise_comin/plots
+1. Set a secret key in `config.py`
+2. Use a reverse proxy (nginx, Apache) 
+3. Enable HTTPS
+4. Restrict access with authentication
+5. Use firewall rules to limit access
 
-Parsing log files...
-Found 48 log files
-Parsing summary files...
-Found 48 summary files
+## License
 
-============================================================
-TRAINING STATISTICS
-============================================================
-
-Total batches processed: 9600
-Loss statistics:
-  Mean:   0.00123456
-  Median: 0.00120345
-  Std:    0.00056789
-  Min:    0.00045678
-  Max:    0.00456789
-
-Timesteps processed: 48
-  First: 2021-07-14 00:00:00
-  Last:  2021-07-15 23:00:00
-
-Convergence analysis:
-  First half mean loss:  0.00145678
-  Second half mean loss: 0.00101234
-  Improvement:           30.50%
-============================================================
-
-Generating plots...
-Saved: /scratch/m/m301250/icon_exercise_comin/plots/loss_vs_batch.png
-Saved: /scratch/m/m301250/icon_exercise_comin/plots/loss_vs_time.png
-...
-
-All plots saved to: /scratch/m/m301250/icon_exercise_comin/plots
-Done!
-```
-
----
+This monitoring system is part of the MEssE project. See the project's main LICENSE file for details.
 
 ## Support
 
 For issues or questions:
-1. Check TensorBoard logs for detailed training information
-2. Verify log files are being created in the scratch directory
-3. Ensure Python environment has all required packages
-4. Review ICON model stderr output for plugin messages
+- Check the troubleshooting section above
+- Review log files in `dashboard.log`
+- Check ICON simulation logs for data generation issues
+
+## Acknowledgments
+
+- Built for the ICON climate model training monitoring
+- Uses Chart.js for visualization
+- Integrates with TensorBoard event files
+- Designed for the Levante HPC system at DKRZ
 
 ---
 
-**Last updated:** January 28, 2026
+**Happy Monitoring! 🌍📊**

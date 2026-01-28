@@ -22,20 +22,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mpi4py import MPI
-from torch.utils.tensorboard import SummaryWriter
+# TensorBoard support (optional - graceful fallback)
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
+    print("Warning: TensorBoard not available. Training will proceed without TensorBoard logging.", file=sys.stderr)
 
 import getpass
 user = getpass.getuser()
 
-import os
-import shutil
-# contruct a new directory path even if it exists
-dir_path = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
-if os.path.exists(dir_path):
-    shutil.rmtree(dir_path)  # Delete the entire directory and its contents
-os.makedirs(dir_path)
-
 torch.manual_seed(0)
+
+# Initialize global variables for training state
+writer = None  # TensorBoard writer (initialized only on rank 0)
+global_step = 0  # Global step counter across all timesteps
+net = None  # Neural network model
+optimizer = None  # Optimizer
+losses = []  # Loss history
 
 # test start
 glob = comin.descrdata_get_global()
@@ -240,14 +245,26 @@ def get_batch_callback():
 
         # Initialize model only at the first timestep
         if current_time_np == start_time_np:
+            # Create output directory (only on rank 0, only at first timestep)
+            import os
+            import shutil
+            dir_path = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
+            if os.path.exists(dir_path):
+                shutil.rmtree(dir_path)  # Delete the entire directory and its contents
+            os.makedirs(dir_path)
+            print(f"Created output directory: {dir_path}", file=sys.stderr)
+            
             net = Net()
             learning_rate = 0.01
             optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
-            # Initialize TensorBoard writer
-            writer = SummaryWriter(log_dir=f"/scratch/{user[0]}/{user}/icon_exercise_comin/runs/experiment_{start_time_np}")
+            # Initialize TensorBoard writer (ONLY on rank 0, ONLY at first timestep)
+            if writer is None and TENSORBOARD_AVAILABLE:
+                writer = SummaryWriter(log_dir=f"/scratch/{user[0]}/{user}/icon_exercise_comin/runs/experiment_{start_time_np}")
+                print(f"TensorBoard writer initialized", file=sys.stderr)
             global_step = 0
             print(f"Model initialized with random weights at {current_time_np}", file=sys.stderr)
-            print(f"TensorBoard logging to: /scratch/{user[0]}/{user}/icon_exercise_comin/runs/experiment_{start_time_np}", file=sys.stderr)
+            if TENSORBOARD_AVAILABLE:
+                print(f"TensorBoard logging to: /scratch/{user[0]}/{user}/icon_exercise_comin/runs/experiment_{start_time_np}", file=sys.stderr)
         else:
             # Load model and optimizer state at subsequent timesteps
             checkpoint = torch.load(f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth")
@@ -257,8 +274,10 @@ def get_batch_callback():
             net.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             global_step = checkpoint.get('global_step', 0)
-            # Reopen TensorBoard writer
-            writer = SummaryWriter(log_dir=f"/scratch/{user[0]}/{user}/icon_exercise_comin/runs/experiment_{start_time_np}")
+            # Initialize TensorBoard writer if it doesn't exist (persist across timesteps)
+            if writer is None and TENSORBOARD_AVAILABLE:
+                writer = SummaryWriter(log_dir=f"/scratch/{user[0]}/{user}/icon_exercise_comin/runs/experiment_{start_time_np}")
+                print(f"TensorBoard writer initialized", file=sys.stderr)
             print(f"Model loaded from checkpoint at {current_time_np}, resuming from step {global_step}", file=sys.stderr)
 
         lossfunc = torch.nn.MSELoss()
@@ -292,9 +311,10 @@ def get_batch_callback():
             # print loss at this point
             print(f"loss: {loss.item()}", file=sys.stderr)
             
-            # Log to TensorBoard
-            writer.add_scalar('Loss/batch', loss.item(), global_step)
-            writer.add_scalar('Timestep/current', current_time_np.value, global_step)
+            # Log to TensorBoard (only if writer is available)
+            if writer is not None:
+                writer.add_scalar('Loss/batch', loss.item(), global_step)
+                writer.add_scalar('Timestep/current', current_time_np.value, global_step)
             global_step += 1
 
         # Calculate and log statistics for this timestep
@@ -303,23 +323,25 @@ def get_batch_callback():
         min_loss = np.min(losses)
         max_loss = np.max(losses)
         
-        writer.add_scalar('Loss/mean_per_timestep', mean_loss, global_step)
-        writer.add_scalar('Loss/std_per_timestep', std_loss, global_step)
-        writer.add_scalar('Loss/min_per_timestep', min_loss, global_step)
-        writer.add_scalar('Loss/max_per_timestep', max_loss, global_step)
-        
-        # Log learning rate
-        for param_group in optimizer.param_groups:
-            writer.add_scalar('Learning_rate', param_group['lr'], global_step)
-        
-        # Log model parameter histograms (every timestep)
-        for name, param in net.named_parameters():
-            writer.add_histogram(f'Parameters/{name}', param.data, global_step)
-            if param.grad is not None:
-                writer.add_histogram(f'Gradients/{name}', param.grad.data, global_step)
-        
-        # Flush writer to ensure data is written
-        writer.flush()
+        # Log to TensorBoard (only if writer is available)
+        if writer is not None:
+            writer.add_scalar('Loss/mean_per_timestep', mean_loss, global_step)
+            writer.add_scalar('Loss/std_per_timestep', std_loss, global_step)
+            writer.add_scalar('Loss/min_per_timestep', min_loss, global_step)
+            writer.add_scalar('Loss/max_per_timestep', max_loss, global_step)
+            
+            # Log learning rate
+            for param_group in optimizer.param_groups:
+                writer.add_scalar('Learning_rate', param_group['lr'], global_step)
+            
+            # Log model parameter histograms (every timestep)
+            for name, param in net.named_parameters():
+                writer.add_histogram(f'Parameters/{name}', param.data, global_step)
+                if param.grad is not None:
+                    writer.add_histogram(f'Gradients/{name}', param.grad.data, global_step)
+            
+            # Flush writer to ensure data is written
+            writer.flush()
         
         print(f"Timestep {current_time_np}: mean_loss={mean_loss:.6f}, std={std_loss:.6f}, min={min_loss:.6f}, max={max_loss:.6f}", file=sys.stderr)
 
@@ -353,3 +375,5 @@ def get_batch_callback():
             f.write(f"Min Loss: {min_loss:.6f}\n")
             f.write(f"Max Loss: {max_loss:.6f}\n")
 
+
+# %%

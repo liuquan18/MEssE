@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ICON ML Training Monitor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.30.0/index.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌍 ICON ML Training Loss Monitor</h1>
+            <div class="status-bar">
+                <span class="status-indicator" id="status-indicator">
+                    <span class="pulse"></span> MONITORING
+                </span>
+                <span id="last-update">Last update: --</span>
+                <span id="connection-status">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Statistics Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Current Loss</div>
+                <div class="stat-value" id="current-loss">--</div>
+                <div class="stat-change" id="loss-change">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Mean Loss</div>
+                <div class="stat-value" id="mean-loss">--</div>
+                <div class="stat-sublabel">Current Timestep</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Timesteps</div>
+                <div class="stat-value" id="total-timesteps">--</div>
+                <div class="stat-sublabel" id="total-batches">-- batches</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Trend</div>
+                <div class="stat-value" id="trend">--</div>
+                <div class="stat-sublabel" id="improvement">--</div>
+            </div>
+        </div>
+
+        <!-- Charts Grid -->
+        <div class="charts-grid">
+            <!-- Loss History Chart -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <h2>Loss History</h2>
+                    <div class="chart-controls">
+                        <select id="history-limit">
+                            <option value="50">Last 50</option>
+                            <option value="100" selected>Last 100</option>
+                            <option value="200">Last 200</option>
+                            <option value="500">Last 500</option>
+                        </select>
+                    </div>
+                </div>
+                <canvas id="lossHistoryChart"></canvas>
+            </div>
+
+            <!-- Loss Distribution Chart -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <h2>Loss Distribution</h2>
+                    <div class="chart-info" id="dist-info">--</div>
+                </div>
+                <canvas id="lossDistributionChart"></canvas>
+            </div>
+
+            <!-- Batch Loss Chart -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <h2>Batch Losses - Current Timestep</h2>
+                    <div class="chart-info" id="batch-info">--</div>
+                </div>
+                <canvas id="batchLossChart"></canvas>
+            </div>
+
+            <!-- Timestep Statistics Chart -->
+            <div class="chart-container">
+                <div class="chart-header">
+                    <h2>Loss Statistics per Timestep</h2>
+                    <div class="chart-info">Mean ± Std Dev</div>
+                </div>
+                <canvas id="timestepStatsChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Detailed Statistics Table -->
+        <div class="details-section">
+            <h2>Detailed Statistics</h2>
+            <div class="stats-table">
+                <table id="stats-table">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stats-tbody">
+                        <tr><td colspan="2">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Log Section -->
+        <div class="log-section">
+            <h2>Activity Log</h2>
+            <div class="log-container" id="log-container">
+                <div class="log-entry">System initialized...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>
