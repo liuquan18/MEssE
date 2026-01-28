@@ -1,4 +1,0 @@
-# Gitlab ICON
-# this folder would be gitignored
-# to git clone the latest ICON from gitlab:
-`git clone git@gitlab.dkrz.de:icon/icon-model.git`

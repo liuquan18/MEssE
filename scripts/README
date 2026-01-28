@@ -1,6 +1,0 @@
-# Location for all scripts
-## bash scripts for building icon and externals    --- build_icon/
-## bash scripts for running icon                   --- run_icon/
-## python script for plugging with ComIn           --- plugin
-
-# Workflow
