@@ -14,3 +14,5 @@ cd $ICON_BUILD_DIR
 cd externals/comin/build && cmake -DCOMIN_ENABLE_EXAMPLES=ON  -DCOMIN_ENABLE_PYTHON_ADAPTER=ON .
 
 cd $ICON_BUILD_DIR/externals/comin/build && make
+
+echo "Setup complete."

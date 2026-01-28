@@ -16,6 +16,8 @@ git submodule update --init --recursive
 
 mkdir -p $BASE_DIR/build/gcc && cd $_ 
 
+# Build ICON in python environment
+source $BASE_DIR/build/messe_env/py_env/bin/activate
 $ICONDIR/config/dkrz/levante.gcc -q --enable-comin --enable-mixed-precision --enable-openmp --enable-bundled-python='mtime','yac','comin'
 
 # make -j4 2>&1 > compile.log
