@@ -4,7 +4,7 @@
 #SBATCH --account=mh0033
 #SBATCH --job-name=hist_b4b6
 #SBATCH --partition=compute
-#SBATCH --chdir=/work/mh1494/m300466/CPP/cold-pacific-puzzle/build_hdint/run
+#SBATCH --chdir=/work/mh0033/m300883/Project_week/MEssE/build/messe_env/build_dir/icon-model/run
 #SBATCH --nodes=40
 #SBATCH --output=LOG.hist_b4b6.%j.o
 #SBATCH --exclusive
@@ -118,7 +118,7 @@ thisdir=$(pwd)
 export basedir="/work/mh0033/m300883/Project_week/MEssE/build/messe_env/build_dir/icon-model"
 export icondata="/pool/data/ICON/releases/2.6.4"
 # experiments_dir can be predefined in a machine specific run_target_* header
-experiments_dir="/work/mh0033/m300883/Project_week/MEssE/experiment/global_run"
+experiments_dir="/work/mh0033/m300883/Project_week/MEssE/experiment/global_run/experiments"
 mkdir -p ${experiments_dir}/${EXPNAME}
 
 #
@@ -477,8 +477,8 @@ icon_data_poolFolder=/pool/data/ICON/grids/public
 atmo_data_InputFolder=${clim_data_poolFolder}/${atmos_gridID}
 #
 #  preliminary Setup dir of Stephan:
-ICONcoupled="/work/mh0287/m211032/Icon/Coupled"
-SetupXPP="${ICONcoupled}/Setup.XPP.202409"   
+ICONcoupled="/work/mh0033/m300883/Project_week/MEssE"
+SetupXPP="${ICONcoupled}/experiment/global_run"   
 
 #--------------------------------------------------------------------------------------------------
 # I. coupling section
