@@ -40,12 +40,10 @@ jg = 1  # set the domain id
 
 ## primary constructor
 # request to register the variable
-temp_descriptor = ("temp", jg)
-sfcwind_descriptor = ("sfcwind", jg)
+# Note: Only register NEW variables that we create (like "log")
+# Do NOT register existing ICON variables (like "temp", "sfcwind") - just read them with var_get
 log_descriptor = ("log", jg)
 
-comin.var_request_add(temp_descriptor, lmodexclusive=False)
-comin.var_request_add(sfcwind_descriptor, lmodexclusive=False)
 comin.var_request_add(log_descriptor, lmodexclusive=False)
 
 
@@ -70,15 +68,15 @@ comin.metadata_set(
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
     global temp, sfcwind, log
+    # Read existing ICON variables directly (no need for descriptors since they're not registered)
     temp = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], temp_descriptor, flag=comin.COMIN_FLAG_READ
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", jg), flag=comin.COMIN_FLAG_READ
     )
     sfcwind = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        sfcwind_descriptor,
-        flag=comin.COMIN_FLAG_READ,
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ
     )
 
+    # Write to our custom registered variable
     log = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         log_descriptor,
