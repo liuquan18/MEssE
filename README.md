@@ -26,7 +26,7 @@ Run ICON with the plugin like so: `./scripts/run_icon.sh $ICON_BUILD_DIR $COMIN_
 ## Online interface
 
 ```bash
-cd $(pwd)/scripts/plugin/monitor
+cd $(pwd)/monitor
 ./start_monitor.sh
 ```
 
