@@ -43,6 +43,6 @@ sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
 /
 }" ${ICON_RUN_SCRIPT}
 
-sbatch --account=$LEVANTE_ACCOUNT $ICON_RUN_SCRIPT
+sbatch --partition=gpu --account=$LEVANTE_ACCOUNT $ICON_RUN_SCRIPT
 
 popd
