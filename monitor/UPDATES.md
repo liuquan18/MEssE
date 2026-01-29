@@ -1,30 +1,38 @@
 # Monitor System Updates
 
 ## Overview
-The monitoring system has been updated to support the enhanced features in the updated `comin_plugin.py`, including:
+The monitoring system has been updated to support the enhanced features in the updated `gnn_trainer_gpu.py`, including:
 
-1. **GNN vs MLP Detection**: Automatically detects whether the simulation is using GNN (Graph Neural Network) or MLP (Multi-Layer Perceptron) models
-2. **Mini-batch Training Metrics**: Tracks batch counts per timestep for mini-batch GNN training
-3. **Enhanced Loss Statistics**: Includes min, max, and average loss values
-4. **Real-time Status Writing**: The plugin now directly writes monitoring status JSON
+1. **GNN Mini-batch Training**: Monitors Graph Neural Network training with spatial batching
+2. **24-Hour Training Delay**: Training begins only after 24 hours of simulation elapsed time
+3. **Smart Checkpoint Management**: Model loads from checkpoint if exists, otherwise initializes with random weights
+4. **Mini-batch Training Metrics**: Tracks batch counts per timestep for mini-batch GNN training
+5. **Enhanced Loss Statistics**: Includes min, max, and average loss values
+6. **Real-time Status Writing**: The plugin now directly writes monitoring status JSON
 
 ## Key Changes
 
-### 1. comin_plugin.py
-- Added `json` and `glob` imports for status file generation
-- Added automatic monitoring status JSON writing after each timestep
+### 1. gnn_trainer_gpu.py
+- Training starts only after 24 hours of simulation elapsed time
+- Model initialization:
+  - First training session: Random weight initialization
+  - Subsequent sessions: Loads from checkpoint
+- Checkpoint logic based on file existence (not timestep)
 - Writes comprehensive status including:
-  - Model type (GNN or MLP)
-  - Number of nodes
-  - Batches per timestep
-  - Training statistics
+  - Model type (GNN Mini-batch)
+  - Training enabled status
+  - Elapsed hours tracking
+  - Number of nodes and batches
+  - Training statistics (avg, min, max loss)
   
 ### 2. generate_status.py
 - Updated to use user-specific scratch directory (works for any user)
 - Enhanced timestamp parsing (supports both old and new formats)
 - Model type detection from checkpoint files
 - Additional metrics:
-  - `model_type`: "GNN (Mini-batch)" or "MLP"
+  - `model_type`: "GNN (Mini-batch)"
+  - `training_enabled`: Boolean indicating if 24-hour threshold passed
+  - `elapsed_hours`: Hours since simulation start
   - `batches_per_timestep`: Number of batches processed per output
   - `max_loss`: Maximum loss value
 - Better error handling
@@ -84,12 +92,14 @@ python generate_status.py
 - Displays elapsed time and output count
 
 ### Training Panel
-- **Model Type**: Displays "GNN (Mini-batch)" or "MLP"
+- **Model Type**: Displays "GNN (Mini-batch)"
+- **Training Status**: Shows if training is enabled (elapsed > 24 hours)
+- **Elapsed Time**: Hours since simulation start
 - **Current Loss**: Latest loss value in scientific notation
 - **Total Batches**: Cumulative batch count
-- **Batches/Timestep**: Number of batches per output timestep (useful for GNN)
+- **Batches/Timestep**: Number of batches per output timestep
 - **Loss Statistics**: Average, minimum, and maximum
-- **Learning Rate**: Shows appropriate LR for the model type (0.001 for GNN, 0.01 for MLP)
+- **Learning Rate**: 0.001 (fixed for GNN)
 - **Interactive Chart**: Real-time loss curve visualization
 
 ## Troubleshooting
