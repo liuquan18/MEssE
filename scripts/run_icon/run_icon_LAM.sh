@@ -23,7 +23,7 @@ cat >> $EXPDIR/NAMELIST_ICON << EOF
  steps_per_file_inclfirst    = .FALSE.
  output_filename             = 'NWP_LAM'
  filename_format             = '<output_filename>_DOM<physdom>_<datetime2>'
- output_grid                 = .FALSE.
+ output_grid                 = .TRUE.
  remap                       = 0                     ! 0: native ICON grid, 1: remap to lat-lon grid
  ml_varlist                  = "RHI_MAX", "QI_MAX"    ! list of variables to be written to the output file
 
