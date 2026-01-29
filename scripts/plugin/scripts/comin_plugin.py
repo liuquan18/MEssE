@@ -196,19 +196,9 @@ def util_gather(data_array: np.ndarray, root=0):
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
-    global net, optimizer, losses, pos_np, use_gnn  # Declare as global to persist
+    global net, optimizer, losses, pos_np  # Declare as global to persist
 
-    RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
-    QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
-
-    # Get cell coordinates (longitude, latitude)
-    cx = np.rad2deg(domain.cells.clon)
-    cx_glb = util_gather(cx)
-    cy = np.rad2deg(domain.cells.clat)
-    cy_glb = util_gather(cy)
-
-    print("data gathered!", file=sys.stderr)
-
+    # Get timing information first to decide if we should proceed
     start_time_obj = comin.descrdata_get_simulation_interval().run_start
     current_time_obj = comin.current_get_datetime()
 
@@ -222,6 +212,35 @@ def get_batch_callback():
     start_time = datetime.fromisoformat(str(start_time_obj))
     current_time = datetime.fromisoformat(str(current_time_obj))
 
+    # Calculate elapsed time and check if more than 2 hours have passed
+    elapsed_time = current_time - start_time
+    elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
+    should_train = elapsed_hours > 2.0  # Only train after 2 hours
+
+    # Check if this is the first timestep
+    is_first_timestep = current_time_str == start_time_str
+
+    # Skip data gathering if not needed (not first timestep and not training time)
+    if not is_first_timestep and not should_train:
+        if rank == 0:
+            print(
+                f"\n⏸ Skipping data gathering and training (elapsed: {elapsed_hours:.2f} hours)",
+                file=sys.stderr,
+            )
+        return
+
+    # Proceed with data gathering
+    RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
+    QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
+
+    # Get cell coordinates (longitude, latitude)
+    cx = np.rad2deg(domain.cells.clon)
+    cx_glb = util_gather(cx)
+    cy = np.rad2deg(domain.cells.clat)
+    cy_glb = util_gather(cy)
+
+    print("data gathered!", file=sys.stderr)
+
     if rank == 0:
 
         # Decide whether to use GNN or MLP based on data size
@@ -231,43 +250,37 @@ def get_batch_callback():
 
         print("number of nodes:", num_nodes, file=sys.stderr)
 
-        use_gnn = num_nodes > 1000  # Use GNN for large datasets (mini-batch)
-
-        # Check if this is the first timestep
-        is_first_timestep = current_time_str == start_time_str
-
-        # Calculate elapsed time and check if more than 1 day has passed
-        elapsed_time = current_time - start_time
-        elapsed_days = elapsed_time.total_seconds() / 86400  # Convert to days
-        should_train = elapsed_days > 1.0  # Only train after 1 day
-
         print(
-            f"Elapsed time: {elapsed_time} ({elapsed_days:.2f} days)", file=sys.stderr
+            f"Elapsed time: {elapsed_time} ({elapsed_hours:.2f} hours)", file=sys.stderr
         )
         print(f"Training enabled: {should_train}", file=sys.stderr)
 
+        # Create scratch directory if it doesn't exist
+        import os
+
+        scratch_dir = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
+        os.makedirs(scratch_dir, exist_ok=True)
+
         # Initialize model only at the first timestep
         if is_first_timestep:
+            print("=" * 60, file=sys.stderr)
+            print("🚀 Initializing Mini-batch GNN model", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
 
-            if use_gnn:
-                print("=" * 60, file=sys.stderr)
-                print("� Initializing Mini-batch GNN model", file=sys.stderr)
-                print("=" * 60, file=sys.stderr)
+            # Store positions for graph construction
+            pos_np = np.column_stack([cx_glb, cy_glb])
 
-                # Store positions for graph construction
-                pos_np = np.column_stack([cx_glb, cy_glb])
+            # Initialize GNN model
+            net = SimpleGNN(
+                in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
+            )
+            learning_rate = 0.001
+            optimizer = torch.optim.Adam(
+                net.parameters(), lr=learning_rate, weight_decay=1e-5
+            )
 
-                # Initialize GNN model
-                net = SimpleGNN(
-                    in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
-                )
-                learning_rate = 0.001
-                optimizer = torch.optim.Adam(
-                    net.parameters(), lr=learning_rate, weight_decay=1e-5
-                )
-
-                print(f"Model: Mini-batch SimpleGNN", file=sys.stderr)
-                print(f"  Nodes: {num_nodes}", file=sys.stderr)
+            print(f"Model: Mini-batch SimpleGNN", file=sys.stderr)
+            print(f"  Nodes: {num_nodes}", file=sys.stderr)
 
             num_params = sum(p.numel() for p in net.parameters())
             print(f"✓ Model initialized at {current_time_str}", file=sys.stderr)
@@ -276,20 +289,24 @@ def get_batch_callback():
 
         else:
             # Load model and optimizer state at subsequent timesteps
-            checkpoint = torch.load(
-                f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_str}.pth"
+            checkpoint_path = f"{scratch_dir}/net_{start_time_str}.pth"
+
+            if not os.path.exists(checkpoint_path):
+                print(
+                    f"Error: Checkpoint not found at {checkpoint_path}", file=sys.stderr
+                )
+                return
+
+            checkpoint = torch.load(checkpoint_path)
+
+            learning_rate = 0.001
+            pos_np = np.column_stack([cx_glb, cy_glb])
+            net = SimpleGNN(
+                in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
             )
-
-            use_gnn = checkpoint.get("use_gnn", False)
-
-            if use_gnn:
-                pos_np = np.column_stack([cx_glb, cy_glb])
-                net = SimpleGNN(
-                    in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
-                )
-                optimizer = torch.optim.Adam(
-                    net.parameters(), lr=0.001, weight_decay=1e-5
-                )
+            optimizer = torch.optim.Adam(
+                net.parameters(), lr=learning_rate, weight_decay=1e-5
+            )
 
             net.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -304,7 +321,7 @@ def get_batch_callback():
         # Mini-batch GNN Training
         # ============================================
 
-        if use_gnn and should_train:
+        if should_train:
             print(f"\n{'='*60}", file=sys.stderr)
             print(f"🚀 Mini-batch GNN Training on {num_nodes} nodes", file=sys.stderr)
             print(f"{'='*60}", file=sys.stderr)
@@ -374,25 +391,25 @@ def get_batch_callback():
             print(f"  Final loss: {losses[-1]:.6e}", file=sys.stderr)
             print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
             print(f"  Total batches processed: {num_batches}", file=sys.stderr)
-        elif use_gnn and not should_train:
+        else:
             print(
-                f"\n⏸ Training skipped (waiting for > 1 day elapsed)", file=sys.stderr
+                f"\n⏸ Training skipped (waiting for > 2 hours elapsed)", file=sys.stderr
             )
             print(f"  Model initialized but not training yet", file=sys.stderr)
 
         # Save checkpoint
-        torch.save(
-            {
-                "model_state_dict": net.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "use_gnn": use_gnn,
-            },
-            f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_str}.pth",
-        )
+        if "net" in locals():
+            torch.save(
+                {
+                    "model_state_dict": net.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                },
+                f"{scratch_dir}/net_{start_time_str}.pth",
+            )
 
         # save log file
         with open(
-            f"/scratch/{user[0]}/{user}/icon_exercise_comin/log_{current_time_str}.txt",
+            f"{scratch_dir}/log_{current_time_str}.txt",
             "w",
         ) as f:
             for item in losses:
@@ -414,20 +431,16 @@ def get_batch_callback():
                         int(n_dom[0]) if hasattr(n_dom, "__len__") else int(n_dom)
                     ),
                     "total_points": num_nodes,
-                    "output_count": len(
-                        glob.glob(
-                            f"/scratch/{user[0]}/{user}/icon_exercise_comin/log_*.txt"
-                        )
-                    ),
+                    "output_count": len(glob.glob(f"{scratch_dir}/log_*.txt")),
                 },
                 "training": {
-                    "model_type": "GNN (Mini-batch)" if use_gnn else "MLP",
+                    "model_type": "GNN (Mini-batch)",
                     "training_enabled": should_train,
-                    "elapsed_days": elapsed_days,
+                    "elapsed_hours": elapsed_hours,
                     "current_loss": float(losses[-1]) if losses else 0.0,
                     "total_batches": len(losses),
                     "batches_per_timestep": len(losses) if losses else 0,
-                    "learning_rate": 0.001 if use_gnn else 0.01,
+                    "learning_rate": 0.001,
                     "avg_loss": float(np.mean(losses)) if losses else 0.0,
                     "min_loss": float(np.min(losses)) if losses else 0.0,
                     "max_loss": float(np.max(losses)) if losses else 0.0,
@@ -435,7 +448,7 @@ def get_batch_callback():
             }
 
             with open(
-                f"/scratch/{user[0]}/{user}/icon_exercise_comin/monitor_status.json",
+                f"{scratch_dir}/monitor_status.json",
                 "w",
             ) as f:
                 json.dump(status_data, f, indent=2)
