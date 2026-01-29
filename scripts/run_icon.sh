@@ -43,6 +43,26 @@ sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
 /
 }" ${ICON_RUN_SCRIPT}
 
-sbatch --account=$LEVANTE_ACCOUNT $ICON_RUN_SCRIPT
+# Fix hardcoded paths in the generated run script
+# Replace old messe_env path with project-relative path
+OLD_PATH="/work/mh1498/m301257/messe_env"
+NEW_PATH="/work/mh1498/m301257/project/MEssE-1/messe_env"
+sed -i "s|${OLD_PATH}|${NEW_PATH}|g" ${ICON_RUN_SCRIPT}
+
+# Create outputs directory if it doesn't exist
+OUTPUTS_DIR="/work/mh1498/m301257/project/MEssE-1/outputs"
+mkdir -p "$OUTPUTS_DIR"
+
+# Adjust experiment runtime to 24 hours (default generated script used 6 hours)
+if [[ -f "${ICON_RUN_SCRIPT}" ]]; then
+    sed -i 's|end_date=${end_date:="1979-01-01T06:00:00Z"}|end_date=${end_date:="1979-01-02T00:00:00Z"}|' ${ICON_RUN_SCRIPT}
+    sed -i 's|restart_interval="PT6H"|restart_interval="PT24H"|' ${ICON_RUN_SCRIPT} || true
+fi
+
+# Submit job with output redirection to outputs directory
+sbatch --account=$LEVANTE_ACCOUNT \
+       --output="${OUTPUTS_DIR}/icon_job_%j.out" \
+       --error="${OUTPUTS_DIR}/icon_job_%j.err" \
+       $ICON_RUN_SCRIPT
 
 popd
