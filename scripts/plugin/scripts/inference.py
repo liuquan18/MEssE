@@ -166,7 +166,7 @@ print(
 # back to xarray data array
 rhi_max_xr = data.isel(time=1)["RHI_MAX"].squeeze()
 qi_max_xr = data.isel(time=1)["QI_MAX"].squeeze() if has_ground_truth else None
-predictions = qi_max_xr.copy(data=predictions)
+predictions = rhi_max_xr.copy(data=predictions)
 
 # %%
 # plot results
@@ -196,7 +196,7 @@ if has_ground_truth:
         levels=20,
         cmap="Reds",
     )
-    axes[1].set_title("Ground Truth: QI_MAX")
+    axes[1].set_title("Simulated: QI_MAX")
     plt.colorbar(im2, ax=axes[1], orientation="vertical", label="QI_MAX (kg/kg)")
 
 # Plot 3: Predictions
@@ -209,7 +209,7 @@ im1 = axes[2 if has_ground_truth else 1].tricontourf(
     levels=20,
     cmap="Reds",
 )
-axes[2 if has_ground_truth else 1].set_title("Predicted: QI_MAX")
+axes[2 if has_ground_truth else 1].set_title("Generated: QI_MAX")
 plt.colorbar(
     im1,
     ax=axes[2 if has_ground_truth else 1],
