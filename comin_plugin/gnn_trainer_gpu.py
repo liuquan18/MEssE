@@ -145,7 +145,7 @@ def get_batch_callback():
     # Calculate elapsed time and check if more than 24 hours have passed
     elapsed_time = current_time - start_time
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
-    should_train = elapsed_hours > 2.0  # Only train after 24 hours
+    should_train = elapsed_hours > 24.0  # Only train after 24 hours
 
     # Skip everything if training time hasn't arrived yet
     if not should_train:
