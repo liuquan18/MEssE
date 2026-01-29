@@ -64,7 +64,7 @@ git_checkout_or_update git@gitlab.dkrz.de:icon/icon-model.git release-2025.10-pu
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
 mkdir -p $ICON_BUILD_DIR
 pushd $ICON_BUILD_DIR
-$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.intel-2021.5.0 ICON_BUNDLED_CFLAGS='-fPIC -O2' -q --enable-comin --enable-mixed-precision --enable-openmp --enable-bundled-python='mtime','yac','comin'
+$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.cpu.nvhpc-24.7 ICON_BUNDLED_CFLAGS='-fPIC -O2' -q --enable-comin --enable-mixed-precision --enable-openmp --enable-bundled-python='mtime','yac','comin'
 make -j $(nproc)
 popd
 
