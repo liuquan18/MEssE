@@ -259,50 +259,6 @@ def build_knn_graph_batch_numpy(pos, batch_nodes, k=6, extended_k=8):
     return batch_edge_index, batch_node_ids
 
 
-def interpolate_to_regular_grid(
-    cx_glb, cy_glb, data_glb, resolution=0.1, method="linear"
-):
-    """
-    Interpolate unstructured ICON grid data to a regular lat-lon grid.
-
-    Parameters:
-    -----------
-    cx_glb : np.ndarray
-        1D array of longitudes (degrees)
-    cy_glb : np.ndarray
-        1D array of latitudes (degrees)
-    data_glb : np.ndarray
-        1D array of data values
-    resolution : float
-        Grid resolution in degrees (default: 0.1)
-    method : str
-        Interpolation method: 'linear', 'nearest', or 'cubic' (default: 'linear')
-
-    Returns:
-    --------
-    lon_grid : np.ndarray
-        2D array of longitudes
-    lat_grid : np.ndarray
-        2D array of latitudes
-    data_grid : np.ndarray
-        2D array of interpolated data
-    """
-    from scipy.interpolate import griddata
-
-    # Define regular grid
-    lon_min, lon_max = cx_glb.min(), cx_glb.max()
-    lat_min, lat_max = cy_glb.min(), cy_glb.max()
-
-    lon_1d = np.arange(lon_min, lon_max, resolution)
-    lat_1d = np.arange(lat_min, lat_max, resolution)
-    lon_grid, lat_grid = np.meshgrid(lon_1d, lat_1d)
-
-    # Interpolate
-    points = np.column_stack((cx_glb, cy_glb))
-    data_grid = griddata(points, data_glb, (lon_grid, lat_grid), method=method)
-
-    return lon_grid, lat_grid, data_grid
-
 
 # Simple Graph Neural Network using only PyTorch (no PyG dependency)
 class SimpleGNN(nn.Module):
@@ -406,21 +362,6 @@ class SimpleGNN(nn.Module):
         return x
 
 
-class Net(nn.Module):
-    def __init__(self, n_inputs=30, n_outputs=30, n_hidden=32):
-        super(Net, self).__init__()
-
-        self.fc1 = nn.Linear(n_inputs, n_hidden)  # 5*5 from image dimension
-        self.fc2 = nn.Linear(n_hidden, n_hidden)
-        self.fc3 = nn.Linear(n_hidden, n_outputs)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
     global net, optimizer, losses, pos_np, use_gnn  # Declare as global to persist
@@ -481,11 +422,6 @@ def get_batch_callback():
                 print(f"Model: Mini-batch SimpleGNN", file=sys.stderr)
                 print(f"  Nodes: {num_nodes}", file=sys.stderr)
 
-            else:
-                print("Initializing MLP model", file=sys.stderr)
-                net = Net(n_inputs=30, n_outputs=30, n_hidden=32)
-                learning_rate = 0.01
-                optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
 
             num_params = sum(p.numel() for p in net.parameters())
             print(f"✓ Model initialized at {current_time_str}", file=sys.stderr)
@@ -508,9 +444,6 @@ def get_batch_callback():
                 optimizer = torch.optim.Adam(
                     net.parameters(), lr=0.001, weight_decay=1e-5
                 )
-            else:
-                net = Net()
-                optimizer = torch.optim.SGD(net.parameters(), lr=0.01)
 
             net.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -596,49 +529,6 @@ def get_batch_callback():
             print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
             print(f"  Total batches processed: {num_batches}", file=sys.stderr)
 
-        else:
-            # ============================================
-            # MLP Training: Batch processing
-            # ============================================
-            B = 5  # batch size
-            C = 1  # channel
-            H = 30  # height
-
-            one_batch_size = B * C * H
-            total_size = RHI_MAX_np_glb.shape[0]
-            num_batches = total_size // one_batch_size
-
-            print(f"MLP Training: {num_batches} batches", file=sys.stderr)
-
-            for i in range(num_batches):
-                x_batch_np = RHI_MAX_np_glb[
-                    i * one_batch_size : (i + 1) * one_batch_size
-                ]
-                y_batch_np = QI_MAX_np_glb[
-                    i * one_batch_size : (i + 1) * one_batch_size
-                ]
-
-                # reshape
-                x_batch_np = x_batch_np.reshape(B, C, H)
-                y_batch_np = y_batch_np.reshape(B, C, H)
-
-                # to tensor
-                x_batch = torch.FloatTensor(x_batch_np)
-                y_batch = torch.FloatTensor(y_batch_np)
-
-                # train
-                optimizer.zero_grad()
-                y_hat = net(x_batch)
-                loss = lossfunc(y_hat, y_batch)
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-                if i % 50 == 0:
-                    print(
-                        f"  Batch {i+1}/{num_batches}: Loss = {loss.item():.6e}",
-                        file=sys.stderr,
-                    )
 
         # Save checkpoint
         torch.save(
