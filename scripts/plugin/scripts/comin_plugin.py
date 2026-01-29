@@ -229,13 +229,15 @@ def get_batch_callback():
 
         # Check if this is the first timestep
         is_first_timestep = current_time_str == start_time_str
-        
+
         # Calculate elapsed time and check if more than 1 day has passed
         elapsed_time = current_time - start_time
         elapsed_days = elapsed_time.total_seconds() / 86400  # Convert to days
         should_train = elapsed_days > 1.0  # Only train after 1 day
-        
-        print(f"Elapsed time: {elapsed_time} ({elapsed_days:.2f} days)", file=sys.stderr)
+
+        print(
+            f"Elapsed time: {elapsed_time} ({elapsed_days:.2f} days)", file=sys.stderr
+        )
         print(f"Training enabled: {should_train}", file=sys.stderr)
 
         # Initialize model only at the first timestep
@@ -367,7 +369,9 @@ def get_batch_callback():
             print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
             print(f"  Total batches processed: {num_batches}", file=sys.stderr)
         elif use_gnn and not should_train:
-            print(f"\n⏸ Training skipped (waiting for > 1 day elapsed)", file=sys.stderr)
+            print(
+                f"\n⏸ Training skipped (waiting for > 1 day elapsed)", file=sys.stderr
+            )
             print(f"  Model initialized but not training yet", file=sys.stderr)
 
         # Save checkpoint
@@ -409,11 +413,11 @@ def get_batch_callback():
                             f"/scratch/{user[0]}/{user}/icon_exercise_comin/log_*.txt"
                         )
                     ),
-                },training_enabled": should_train,
-                    "elapsed_days": elapsed_days,
-                    "
+                },
                 "training": {
                     "model_type": "GNN (Mini-batch)" if use_gnn else "MLP",
+                    "training_enabled": should_train,
+                    "elapsed_days": elapsed_days,
                     "current_loss": float(losses[-1]) if losses else 0.0,
                     "total_batches": len(losses),
                     "batches_per_timestep": len(losses) if losses else 0,
