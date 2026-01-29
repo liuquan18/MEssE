@@ -21,6 +21,10 @@ from mpi4py import MPI
 
 import getpass
 
+# Import model and utilities
+from gnn_model import SimpleGNN
+from utils import build_knn_graph_batch_numpy
+
 user = getpass.getuser()
 torch.manual_seed(0)
 
@@ -186,180 +190,7 @@ def util_gather(data_array: np.ndarray, root=0):
         return None
 
 
-def build_knn_graph_batch_numpy(pos, batch_nodes, k=6, extended_k=8):
-    """
-    Build k-NN graph for a batch of nodes with their neighbors (mini-batch strategy).
-
-    Strategy:
-    1. Select batch nodes
-    2. Find extended neighbors to avoid boundary issues
-    3. Build edges within extended node set
-
-    Parameters:
-    -----------
-    pos : np.ndarray
-        All node positions [num_nodes, 2]
-    batch_nodes : np.ndarray or range
-        Indices of nodes in current batch
-    k : int
-        Number of nearest neighbors
-    extended_k : int
-        Extended neighbors for context (default: k+2)
-
-    Returns:
-    --------
-    batch_edge_index : np.ndarray
-        Edge indices relative to batch [2, num_edges]
-    batch_node_ids : np.ndarray
-        Global node IDs in batch (batch + neighbors)
-    """
-    batch_nodes = np.array(batch_nodes)
-    num_all_nodes = pos.shape[0]
-
-    # Find extended neighbors for batch nodes
-    extended_nodes_set = set(batch_nodes)
-
-    for node_id in batch_nodes:
-        # Compute distances from this node to all others
-        dists = np.sum((pos - pos[node_id : node_id + 1]) ** 2, axis=1)
-        # Find k+extended_k nearest neighbors
-        nearest = np.argpartition(dists, min(extended_k + 1, num_all_nodes))[
-            : extended_k + 1
-        ]
-        extended_nodes_set.update(nearest[nearest != node_id])
-
-    # Convert to sorted array
-    batch_node_ids = np.array(sorted(extended_nodes_set))
-    num_batch_nodes = len(batch_node_ids)
-
-    # Build mapping from global ID to local batch ID
-    global_to_local = {gid: lid for lid, gid in enumerate(batch_node_ids)}
-
-    # Build k-NN edges within extended batch
-    pos_batch = pos[batch_node_ids]
-    edges_list = []
-
-    for local_i, global_i in enumerate(batch_node_ids):
-        # Compute distances within batch
-        dists = np.sum((pos_batch - pos_batch[local_i : local_i + 1]) ** 2, axis=1)
-        # Find k nearest neighbors
-        nearest_local = np.argpartition(dists, min(k + 1, num_batch_nodes))[
-            : min(k + 1, num_batch_nodes)
-        ]
-        nearest_local = nearest_local[nearest_local != local_i][:k]
-
-        # Add edges
-        for local_j in nearest_local:
-            edges_list.append([local_i, local_j])
-
-    batch_edge_index = (
-        np.array(edges_list).T if edges_list else np.zeros((2, 0), dtype=np.int64)
-    )
-
-    return batch_edge_index, batch_node_ids
-
-
-
-# Simple Graph Neural Network using only PyTorch (no PyG dependency)
-class SimpleGNN(nn.Module):
-    """
-    Lightweight Graph Neural Network using pure PyTorch.
-    Implements message passing manually without PyTorch Geometric.
-    """
-
-    def __init__(self, in_channels=1, hidden_channels=32, out_channels=1, num_layers=3):
-        super(SimpleGNN, self).__init__()
-
-        self.num_layers = num_layers
-
-        # Node transformation layers
-        self.node_mlps = nn.ModuleList()
-        self.node_mlps.append(nn.Linear(in_channels, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.node_mlps.append(nn.Linear(hidden_channels, hidden_channels))
-        self.node_mlps.append(nn.Linear(hidden_channels, out_channels))
-
-        # Message passing layers (aggregate neighbor information)
-        self.message_mlps = nn.ModuleList()
-        for _ in range(num_layers - 1):
-            self.message_mlps.append(nn.Linear(hidden_channels * 2, hidden_channels))
-
-        self.dropout = nn.Dropout(0.1)
-
-    def message_passing(self, x, edge_index, message_mlp):
-        """
-        Perform one round of message passing.
-
-        Parameters:
-        -----------
-        x : torch.Tensor [num_nodes, features]
-        edge_index : torch.Tensor [2, num_edges]
-        message_mlp : nn.Module
-
-        Returns:
-        --------
-        aggregated : torch.Tensor [num_nodes, features]
-        """
-        src, dst = edge_index[0], edge_index[1]
-
-        # Gather neighbor features
-        src_features = x[src]  # [num_edges, features]
-        dst_features = x[dst]  # [num_edges, features]
-
-        # Concatenate source and destination features
-        messages = torch.cat(
-            [src_features, dst_features], dim=1
-        )  # [num_edges, 2*features]
-
-        # Transform messages
-        messages = message_mlp(messages)  # [num_edges, features]
-
-        # Aggregate messages for each node (sum aggregation)
-        num_nodes = x.shape[0]
-        aggregated = torch.zeros(num_nodes, messages.shape[1], device=x.device)
-        aggregated.index_add_(0, dst, messages)
-
-        # Normalize by number of neighbors (optional)
-        degree = torch.zeros(num_nodes, device=x.device)
-        degree.index_add_(0, dst, torch.ones_like(dst, dtype=torch.float))
-        degree = degree.clamp(min=1).unsqueeze(1)
-        aggregated = aggregated / degree
-
-        return aggregated
-
-    def forward(self, x, edge_index):
-        """
-        Forward pass through GNN.
-
-        Parameters:
-        -----------
-        x : torch.Tensor [num_nodes, in_channels]
-        edge_index : torch.Tensor [2, num_edges]
-
-        Returns:
-        --------
-        x : torch.Tensor [num_nodes, out_channels]
-        """
-        # First layer: node transformation
-        x = self.node_mlps[0](x)
-        x = F.relu(x)
-        x = self.dropout(x)
-
-        # Middle layers: message passing + node update
-        for i in range(self.num_layers - 2):
-            # Message passing
-            messages = self.message_passing(x, edge_index, self.message_mlps[i])
-
-            # Update node features (residual connection)
-            x = x + messages
-            x = self.node_mlps[i + 1](x)
-            x = F.relu(x)
-            x = self.dropout(x)
-
-        # Output layer
-        x = self.node_mlps[-1](x)
-
-        return x
+# Model and utilities are now imported from separate files
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
@@ -421,7 +252,6 @@ def get_batch_callback():
 
                 print(f"Model: Mini-batch SimpleGNN", file=sys.stderr)
                 print(f"  Nodes: {num_nodes}", file=sys.stderr)
-
 
             num_params = sum(p.numel() for p in net.parameters())
             print(f"✓ Model initialized at {current_time_str}", file=sys.stderr)
@@ -528,7 +358,6 @@ def get_batch_callback():
             print(f"  Final loss: {losses[-1]:.6e}", file=sys.stderr)
             print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
             print(f"  Total batches processed: {num_batches}", file=sys.stderr)
-
 
         # Save checkpoint
         torch.save(
