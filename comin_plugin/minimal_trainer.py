@@ -132,6 +132,32 @@ def get_batch_callback():
         # number of batches
         num_batches = total_size // one_batch_size
 
+        # Validate input data for NaN/Inf
+        if np.any(~np.isfinite(sfcwind_np_glb)) or np.any(~np.isfinite(tas_np_glb)):
+            print("ERROR: Input data contains NaN or Inf values!", file=sys.stderr)
+            print(f"  sfcwind_np_glb finite: {np.isfinite(sfcwind_np_glb).all()}", file=sys.stderr)
+            print(f"  tas_np_glb finite: {np.isfinite(tas_np_glb).all()}", file=sys.stderr)
+            return
+        
+        # ============================================
+        # Data Normalization (Critical for stability!)
+        # ============================================
+        # Compute statistics for normalization
+        x_mean, x_std = sfcwind_np_glb.mean(), sfcwind_np_glb.std()
+        y_mean, y_std = tas_np_glb.mean(), tas_np_glb.std()
+        
+        # Avoid division by zero
+        x_std = max(x_std, 1e-6)
+        y_std = max(y_std, 1e-6)
+        
+        # Normalize data
+        sfcwind_normalized = (sfcwind_np_glb - x_mean) / x_std
+        tas_normalized = (tas_np_glb - y_mean) / y_std
+        
+        print(f"Data statistics:", file=sys.stderr)
+        print(f"  sfcwind: mean={x_mean:.6f}, std={x_std:.6f}, range=[{sfcwind_np_glb.min():.6f}, {sfcwind_np_glb.max():.6f}]", file=sys.stderr)
+        print(f"  tas:     mean={y_mean:.6f}, std={y_std:.6f}, range=[{tas_np_glb.min():.6f}, {tas_np_glb.max():.6f}]", file=sys.stderr)
+        
         # Initialize model only at the first timestep
         if current_time_np == start_time_np:
             net = Net()
@@ -145,15 +171,20 @@ def get_batch_callback():
                 net = Net()
                 optimizer = torch.optim.SGD(net.parameters(), lr=0.01)
             net.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            # DO NOT load optimizer state - reset to avoid gradient explosion
+            # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             print(f"Model loaded from checkpoint at {current_time_np}", file=sys.stderr)
+            print(f"  Optimizer reset to avoid gradient explosion", file=sys.stderr)
 
         lossfunc = torch.nn.MSELoss()
         losses = []
+        
+        # Set model to training mode
+        net.train()
 
         for i in range(num_batches):
-            x_batch_np = sfcwind_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
-            y_batch_np = tas_np_glb[i * one_batch_size : (i + 1) * one_batch_size]
+            x_batch_np = sfcwind_normalized[i * one_batch_size : (i + 1) * one_batch_size]
+            y_batch_np = tas_normalized[i * one_batch_size : (i + 1) * one_batch_size]
 
             # reshape
             x_batch_np = x_batch_np.reshape(B, C, H)
@@ -169,8 +200,16 @@ def get_batch_callback():
             y_hat = net(x_batch)
 
             loss = lossfunc(y_hat, y_batch)
+            
+            # Check for NaN/Inf before backward pass
+            if not torch.isfinite(loss):
+                print(f"  WARNING: Loss is {loss.item()}, skipping batch {i}", file=sys.stderr)
+                continue
 
             loss.backward()
+            
+            # Gradient clipping to prevent explosion
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
 
             optimizer.step()
 
