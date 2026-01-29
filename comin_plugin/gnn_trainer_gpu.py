@@ -145,13 +145,13 @@ def get_batch_callback():
     # Calculate elapsed time and check if more than 24 hours have passed
     elapsed_time = current_time - start_time
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
-    should_train = elapsed_hours > 24.0  # Only train after 24 hours
+    should_train = elapsed_hours > 2.0  # Only train after 24 hours
 
     # Skip everything if training time hasn't arrived yet
     if not should_train:
         if rank == 0:
             print(
-                f"\n⏸ Waiting for training time (elapsed: {elapsed_hours:.2f}/24.0 hours)",
+                f"\n⏸ Waiting for training time (elapsed: {elapsed_hours:.2f}/2.0 hours)",
                 file=sys.stderr,
             )
         return
@@ -174,8 +174,6 @@ def get_batch_callback():
         print("shape of temp_np_glb:", temp_np_glb.shape, file=sys.stderr)
 
         num_nodes = len(temp_np_glb)
-
-        print("number of nodes:", num_nodes, file=sys.stderr)
 
         print(
             f"Elapsed time: {elapsed_time} ({elapsed_hours:.2f} hours)", file=sys.stderr
@@ -259,7 +257,7 @@ def get_batch_callback():
         y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
 
         # Mini-batch configuration
-        batch_size = 5000  # Process 5000 nodes per batch
+        batch_size = 2000  # Process 2000 nodes per batch
         num_batches = (num_nodes + batch_size - 1) // batch_size
 
         print(f"Configuration:", file=sys.stderr)
