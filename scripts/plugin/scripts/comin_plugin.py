@@ -11,6 +11,7 @@ import numpy as np
 import numpy.ma as ma
 import json
 import glob
+from datetime import datetime
 
 # %%
 import torch
@@ -208,13 +209,18 @@ def get_batch_callback():
 
     print("data gathered!", file=sys.stderr)
 
-    start_time = comin.descrdata_get_simulation_interval().run_start
-    start_time_str = (
-        str(start_time).replace(" ", "_").replace(":", "-")
-    )  # Safe filename
+    start_time_obj = comin.descrdata_get_simulation_interval().run_start
+    current_time_obj = comin.current_get_datetime()
 
-    current_time = comin.current_get_datetime()
-    current_time_str = str(current_time).replace(" ", "_").replace(":", "-")
+    # Convert to strings for filenames
+    start_time_str = (
+        str(start_time_obj).replace(" ", "_").replace(":", "-")
+    )  # Safe filename
+    current_time_str = str(current_time_obj).replace(" ", "_").replace(":", "-")
+
+    # Convert to datetime objects for calculations
+    start_time = datetime.fromisoformat(str(start_time_obj))
+    current_time = datetime.fromisoformat(str(current_time_obj))
 
     if rank == 0:
 
