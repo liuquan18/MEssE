@@ -40,12 +40,12 @@ jg = 1  # set the domain id
 
 ## primary constructor
 # request to register the variable
-RHI_MAX_descriptor = ("RHI_MAX", jg)
-QI_MAX_descriptor = ("QI_MAX", jg)
+temp_descriptor = ("temp", jg)
+sfcwind_descriptor = ("sfcwind", jg)
 log_descriptor = ("log", jg)
 
-comin.var_request_add(RHI_MAX_descriptor, lmodexclusive=False)
-comin.var_request_add(QI_MAX_descriptor, lmodexclusive=False)
+comin.var_request_add(temp_descriptor, lmodexclusive=False)
+comin.var_request_add(sfcwind_descriptor, lmodexclusive=False)
 comin.var_request_add(log_descriptor, lmodexclusive=False)
 
 
@@ -59,20 +59,6 @@ print("number of cells:", nc, file=sys.stderr)
 
 # Set metadata
 comin.metadata_set(
-    RHI_MAX_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_2D,
-    long_name="Maximum relative humidity over ice",
-    units="%",
-)
-
-comin.metadata_set(
-    QI_MAX_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_2D,
-    long_name="Maximum cloud ice content",
-    units="kg/kg",
-)
-
-comin.metadata_set(
     log_descriptor,
     zaxis_id=comin.COMIN_ZAXIS_2D,
     long_name="Log file",
@@ -83,16 +69,14 @@ comin.metadata_set(
 ## secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
-    global RHI_MAX, QI_MAX, temp, qv, exner, qi, log
-    RHI_MAX = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        RHI_MAX_descriptor,
-        flag=comin.COMIN_FLAG_WRITE,
+    global temp, sfcwind, log
+    temp = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], temp_descriptor, flag=comin.COMIN_FLAG_READ
     )
-    QI_MAX = comin.var_get(
+    sfcwind = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        QI_MAX_descriptor,
-        flag=comin.COMIN_FLAG_WRITE,
+        sfcwind_descriptor,
+        flag=comin.COMIN_FLAG_READ,
     )
 
     log = comin.var_get(
@@ -100,58 +84,6 @@ def simple_python_constructor():
         log_descriptor,
         flag=comin.COMIN_FLAG_WRITE,
     )
-
-    temp = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", jg), flag=comin.COMIN_FLAG_READ
-    )
-    qv = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("qv", jg), flag=comin.COMIN_FLAG_READ
-    )
-    exner = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("exner", jg), flag=comin.COMIN_FLAG_READ
-    )
-    qi = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("qi", jg), flag=comin.COMIN_FLAG_READ
-    )
-
-
-## help function
-# help function to calculate RHI_MAX and QI_MAX
-def rhi(temp, qv, p_ex):
-    import numpy as np
-
-    rdv = (rd := 287.04) / (rv := 461.51)
-    pres = (p0ref := 100000) * np.exp(((cpd := 1004.64) / rd) * np.ma.log(p_ex))
-    e_s = 610.78 * np.ma.exp(21.875 * (temp - 273.15) / (temp - 7.66))
-    e = pres * qv / (rdv + (1.0 - (rd / rv)) * qv)
-    return 100.0 * e / e_s
-
-
-## callback function
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_AFTER)
-def calculate_rhi_qi():
-    # print("simple_python_callbackfct called!", file=sys.stderr)
-
-    # create mask
-    mask2d = domain_np != 0
-    mask3d = np.repeat(mask2d[:, None, :], domain.nlev, axis=1)
-
-    # apply mask to temp, qv, exner, qi
-    temp_np = ma.masked_array(np.squeeze(temp), mask=mask3d)
-    qv_np = ma.masked_array(np.squeeze(qv), mask=mask3d)
-    exner_np = ma.masked_array(np.squeeze(exner), mask=mask3d)
-    qi_np = ma.masked_array(np.squeeze(qi), mask=mask3d)
-
-    # calculate RHI_MAX
-    RHI_MAX_np = np.squeeze(RHI_MAX)
-    RHI_MAX_3d = rhi(temp_np, qv_np, exner_np)
-    RHI_MAX_np[:, :] = np.max(RHI_MAX_3d, axis=1)
-    # print("RHI_MAX_np shape", RHI_MAX_np.shape, file=sys.stderr)
-
-    # calculate QI_MAX
-    QI_MAX_np = np.squeeze(QI_MAX)
-    QI_MAX_np[:, :] = np.max(qi_np, axis=1)
-    # print("QI_MAX_np shape", QI_MAX_np.shape, file=sys.stderr)  # (8, 16)
 
 
 # help function to collect the data from all processes
@@ -230,8 +162,8 @@ def get_batch_callback():
         return
 
     # Proceed with data gathering
-    RHI_MAX_np_glb = util_gather(np.asarray(RHI_MAX))
-    QI_MAX_np_glb = util_gather(np.asarray(QI_MAX))
+    temp_np_glb = util_gather(np.asarray(temp))
+    sfcwind_np_glb = util_gather(np.asarray(sfcwind))
 
     # Get cell coordinates (longitude, latitude)
     cx = np.rad2deg(domain.cells.clon)
@@ -244,9 +176,9 @@ def get_batch_callback():
     if rank == 0:
 
         # Decide whether to use GNN or MLP based on data size
-        print("shape of RHI_MAX_np_glb:", RHI_MAX_np_glb.shape, file=sys.stderr)
+        print("shape of temp_np_glb:", temp_np_glb.shape, file=sys.stderr)
 
-        num_nodes = len(RHI_MAX_np_glb)
+        num_nodes = len(temp_np_glb)
 
         print("number of nodes:", num_nodes, file=sys.stderr)
 
@@ -327,8 +259,8 @@ def get_batch_callback():
             print(f"{'='*60}", file=sys.stderr)
 
             # Prepare full data
-            x_full = torch.FloatTensor(RHI_MAX_np_glb).unsqueeze(1)  # [num_nodes, 1]
-            y_full = torch.FloatTensor(QI_MAX_np_glb).unsqueeze(1)  # [num_nodes, 1]
+            x_full = torch.FloatTensor(temp_np_glb).unsqueeze(1)  # [num_nodes, 1]
+            y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
 
             # Mini-batch configuration
             batch_size = 5000  # Process 5000 nodes per batch
