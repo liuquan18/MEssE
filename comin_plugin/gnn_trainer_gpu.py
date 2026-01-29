@@ -145,7 +145,7 @@ def get_batch_callback():
     # Calculate elapsed time and check if more than 2 hours have passed
     elapsed_time = current_time - start_time
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
-    should_train = elapsed_hours > 2.0  # Only train after 2 hours
+    should_train = elapsed_hours > 24.0  # Only train after 2 hours
 
     # Check if this is the first timestep
     is_first_timestep = current_time_str == start_time_str
@@ -158,6 +158,8 @@ def get_batch_callback():
                 file=sys.stderr,
             )
         return
+    
+
 
     # Proceed with data gathering
     temp_np_glb = util_gather(np.asarray(temp))
@@ -191,14 +193,40 @@ def get_batch_callback():
         scratch_dir = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
         os.makedirs(scratch_dir, exist_ok=True)
 
-        # Initialize model only at the first timestep
-        if is_first_timestep:
+        # Store positions for graph construction
+        pos_np = np.column_stack([cx_glb, cy_glb])
+
+        # Check if checkpoint exists to decide whether to initialize or load
+        checkpoint_path = f"{scratch_dir}/net_{start_time_str}.pth"
+
+        if os.path.exists(checkpoint_path):
+            # Load existing model from checkpoint
             print("=" * 60, file=sys.stderr)
-            print("🚀 Initializing Mini-batch GNN model", file=sys.stderr)
+            print("📂 Loading model from checkpoint", file=sys.stderr)
             print("=" * 60, file=sys.stderr)
 
-            # Store positions for graph construction
-            pos_np = np.column_stack([cx_glb, cy_glb])
+            checkpoint = torch.load(checkpoint_path)
+
+            net = SimpleGNN(
+                in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
+            )
+            learning_rate = 0.001
+            optimizer = torch.optim.Adam(
+                net.parameters(), lr=learning_rate, weight_decay=1e-5
+            )
+
+            net.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+            print(
+                f"✓ Model loaded from checkpoint at {current_time_str}", file=sys.stderr
+            )
+            print(f"  Checkpoint: {checkpoint_path}", file=sys.stderr)
+        else:
+            # Initialize new model with random weights
+            print("=" * 60, file=sys.stderr)
+            print("🚀 Initializing new Mini-batch GNN model", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
 
             # Initialize GNN model
             net = SimpleGNN(
@@ -213,36 +241,12 @@ def get_batch_callback():
             print(f"  Nodes: {num_nodes}", file=sys.stderr)
 
             num_params = sum(p.numel() for p in net.parameters())
-            print(f"✓ Model initialized at {current_time_str}", file=sys.stderr)
+            print(
+                f"✓ Model initialized with random weights at {current_time_str}",
+                file=sys.stderr,
+            )
             print(f"  Parameters: {num_params:,}", file=sys.stderr)
             print(f"  Learning rate: {learning_rate}", file=sys.stderr)
-
-        else:
-            # Load model and optimizer state at subsequent timesteps
-            checkpoint_path = f"{scratch_dir}/net_{start_time_str}.pth"
-
-            if not os.path.exists(checkpoint_path):
-                print(
-                    f"Error: Checkpoint not found at {checkpoint_path}", file=sys.stderr
-                )
-                return
-
-            checkpoint = torch.load(checkpoint_path)
-
-            learning_rate = 0.001
-            pos_np = np.column_stack([cx_glb, cy_glb])
-            net = SimpleGNN(
-                in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
-            )
-            optimizer = torch.optim.Adam(
-                net.parameters(), lr=learning_rate, weight_decay=1e-5
-            )
-
-            net.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            print(
-                f"✓ Model loaded from checkpoint at {current_time_str}", file=sys.stderr
-            )
 
         lossfunc = torch.nn.MSELoss()
         losses = []
