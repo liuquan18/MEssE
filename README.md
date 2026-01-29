@@ -4,6 +4,7 @@
 ```bash
 .
 ├── comin_plugin                # python scripts used as comin plugin
+├── monitors                    # monitoring scripts for online interface
 └── scripts                     # scripts 
     ├── build_env.sh            # script for building ICON, ComIn, YAC and preparing python env
     └── run_icon                # script for running ICON
