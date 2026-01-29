@@ -142,26 +142,21 @@ def get_batch_callback():
     start_time = datetime.fromisoformat(str(start_time_obj))
     current_time = datetime.fromisoformat(str(current_time_obj))
 
-    # Calculate elapsed time and check if more than 2 hours have passed
+    # Calculate elapsed time and check if more than 24 hours have passed
     elapsed_time = current_time - start_time
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
-    should_train = elapsed_hours > 24.0  # Only train after 2 hours
+    should_train = elapsed_hours > 24.0  # Only train after 24 hours
 
-    # Check if this is the first timestep
-    is_first_timestep = current_time_str == start_time_str
-
-    # Skip data gathering if not needed (not first timestep and not training time)
-    if not is_first_timestep and not should_train:
+    # Skip everything if training time hasn't arrived yet
+    if not should_train:
         if rank == 0:
             print(
-                f"\n⏸ Skipping data gathering and training (elapsed: {elapsed_hours:.2f} hours)",
+                f"\n⏸ Waiting for training time (elapsed: {elapsed_hours:.2f}/24.0 hours)",
                 file=sys.stderr,
             )
         return
-    
 
-
-    # Proceed with data gathering
+    # Proceed with data gathering (only when training time has arrived)
     temp_np_glb = util_gather(np.asarray(temp))
     sfcwind_np_glb = util_gather(np.asarray(sfcwind))
 
@@ -252,86 +247,78 @@ def get_batch_callback():
         losses = []
 
         # ============================================
-        # Mini-batch GNN Training
+        # Mini-batch GNN Training (always runs when we reach here, since should_train=True)
         # ============================================
 
-        if should_train:
-            print(f"\n{'='*60}", file=sys.stderr)
-            print(f"🚀 Mini-batch GNN Training on {num_nodes} nodes", file=sys.stderr)
-            print(f"{'='*60}", file=sys.stderr)
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"🚀 Mini-batch GNN Training on {num_nodes} nodes", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
 
-            # Prepare full data
-            x_full = torch.FloatTensor(temp_np_glb).unsqueeze(1)  # [num_nodes, 1]
-            y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
+        # Prepare full data
+        x_full = torch.FloatTensor(temp_np_glb).unsqueeze(1)  # [num_nodes, 1]
+        y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
 
-            # Mini-batch configuration
-            batch_size = 5000  # Process 5000 nodes per batch
-            num_batches = (num_nodes + batch_size - 1) // batch_size
+        # Mini-batch configuration
+        batch_size = 5000  # Process 5000 nodes per batch
+        num_batches = (num_nodes + batch_size - 1) // batch_size
 
-            print(f"Configuration:", file=sys.stderr)
-            print(f"  Batch size: {batch_size} nodes/batch", file=sys.stderr)
-            print(f"  Num batches: {num_batches}", file=sys.stderr)
+        print(f"Configuration:", file=sys.stderr)
+        print(f"  Batch size: {batch_size} nodes/batch", file=sys.stderr)
+        print(f"  Num batches: {num_batches}", file=sys.stderr)
+        print(f"  Strategy: Spatial blocks with extended neighbors", file=sys.stderr)
+
+        # Train on each batch
+        for batch_idx in range(num_batches):
+            start_node = batch_idx * batch_size
+            end_node = min(start_node + batch_size, num_nodes)
+            batch_node_range = range(start_node, end_node)
+
             print(
-                f"  Strategy: Spatial blocks with extended neighbors", file=sys.stderr
+                f"\n  📦 Batch {batch_idx+1}/{num_batches}: nodes [{start_node}:{end_node}]",
+                file=sys.stderr,
             )
 
-            # Train on each batch
-            for batch_idx in range(num_batches):
-                start_node = batch_idx * batch_size
-                end_node = min(start_node + batch_size, num_nodes)
-                batch_node_range = range(start_node, end_node)
-
-                print(
-                    f"\n  📦 Batch {batch_idx+1}/{num_batches}: nodes [{start_node}:{end_node}]",
-                    file=sys.stderr,
-                )
-
-                # Build subgraph for this batch
-                batch_edge_index_np, batch_node_ids = build_knn_graph_batch_numpy(
-                    pos_np, batch_node_range, k=6, extended_k=8
-                )
-
-                # Convert to tensors
-                batch_edge_index = torch.LongTensor(batch_edge_index_np)
-                x_batch = x_full[batch_node_ids]
-                y_batch = y_full[batch_node_range]  # Only compute loss on target nodes
-
-                num_batch_edges = batch_edge_index.shape[1]
-                print(
-                    f"     Subgraph: {len(batch_node_ids)} nodes, {num_batch_edges} edges",
-                    file=sys.stderr,
-                )
-
-                # Forward pass
-                optimizer.zero_grad()
-                y_hat_extended = net(x_batch, batch_edge_index)
-
-                # Extract predictions for target nodes (first len(batch_node_range) nodes)
-                target_mask = torch.isin(
-                    torch.LongTensor(batch_node_ids),
-                    torch.LongTensor(list(batch_node_range)),
-                )
-                y_hat = y_hat_extended[target_mask]
-
-                # Compute loss and update
-                loss = lossfunc(y_hat, y_batch)
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-                print(f"     Loss: {loss.item():.6e}", file=sys.stderr)
-
-            print(f"\n✓ Mini-batch GNN training completed", file=sys.stderr)
-            print(f"  Final loss: {losses[-1]:.6e}", file=sys.stderr)
-            print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
-            print(f"  Total batches processed: {num_batches}", file=sys.stderr)
-        else:
-            print(
-                f"\n⏸ Training skipped (waiting for > 2 hours elapsed)", file=sys.stderr
+            # Build subgraph for this batch
+            batch_edge_index_np, batch_node_ids = build_knn_graph_batch_numpy(
+                pos_np, batch_node_range, k=6, extended_k=8
             )
-            print(f"  Model initialized but not training yet", file=sys.stderr)
 
-        # Save checkpoint
+            # Convert to tensors
+            batch_edge_index = torch.LongTensor(batch_edge_index_np)
+            x_batch = x_full[batch_node_ids]
+            y_batch = y_full[batch_node_range]  # Only compute loss on target nodes
+
+            num_batch_edges = batch_edge_index.shape[1]
+            print(
+                f"     Subgraph: {len(batch_node_ids)} nodes, {num_batch_edges} edges",
+                file=sys.stderr,
+            )
+
+            # Forward pass
+            optimizer.zero_grad()
+            y_hat_extended = net(x_batch, batch_edge_index)
+
+            # Extract predictions for target nodes (first len(batch_node_range) nodes)
+            target_mask = torch.isin(
+                torch.LongTensor(batch_node_ids),
+                torch.LongTensor(list(batch_node_range)),
+            )
+            y_hat = y_hat_extended[target_mask]
+
+            # Compute loss and update
+            loss = lossfunc(y_hat, y_batch)
+            loss.backward()
+            optimizer.step()
+
+            losses.append(loss.item())
+            print(f"     Loss: {loss.item():.6e}", file=sys.stderr)
+
+        print(f"\n✓ Mini-batch GNN training completed", file=sys.stderr)
+        print(f"  Final loss: {losses[-1]:.6e}", file=sys.stderr)
+        print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
+        print(f"  Total batches processed: {num_batches}", file=sys.stderr)
+
+        # Save checkpoint (always save after training)
         if "net" in locals():
             torch.save(
                 {
