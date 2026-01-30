@@ -10,11 +10,18 @@ import glob
 import json
 import getpass
 from datetime import datetime
+import numpy as np
 
 app = Flask(__name__)
 
 user = getpass.getuser()
 SCRATCH_DIR = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
+# Get the project root directory (parent of monitor/)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+EXPERIMENT_DIR = os.path.join(
+    PROJECT_ROOT, "build/messe_env/build_dir/icon-model/experiments/esm_bb_ruby0"
+)
 
 
 def get_latest_status():
@@ -71,6 +78,47 @@ def get_loss_history():
     return loss_data
 
 
+def get_temperature_history():
+    """Get global mean temperature from NetCDF files"""
+    try:
+        import netCDF4 as nc
+    except ImportError:
+        return []
+
+    nc_files = glob.glob(os.path.join(EXPERIMENT_DIR, "esm_bb_ruby0_atm_mon_*.nc"))
+    if not nc_files:
+        return []
+
+    # Sort by filename
+    nc_files.sort()
+
+    temp_data = []
+    for nc_file in nc_files[-100:]:  # Last 100 timesteps
+        try:
+            # Extract timestamp from filename
+            filename = os.path.basename(nc_file)
+            # Format: esm_bb_ruby0_atm_mon_19790101T180000Z.nc
+            time_str = (
+                filename.replace("esm_bb_ruby0_atm_mon_", "")
+                .replace(".nc", "")
+                .replace("Z", "")
+            )
+
+            # Open NetCDF file and read tas_gmean
+            with nc.Dataset(nc_file, "r") as dataset:
+                if "tas_gmean" in dataset.variables:
+                    tas_gmean = dataset.variables["tas_gmean"][:]
+                    # Take mean over spatial dimensions (should already be global mean)
+                    # tas_gmean is (time, lat, lon) but for gmean might be scalar or need averaging
+                    if tas_gmean.size > 0:
+                        temp_value = float(np.mean(tas_gmean))  # Take mean if needed
+                        temp_data.append({"time": time_str, "temperature": temp_value})
+        except Exception as e:
+            pass
+
+    return temp_data
+
+
 @app.route("/")
 def index():
     """Render the main monitoring page"""
@@ -82,6 +130,7 @@ def api_status():
     """API endpoint for current status"""
     status = get_latest_status()
     losses = get_loss_history()
+    temperatures = get_temperature_history()
 
     if status is None:
         return jsonify(
@@ -89,15 +138,22 @@ def api_status():
                 "status": "waiting",
                 "message": "Waiting for simulation data...",
                 "losses": [],
+                "temperatures": [],
             }
         )
+
+    # Only return data after first timestep (skip timestep 0)
+    # Filter to show data only from timestep 1 onwards
+    filtered_losses = losses[1:] if len(losses) > 1 else []
+    filtered_temperatures = temperatures[1:] if len(temperatures) > 1 else []
 
     return jsonify(
         {
             "status": "running",
             "simulation": status.get("simulation", {}),
             "training": status.get("training", {}),
-            "losses": losses,
+            "losses": filtered_losses,
+            "temperatures": filtered_temperatures,
             "timestamp": status.get("timestamp", ""),
         }
     )
