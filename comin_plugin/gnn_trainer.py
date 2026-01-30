@@ -48,10 +48,13 @@ nc = domain.cells.ncells
 ## secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
-    global temp, sfcwind, domain
+    global temp, tas, sfcwind, domain
     # Read existing ICON variables directly (no need for descriptors since they're not registered)
     temp = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", jg), flag=comin.COMIN_FLAG_READ
+    )
+    tas = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ
     )
     sfcwind = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ
@@ -100,9 +103,9 @@ def util_gather(data_array: np.ndarray, root=0):
 def get_batch_callback():
     global net, optimizer, losses, pos_np  # Declare as global to persist
 
-    #============================================
+    # ============================================
     #      check time condition
-    #===========================================
+    # ===========================================
     # Get timing information first to decide if we should proceed
     start_time_obj = comin.descrdata_get_simulation_interval().run_start
     current_time_obj = comin.current_get_datetime()
@@ -120,7 +123,7 @@ def get_batch_callback():
     # Calculate elapsed time and check if more than 24 hours have passed
     elapsed_time = current_time - start_time
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
-    should_train = elapsed_hours > 24.0  # Only train after 24 hours
+    should_train = elapsed_hours > 1.0  # Only train after 24 hours
 
     ## Skip training and data gathering
     # Skip everything if training time hasn't arrived yet
@@ -138,7 +141,7 @@ def get_batch_callback():
     # ===========================================
 
     # Proceed with data gathering (only when training time has arrived)
-    temp_np_glb = util_gather(np.asarray(temp))
+    tas_np_glb = util_gather(np.asarray(tas))
     sfcwind_np_glb = util_gather(np.asarray(sfcwind))
 
     # Get cell coordinates (longitude, latitude)
@@ -151,7 +154,7 @@ def get_batch_callback():
     if rank == 0:
 
         print(
-            f"data gathered! input shape {temp_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
+            f"data gathered! input shape {tas_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
             file=sys.stderr,
         )
         print(
@@ -162,10 +165,8 @@ def get_batch_callback():
         ## prepare directory and data
         # directory to store model checkpoints and logs
         scratch_dir = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
-        # Remove directory and all contents if it exists, then recreate it
-        if os.path.exists(scratch_dir):
-            shutil.rmtree(scratch_dir)
-        os.makedirs(scratch_dir)
+        # Create directory if it doesn't exist (don't delete existing checkpoints)
+        os.makedirs(scratch_dir, exist_ok=True)
 
         # Store positions for graph construction
         pos_np = np.column_stack([cx_glb, cy_glb])
@@ -233,7 +234,7 @@ def get_batch_callback():
         # ===========================================
 
         # Mini-batch configuration
-        num_nodes = temp_np_glb.shape[0]
+        num_nodes = tas_np_glb.shape[0]
         batch_size = 2000  # Process 2000 nodes per batch
         num_batches = (num_nodes + batch_size - 1) // batch_size
 
@@ -245,7 +246,7 @@ def get_batch_callback():
         print(f"{'='*60}", file=sys.stderr)
 
         # Prepare full data
-        x_full = torch.FloatTensor(temp_np_glb).unsqueeze(1)  # [num_nodes, 1]
+        x_full = torch.FloatTensor(tas_np_glb).unsqueeze(1)  # [num_nodes, 1]
         y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
 
         print(f"Configuration:", file=sys.stderr)
