@@ -1,0 +1,3467 @@
+[
+  {
+    "session": 1,
+    "timestamp": "1979-01-01T11-45-00",
+    "epoch_losses": [
+      1.031069
+    ],
+    "final_loss": 1.031069,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0001_1979-01-01T11-45-00.txt"
+  },
+  {
+    "session": 2,
+    "timestamp": "1979-01-01T12-00-00",
+    "epoch_losses": [
+      1.001097
+    ],
+    "final_loss": 1.001097,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0002_1979-01-01T12-00-00.txt"
+  },
+  {
+    "session": 3,
+    "timestamp": "1979-01-01T12-15-00",
+    "epoch_losses": [
+      0.999689
+    ],
+    "final_loss": 0.999689,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0003_1979-01-01T12-15-00.txt"
+  },
+  {
+    "session": 4,
+    "timestamp": "1979-01-01T12-30-00",
+    "epoch_losses": [
+      1.000206
+    ],
+    "final_loss": 1.000206,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0004_1979-01-01T12-30-00.txt"
+  },
+  {
+    "session": 5,
+    "timestamp": "1979-01-01T12-45-00",
+    "epoch_losses": [
+      0.996448
+    ],
+    "final_loss": 0.996448,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0005_1979-01-01T12-45-00.txt"
+  },
+  {
+    "session": 6,
+    "timestamp": "1979-01-01T13-00-00",
+    "epoch_losses": [
+      0.999742
+    ],
+    "final_loss": 0.999742,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0006_1979-01-01T13-00-00.txt"
+  },
+  {
+    "session": 7,
+    "timestamp": "1979-01-01T13-15-00",
+    "epoch_losses": [
+      0.999333
+    ],
+    "final_loss": 0.999333,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0007_1979-01-01T13-15-00.txt"
+  },
+  {
+    "session": 8,
+    "timestamp": "1979-01-01T13-30-00",
+    "epoch_losses": [
+      0.999846
+    ],
+    "final_loss": 0.999846,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0008_1979-01-01T13-30-00.txt"
+  },
+  {
+    "session": 9,
+    "timestamp": "1979-01-01T13-45-00",
+    "epoch_losses": [
+      0.99963
+    ],
+    "final_loss": 0.99963,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0009_1979-01-01T13-45-00.txt"
+  },
+  {
+    "session": 10,
+    "timestamp": "1979-01-01T14-00-00",
+    "epoch_losses": [
+      0.999415
+    ],
+    "final_loss": 0.999415,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0010_1979-01-01T14-00-00.txt"
+  },
+  {
+    "session": 11,
+    "timestamp": "1979-01-01T14-15-00",
+    "epoch_losses": [
+      1.00067
+    ],
+    "final_loss": 1.00067,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0011_1979-01-01T14-15-00.txt"
+  },
+  {
+    "session": 12,
+    "timestamp": "1979-01-01T14-30-00",
+    "epoch_losses": [
+      0.995041
+    ],
+    "final_loss": 0.995041,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0012_1979-01-01T14-30-00.txt"
+  },
+  {
+    "session": 13,
+    "timestamp": "1979-01-01T14-45-00",
+    "epoch_losses": [
+      1.000654
+    ],
+    "final_loss": 1.000654,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0013_1979-01-01T14-45-00.txt"
+  },
+  {
+    "session": 14,
+    "timestamp": "1979-01-01T15-00-00",
+    "epoch_losses": [
+      0.998699
+    ],
+    "final_loss": 0.998699,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0014_1979-01-01T15-00-00.txt"
+  },
+  {
+    "session": 15,
+    "timestamp": "1979-01-01T15-15-00",
+    "epoch_losses": [
+      0.995621
+    ],
+    "final_loss": 0.995621,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0015_1979-01-01T15-15-00.txt"
+  },
+  {
+    "session": 16,
+    "timestamp": "1979-01-01T15-30-00",
+    "epoch_losses": [
+      0.992436
+    ],
+    "final_loss": 0.992436,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0016_1979-01-01T15-30-00.txt"
+  },
+  {
+    "session": 17,
+    "timestamp": "1979-01-01T15-45-00",
+    "epoch_losses": [
+      0.989541
+    ],
+    "final_loss": 0.989541,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0017_1979-01-01T15-45-00.txt"
+  },
+  {
+    "session": 18,
+    "timestamp": "1979-01-01T16-00-00",
+    "epoch_losses": [
+      0.986162
+    ],
+    "final_loss": 0.986162,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0018_1979-01-01T16-00-00.txt"
+  },
+  {
+    "session": 19,
+    "timestamp": "1979-01-01T16-15-00",
+    "epoch_losses": [
+      0.981467
+    ],
+    "final_loss": 0.981467,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0019_1979-01-01T16-15-00.txt"
+  },
+  {
+    "session": 20,
+    "timestamp": "1979-01-01T16-30-00",
+    "epoch_losses": [
+      0.974015
+    ],
+    "final_loss": 0.974015,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0020_1979-01-01T16-30-00.txt"
+  },
+  {
+    "session": 21,
+    "timestamp": "1979-01-01T16-45-00",
+    "epoch_losses": [
+      0.965859
+    ],
+    "final_loss": 0.965859,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0021_1979-01-01T16-45-00.txt"
+  },
+  {
+    "session": 22,
+    "timestamp": "1979-01-01T17-00-00",
+    "epoch_losses": [
+      0.961833
+    ],
+    "final_loss": 0.961833,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0022_1979-01-01T17-00-00.txt"
+  },
+  {
+    "session": 23,
+    "timestamp": "1979-01-01T17-15-00",
+    "epoch_losses": [
+      0.952217
+    ],
+    "final_loss": 0.952217,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0023_1979-01-01T17-15-00.txt"
+  },
+  {
+    "session": 24,
+    "timestamp": "1979-01-01T17-30-00",
+    "epoch_losses": [
+      0.945374
+    ],
+    "final_loss": 0.945374,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0024_1979-01-01T17-30-00.txt"
+  },
+  {
+    "session": 25,
+    "timestamp": "1979-01-01T17-45-00",
+    "epoch_losses": [
+      0.936465
+    ],
+    "final_loss": 0.936465,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0025_1979-01-01T17-45-00.txt"
+  },
+  {
+    "session": 26,
+    "timestamp": "1979-01-01T18-00-00",
+    "epoch_losses": [
+      0.934918
+    ],
+    "final_loss": 0.934918,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0026_1979-01-01T18-00-00.txt"
+  },
+  {
+    "session": 27,
+    "timestamp": "1979-01-01T18-15-00",
+    "epoch_losses": [
+      0.923576
+    ],
+    "final_loss": 0.923576,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0027_1979-01-01T18-15-00.txt"
+  },
+  {
+    "session": 28,
+    "timestamp": "1979-01-01T18-30-00",
+    "epoch_losses": [
+      0.916148
+    ],
+    "final_loss": 0.916148,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0028_1979-01-01T18-30-00.txt"
+  },
+  {
+    "session": 29,
+    "timestamp": "1979-01-01T18-45-00",
+    "epoch_losses": [
+      0.909633
+    ],
+    "final_loss": 0.909633,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0029_1979-01-01T18-45-00.txt"
+  },
+  {
+    "session": 30,
+    "timestamp": "1979-01-01T19-00-00",
+    "epoch_losses": [
+      0.901018
+    ],
+    "final_loss": 0.901018,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0030_1979-01-01T19-00-00.txt"
+  },
+  {
+    "session": 31,
+    "timestamp": "1979-01-01T19-15-00",
+    "epoch_losses": [
+      0.896454
+    ],
+    "final_loss": 0.896454,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0031_1979-01-01T19-15-00.txt"
+  },
+  {
+    "session": 32,
+    "timestamp": "1979-01-01T19-30-00",
+    "epoch_losses": [
+      0.887598
+    ],
+    "final_loss": 0.887598,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0032_1979-01-01T19-30-00.txt"
+  },
+  {
+    "session": 33,
+    "timestamp": "1979-01-01T19-45-00",
+    "epoch_losses": [
+      0.884264
+    ],
+    "final_loss": 0.884264,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0033_1979-01-01T19-45-00.txt"
+  },
+  {
+    "session": 34,
+    "timestamp": "1979-01-01T20-00-00",
+    "epoch_losses": [
+      0.876186
+    ],
+    "final_loss": 0.876186,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0034_1979-01-01T20-00-00.txt"
+  },
+  {
+    "session": 35,
+    "timestamp": "1979-01-01T20-15-00",
+    "epoch_losses": [
+      0.872125
+    ],
+    "final_loss": 0.872125,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0035_1979-01-01T20-15-00.txt"
+  },
+  {
+    "session": 36,
+    "timestamp": "1979-01-01T20-30-00",
+    "epoch_losses": [
+      0.869561
+    ],
+    "final_loss": 0.869561,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0036_1979-01-01T20-30-00.txt"
+  },
+  {
+    "session": 37,
+    "timestamp": "1979-01-01T20-45-00",
+    "epoch_losses": [
+      0.859303
+    ],
+    "final_loss": 0.859303,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0037_1979-01-01T20-45-00.txt"
+  },
+  {
+    "session": 38,
+    "timestamp": "1979-01-01T21-00-00",
+    "epoch_losses": [
+      0.852584
+    ],
+    "final_loss": 0.852584,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0038_1979-01-01T21-00-00.txt"
+  },
+  {
+    "session": 39,
+    "timestamp": "1979-01-01T21-15-00",
+    "epoch_losses": [
+      0.849703
+    ],
+    "final_loss": 0.849703,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0039_1979-01-01T21-15-00.txt"
+  },
+  {
+    "session": 40,
+    "timestamp": "1979-01-01T21-30-00",
+    "epoch_losses": [
+      0.840484
+    ],
+    "final_loss": 0.840484,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0040_1979-01-01T21-30-00.txt"
+  },
+  {
+    "session": 41,
+    "timestamp": "1979-01-01T21-45-00",
+    "epoch_losses": [
+      0.840641
+    ],
+    "final_loss": 0.840641,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0041_1979-01-01T21-45-00.txt"
+  },
+  {
+    "session": 42,
+    "timestamp": "1979-01-01T22-00-00",
+    "epoch_losses": [
+      0.833259
+    ],
+    "final_loss": 0.833259,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0042_1979-01-01T22-00-00.txt"
+  },
+  {
+    "session": 43,
+    "timestamp": "1979-01-01T22-15-00",
+    "epoch_losses": [
+      0.829508
+    ],
+    "final_loss": 0.829508,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0043_1979-01-01T22-15-00.txt"
+  },
+  {
+    "session": 44,
+    "timestamp": "1979-01-01T22-30-00",
+    "epoch_losses": [
+      0.824589
+    ],
+    "final_loss": 0.824589,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0044_1979-01-01T22-30-00.txt"
+  },
+  {
+    "session": 45,
+    "timestamp": "1979-01-01T22-45-00",
+    "epoch_losses": [
+      0.817784
+    ],
+    "final_loss": 0.817784,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0045_1979-01-01T22-45-00.txt"
+  },
+  {
+    "session": 46,
+    "timestamp": "1979-01-01T23-00-00",
+    "epoch_losses": [
+      0.813743
+    ],
+    "final_loss": 0.813743,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0046_1979-01-01T23-00-00.txt"
+  },
+  {
+    "session": 47,
+    "timestamp": "1979-01-01T23-15-00",
+    "epoch_losses": [
+      0.807762
+    ],
+    "final_loss": 0.807762,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0047_1979-01-01T23-15-00.txt"
+  },
+  {
+    "session": 48,
+    "timestamp": "1979-01-01T23-30-00",
+    "epoch_losses": [
+      0.803642
+    ],
+    "final_loss": 0.803642,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0048_1979-01-01T23-30-00.txt"
+  },
+  {
+    "session": 49,
+    "timestamp": "1979-01-01T23-45-00",
+    "epoch_losses": [
+      0.801086
+    ],
+    "final_loss": 0.801086,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0049_1979-01-01T23-45-00.txt"
+  },
+  {
+    "session": 50,
+    "timestamp": "1979-01-02T00-00-00",
+    "epoch_losses": [
+      0.79214
+    ],
+    "final_loss": 0.79214,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0050_1979-01-02T00-00-00.txt"
+  },
+  {
+    "session": 51,
+    "timestamp": "1979-01-02T00-15-00",
+    "epoch_losses": [
+      0.793186
+    ],
+    "final_loss": 0.793186,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0051_1979-01-02T00-15-00.txt"
+  },
+  {
+    "session": 52,
+    "timestamp": "1979-01-02T00-30-00",
+    "epoch_losses": [
+      0.788625
+    ],
+    "final_loss": 0.788625,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0052_1979-01-02T00-30-00.txt"
+  },
+  {
+    "session": 53,
+    "timestamp": "1979-01-02T00-45-00",
+    "epoch_losses": [
+      0.783638
+    ],
+    "final_loss": 0.783638,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0053_1979-01-02T00-45-00.txt"
+  },
+  {
+    "session": 54,
+    "timestamp": "1979-01-02T01-00-00",
+    "epoch_losses": [
+      0.77798
+    ],
+    "final_loss": 0.77798,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0054_1979-01-02T01-00-00.txt"
+  },
+  {
+    "session": 55,
+    "timestamp": "1979-01-02T01-15-00",
+    "epoch_losses": [
+      0.777223
+    ],
+    "final_loss": 0.777223,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0055_1979-01-02T01-15-00.txt"
+  },
+  {
+    "session": 56,
+    "timestamp": "1979-01-02T01-30-00",
+    "epoch_losses": [
+      0.771399
+    ],
+    "final_loss": 0.771399,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0056_1979-01-02T01-30-00.txt"
+  },
+  {
+    "session": 57,
+    "timestamp": "1979-01-02T01-45-00",
+    "epoch_losses": [
+      0.766962
+    ],
+    "final_loss": 0.766962,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0057_1979-01-02T01-45-00.txt"
+  },
+  {
+    "session": 58,
+    "timestamp": "1979-01-02T02-00-00",
+    "epoch_losses": [
+      0.762772
+    ],
+    "final_loss": 0.762772,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0058_1979-01-02T02-00-00.txt"
+  },
+  {
+    "session": 59,
+    "timestamp": "1979-01-02T02-15-00",
+    "epoch_losses": [
+      0.762662
+    ],
+    "final_loss": 0.762662,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0059_1979-01-02T02-15-00.txt"
+  },
+  {
+    "session": 60,
+    "timestamp": "1979-01-02T02-30-00",
+    "epoch_losses": [
+      0.75867
+    ],
+    "final_loss": 0.75867,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0060_1979-01-02T02-30-00.txt"
+  },
+  {
+    "session": 61,
+    "timestamp": "1979-01-02T02-45-00",
+    "epoch_losses": [
+      0.753507
+    ],
+    "final_loss": 0.753507,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0061_1979-01-02T02-45-00.txt"
+  },
+  {
+    "session": 62,
+    "timestamp": "1979-01-02T03-00-00",
+    "epoch_losses": [
+      0.751134
+    ],
+    "final_loss": 0.751134,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0062_1979-01-02T03-00-00.txt"
+  },
+  {
+    "session": 63,
+    "timestamp": "1979-01-02T03-15-00",
+    "epoch_losses": [
+      0.746493
+    ],
+    "final_loss": 0.746493,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0063_1979-01-02T03-15-00.txt"
+  },
+  {
+    "session": 64,
+    "timestamp": "1979-01-02T03-30-00",
+    "epoch_losses": [
+      0.748525
+    ],
+    "final_loss": 0.748525,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0064_1979-01-02T03-30-00.txt"
+  },
+  {
+    "session": 65,
+    "timestamp": "1979-01-02T03-45-00",
+    "epoch_losses": [
+      0.746068
+    ],
+    "final_loss": 0.746068,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0065_1979-01-02T03-45-00.txt"
+  },
+  {
+    "session": 66,
+    "timestamp": "1979-01-02T04-00-00",
+    "epoch_losses": [
+      0.738369
+    ],
+    "final_loss": 0.738369,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0066_1979-01-02T04-00-00.txt"
+  },
+  {
+    "session": 67,
+    "timestamp": "1979-01-02T04-15-00",
+    "epoch_losses": [
+      0.737765
+    ],
+    "final_loss": 0.737765,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0067_1979-01-02T04-15-00.txt"
+  },
+  {
+    "session": 68,
+    "timestamp": "1979-01-02T04-30-00",
+    "epoch_losses": [
+      0.736145
+    ],
+    "final_loss": 0.736145,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0068_1979-01-02T04-30-00.txt"
+  },
+  {
+    "session": 69,
+    "timestamp": "1979-01-02T04-45-00",
+    "epoch_losses": [
+      0.73592
+    ],
+    "final_loss": 0.73592,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0069_1979-01-02T04-45-00.txt"
+  },
+  {
+    "session": 70,
+    "timestamp": "1979-01-02T05-00-00",
+    "epoch_losses": [
+      0.733655
+    ],
+    "final_loss": 0.733655,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0070_1979-01-02T05-00-00.txt"
+  },
+  {
+    "session": 71,
+    "timestamp": "1979-01-02T05-15-00",
+    "epoch_losses": [
+      0.72826
+    ],
+    "final_loss": 0.72826,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0071_1979-01-02T05-15-00.txt"
+  },
+  {
+    "session": 72,
+    "timestamp": "1979-01-02T05-30-00",
+    "epoch_losses": [
+      0.728398
+    ],
+    "final_loss": 0.728398,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0072_1979-01-02T05-30-00.txt"
+  },
+  {
+    "session": 73,
+    "timestamp": "1979-01-02T05-45-00",
+    "epoch_losses": [
+      0.72613
+    ],
+    "final_loss": 0.72613,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0073_1979-01-02T05-45-00.txt"
+  },
+  {
+    "session": 74,
+    "timestamp": "1979-01-02T06-00-00",
+    "epoch_losses": [
+      0.722564
+    ],
+    "final_loss": 0.722564,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0074_1979-01-02T06-00-00.txt"
+  },
+  {
+    "session": 75,
+    "timestamp": "1979-01-02T06-15-00",
+    "epoch_losses": [
+      0.723486
+    ],
+    "final_loss": 0.723486,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0075_1979-01-02T06-15-00.txt"
+  },
+  {
+    "session": 76,
+    "timestamp": "1979-01-02T06-30-00",
+    "epoch_losses": [
+      0.71926
+    ],
+    "final_loss": 0.71926,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0076_1979-01-02T06-30-00.txt"
+  },
+  {
+    "session": 77,
+    "timestamp": "1979-01-02T06-45-00",
+    "epoch_losses": [
+      0.717164
+    ],
+    "final_loss": 0.717164,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0077_1979-01-02T06-45-00.txt"
+  },
+  {
+    "session": 78,
+    "timestamp": "1979-01-02T07-00-00",
+    "epoch_losses": [
+      0.713369
+    ],
+    "final_loss": 0.713369,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0078_1979-01-02T07-00-00.txt"
+  },
+  {
+    "session": 79,
+    "timestamp": "1979-01-02T07-15-00",
+    "epoch_losses": [
+      0.712661
+    ],
+    "final_loss": 0.712661,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0079_1979-01-02T07-15-00.txt"
+  },
+  {
+    "session": 80,
+    "timestamp": "1979-01-02T07-30-00",
+    "epoch_losses": [
+      0.714184
+    ],
+    "final_loss": 0.714184,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0080_1979-01-02T07-30-00.txt"
+  },
+  {
+    "session": 81,
+    "timestamp": "1979-01-02T07-45-00",
+    "epoch_losses": [
+      0.706778
+    ],
+    "final_loss": 0.706778,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0081_1979-01-02T07-45-00.txt"
+  },
+  {
+    "session": 82,
+    "timestamp": "1979-01-02T08-00-00",
+    "epoch_losses": [
+      0.703255
+    ],
+    "final_loss": 0.703255,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0082_1979-01-02T08-00-00.txt"
+  },
+  {
+    "session": 83,
+    "timestamp": "1979-01-02T08-15-00",
+    "epoch_losses": [
+      0.705701
+    ],
+    "final_loss": 0.705701,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0083_1979-01-02T08-15-00.txt"
+  },
+  {
+    "session": 84,
+    "timestamp": "1979-01-02T08-30-00",
+    "epoch_losses": [
+      0.703914
+    ],
+    "final_loss": 0.703914,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0084_1979-01-02T08-30-00.txt"
+  },
+  {
+    "session": 85,
+    "timestamp": "1979-01-02T08-45-00",
+    "epoch_losses": [
+      0.699724
+    ],
+    "final_loss": 0.699724,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0085_1979-01-02T08-45-00.txt"
+  },
+  {
+    "session": 86,
+    "timestamp": "1979-01-02T09-00-00",
+    "epoch_losses": [
+      0.700576
+    ],
+    "final_loss": 0.700576,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0086_1979-01-02T09-00-00.txt"
+  },
+  {
+    "session": 87,
+    "timestamp": "1979-01-02T09-15-00",
+    "epoch_losses": [
+      0.698452
+    ],
+    "final_loss": 0.698452,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0087_1979-01-02T09-15-00.txt"
+  },
+  {
+    "session": 88,
+    "timestamp": "1979-01-02T09-30-00",
+    "epoch_losses": [
+      0.69806
+    ],
+    "final_loss": 0.69806,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0088_1979-01-02T09-30-00.txt"
+  },
+  {
+    "session": 89,
+    "timestamp": "1979-01-02T09-45-00",
+    "epoch_losses": [
+      0.697455
+    ],
+    "final_loss": 0.697455,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0089_1979-01-02T09-45-00.txt"
+  },
+  {
+    "session": 90,
+    "timestamp": "1979-01-02T10-00-00",
+    "epoch_losses": [
+      0.695197
+    ],
+    "final_loss": 0.695197,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0090_1979-01-02T10-00-00.txt"
+  },
+  {
+    "session": 91,
+    "timestamp": "1979-01-02T10-15-00",
+    "epoch_losses": [
+      0.692698
+    ],
+    "final_loss": 0.692698,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0091_1979-01-02T10-15-00.txt"
+  },
+  {
+    "session": 92,
+    "timestamp": "1979-01-02T10-30-00",
+    "epoch_losses": [
+      0.690546
+    ],
+    "final_loss": 0.690546,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0092_1979-01-02T10-30-00.txt"
+  },
+  {
+    "session": 93,
+    "timestamp": "1979-01-02T10-45-00",
+    "epoch_losses": [
+      0.68929
+    ],
+    "final_loss": 0.68929,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0093_1979-01-02T10-45-00.txt"
+  },
+  {
+    "session": 94,
+    "timestamp": "1979-01-02T11-00-00",
+    "epoch_losses": [
+      0.68801
+    ],
+    "final_loss": 0.68801,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0094_1979-01-02T11-00-00.txt"
+  },
+  {
+    "session": 95,
+    "timestamp": "1979-01-02T11-15-00",
+    "epoch_losses": [
+      0.688294
+    ],
+    "final_loss": 0.688294,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0095_1979-01-02T11-15-00.txt"
+  },
+  {
+    "session": 96,
+    "timestamp": "1979-01-02T11-30-00",
+    "epoch_losses": [
+      0.690175
+    ],
+    "final_loss": 0.690175,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0096_1979-01-02T11-30-00.txt"
+  },
+  {
+    "session": 97,
+    "timestamp": "1979-01-02T11-45-00",
+    "epoch_losses": [
+      0.68351
+    ],
+    "final_loss": 0.68351,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0097_1979-01-02T11-45-00.txt"
+  },
+  {
+    "session": 98,
+    "timestamp": "1979-01-02T12-00-00",
+    "epoch_losses": [
+      0.684435
+    ],
+    "final_loss": 0.684435,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0098_1979-01-02T12-00-00.txt"
+  },
+  {
+    "session": 99,
+    "timestamp": "1979-01-02T12-15-00",
+    "epoch_losses": [
+      0.684767
+    ],
+    "final_loss": 0.684767,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0099_1979-01-02T12-15-00.txt"
+  },
+  {
+    "session": 100,
+    "timestamp": "1979-01-02T12-30-00",
+    "epoch_losses": [
+      0.681673
+    ],
+    "final_loss": 0.681673,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0100_1979-01-02T12-30-00.txt"
+  },
+  {
+    "session": 101,
+    "timestamp": "1979-01-02T12-45-00",
+    "epoch_losses": [
+      0.676754
+    ],
+    "final_loss": 0.676754,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0101_1979-01-02T12-45-00.txt"
+  },
+  {
+    "session": 102,
+    "timestamp": "1979-01-02T13-00-00",
+    "epoch_losses": [
+      0.68294
+    ],
+    "final_loss": 0.68294,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0102_1979-01-02T13-00-00.txt"
+  },
+  {
+    "session": 103,
+    "timestamp": "1979-01-02T13-15-00",
+    "epoch_losses": [
+      0.676422
+    ],
+    "final_loss": 0.676422,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0103_1979-01-02T13-15-00.txt"
+  },
+  {
+    "session": 104,
+    "timestamp": "1979-01-02T13-30-00",
+    "epoch_losses": [
+      0.677521
+    ],
+    "final_loss": 0.677521,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0104_1979-01-02T13-30-00.txt"
+  },
+  {
+    "session": 105,
+    "timestamp": "1979-01-02T13-45-00",
+    "epoch_losses": [
+      0.675503
+    ],
+    "final_loss": 0.675503,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0105_1979-01-02T13-45-00.txt"
+  },
+  {
+    "session": 106,
+    "timestamp": "1979-01-02T14-00-00",
+    "epoch_losses": [
+      0.676145
+    ],
+    "final_loss": 0.676145,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0106_1979-01-02T14-00-00.txt"
+  },
+  {
+    "session": 107,
+    "timestamp": "1979-01-02T14-15-00",
+    "epoch_losses": [
+      0.673882
+    ],
+    "final_loss": 0.673882,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0107_1979-01-02T14-15-00.txt"
+  },
+  {
+    "session": 108,
+    "timestamp": "1979-01-02T14-30-00",
+    "epoch_losses": [
+      0.67565
+    ],
+    "final_loss": 0.67565,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0108_1979-01-02T14-30-00.txt"
+  },
+  {
+    "session": 109,
+    "timestamp": "1979-01-02T14-45-00",
+    "epoch_losses": [
+      0.673121
+    ],
+    "final_loss": 0.673121,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0109_1979-01-02T14-45-00.txt"
+  },
+  {
+    "session": 110,
+    "timestamp": "1979-01-02T15-00-00",
+    "epoch_losses": [
+      0.667832
+    ],
+    "final_loss": 0.667832,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0110_1979-01-02T15-00-00.txt"
+  },
+  {
+    "session": 111,
+    "timestamp": "1979-01-02T15-15-00",
+    "epoch_losses": [
+      0.66974
+    ],
+    "final_loss": 0.66974,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0111_1979-01-02T15-15-00.txt"
+  },
+  {
+    "session": 112,
+    "timestamp": "1979-01-02T15-30-00",
+    "epoch_losses": [
+      0.670692
+    ],
+    "final_loss": 0.670692,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0112_1979-01-02T15-30-00.txt"
+  },
+  {
+    "session": 113,
+    "timestamp": "1979-01-02T15-45-00",
+    "epoch_losses": [
+      0.663879
+    ],
+    "final_loss": 0.663879,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0113_1979-01-02T15-45-00.txt"
+  },
+  {
+    "session": 114,
+    "timestamp": "1979-01-02T16-00-00",
+    "epoch_losses": [
+      0.669488
+    ],
+    "final_loss": 0.669488,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0114_1979-01-02T16-00-00.txt"
+  },
+  {
+    "session": 115,
+    "timestamp": "1979-01-02T16-15-00",
+    "epoch_losses": [
+      0.66915
+    ],
+    "final_loss": 0.66915,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0115_1979-01-02T16-15-00.txt"
+  },
+  {
+    "session": 116,
+    "timestamp": "1979-01-02T16-30-00",
+    "epoch_losses": [
+      0.664965
+    ],
+    "final_loss": 0.664965,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0116_1979-01-02T16-30-00.txt"
+  },
+  {
+    "session": 117,
+    "timestamp": "1979-01-02T16-45-00",
+    "epoch_losses": [
+      0.665623
+    ],
+    "final_loss": 0.665623,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0117_1979-01-02T16-45-00.txt"
+  },
+  {
+    "session": 118,
+    "timestamp": "1979-01-02T17-00-00",
+    "epoch_losses": [
+      0.664948
+    ],
+    "final_loss": 0.664948,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0118_1979-01-02T17-00-00.txt"
+  },
+  {
+    "session": 119,
+    "timestamp": "1979-01-02T17-15-00",
+    "epoch_losses": [
+      0.664755
+    ],
+    "final_loss": 0.664755,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0119_1979-01-02T17-15-00.txt"
+  },
+  {
+    "session": 120,
+    "timestamp": "1979-01-02T17-30-00",
+    "epoch_losses": [
+      0.663481
+    ],
+    "final_loss": 0.663481,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0120_1979-01-02T17-30-00.txt"
+  },
+  {
+    "session": 121,
+    "timestamp": "1979-01-02T17-45-00",
+    "epoch_losses": [
+      0.66103
+    ],
+    "final_loss": 0.66103,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0121_1979-01-02T17-45-00.txt"
+  },
+  {
+    "session": 122,
+    "timestamp": "1979-01-02T18-00-00",
+    "epoch_losses": [
+      0.661709
+    ],
+    "final_loss": 0.661709,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0122_1979-01-02T18-00-00.txt"
+  },
+  {
+    "session": 123,
+    "timestamp": "1979-01-02T18-15-00",
+    "epoch_losses": [
+      0.660363
+    ],
+    "final_loss": 0.660363,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0123_1979-01-02T18-15-00.txt"
+  },
+  {
+    "session": 124,
+    "timestamp": "1979-01-02T18-30-00",
+    "epoch_losses": [
+      0.661797
+    ],
+    "final_loss": 0.661797,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0124_1979-01-02T18-30-00.txt"
+  },
+  {
+    "session": 125,
+    "timestamp": "1979-01-02T18-45-00",
+    "epoch_losses": [
+      0.658386
+    ],
+    "final_loss": 0.658386,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0125_1979-01-02T18-45-00.txt"
+  },
+  {
+    "session": 126,
+    "timestamp": "1979-01-02T19-00-00",
+    "epoch_losses": [
+      0.658422
+    ],
+    "final_loss": 0.658422,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0126_1979-01-02T19-00-00.txt"
+  },
+  {
+    "session": 127,
+    "timestamp": "1979-01-02T19-15-00",
+    "epoch_losses": [
+      0.658762
+    ],
+    "final_loss": 0.658762,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0127_1979-01-02T19-15-00.txt"
+  },
+  {
+    "session": 128,
+    "timestamp": "1979-01-02T19-30-00",
+    "epoch_losses": [
+      0.659394
+    ],
+    "final_loss": 0.659394,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0128_1979-01-02T19-30-00.txt"
+  },
+  {
+    "session": 129,
+    "timestamp": "1979-01-02T19-45-00",
+    "epoch_losses": [
+      0.655404
+    ],
+    "final_loss": 0.655404,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0129_1979-01-02T19-45-00.txt"
+  },
+  {
+    "session": 130,
+    "timestamp": "1979-01-02T20-00-00",
+    "epoch_losses": [
+      0.655
+    ],
+    "final_loss": 0.655,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0130_1979-01-02T20-00-00.txt"
+  },
+  {
+    "session": 131,
+    "timestamp": "1979-01-02T20-15-00",
+    "epoch_losses": [
+      0.65606
+    ],
+    "final_loss": 0.65606,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0131_1979-01-02T20-15-00.txt"
+  },
+  {
+    "session": 132,
+    "timestamp": "1979-01-02T20-30-00",
+    "epoch_losses": [
+      0.656196
+    ],
+    "final_loss": 0.656196,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0132_1979-01-02T20-30-00.txt"
+  },
+  {
+    "session": 133,
+    "timestamp": "1979-01-02T20-45-00",
+    "epoch_losses": [
+      0.652345
+    ],
+    "final_loss": 0.652345,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0133_1979-01-02T20-45-00.txt"
+  },
+  {
+    "session": 134,
+    "timestamp": "1979-01-02T21-00-00",
+    "epoch_losses": [
+      0.651693
+    ],
+    "final_loss": 0.651693,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0134_1979-01-02T21-00-00.txt"
+  },
+  {
+    "session": 135,
+    "timestamp": "1979-01-02T21-15-00",
+    "epoch_losses": [
+      0.653351
+    ],
+    "final_loss": 0.653351,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0135_1979-01-02T21-15-00.txt"
+  },
+  {
+    "session": 136,
+    "timestamp": "1979-01-02T21-30-00",
+    "epoch_losses": [
+      0.650132
+    ],
+    "final_loss": 0.650132,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0136_1979-01-02T21-30-00.txt"
+  },
+  {
+    "session": 137,
+    "timestamp": "1979-01-02T21-45-00",
+    "epoch_losses": [
+      0.653574
+    ],
+    "final_loss": 0.653574,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0137_1979-01-02T21-45-00.txt"
+  },
+  {
+    "session": 138,
+    "timestamp": "1979-01-02T22-00-00",
+    "epoch_losses": [
+      0.651874
+    ],
+    "final_loss": 0.651874,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0138_1979-01-02T22-00-00.txt"
+  },
+  {
+    "session": 139,
+    "timestamp": "1979-01-02T22-15-00",
+    "epoch_losses": [
+      0.650314
+    ],
+    "final_loss": 0.650314,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0139_1979-01-02T22-15-00.txt"
+  },
+  {
+    "session": 140,
+    "timestamp": "1979-01-02T22-30-00",
+    "epoch_losses": [
+      0.650305
+    ],
+    "final_loss": 0.650305,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0140_1979-01-02T22-30-00.txt"
+  },
+  {
+    "session": 141,
+    "timestamp": "1979-01-02T22-45-00",
+    "epoch_losses": [
+      0.646512
+    ],
+    "final_loss": 0.646512,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0141_1979-01-02T22-45-00.txt"
+  },
+  {
+    "session": 142,
+    "timestamp": "1979-01-02T23-00-00",
+    "epoch_losses": [
+      0.646432
+    ],
+    "final_loss": 0.646432,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0142_1979-01-02T23-00-00.txt"
+  },
+  {
+    "session": 143,
+    "timestamp": "1979-01-02T23-15-00",
+    "epoch_losses": [
+      0.648506
+    ],
+    "final_loss": 0.648506,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0143_1979-01-02T23-15-00.txt"
+  },
+  {
+    "session": 144,
+    "timestamp": "1979-01-02T23-30-00",
+    "epoch_losses": [
+      0.6452
+    ],
+    "final_loss": 0.6452,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0144_1979-01-02T23-30-00.txt"
+  },
+  {
+    "session": 145,
+    "timestamp": "1979-01-02T23-45-00",
+    "epoch_losses": [
+      0.648604
+    ],
+    "final_loss": 0.648604,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0145_1979-01-02T23-45-00.txt"
+  },
+  {
+    "session": 146,
+    "timestamp": "1979-01-03T00-00-00",
+    "epoch_losses": [
+      0.649054
+    ],
+    "final_loss": 0.649054,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0146_1979-01-03T00-00-00.txt"
+  },
+  {
+    "session": 147,
+    "timestamp": "1979-01-03T00-15-00",
+    "epoch_losses": [
+      0.647678
+    ],
+    "final_loss": 0.647678,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0147_1979-01-03T00-15-00.txt"
+  },
+  {
+    "session": 148,
+    "timestamp": "1979-01-03T00-30-00",
+    "epoch_losses": [
+      0.644607
+    ],
+    "final_loss": 0.644607,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0148_1979-01-03T00-30-00.txt"
+  },
+  {
+    "session": 149,
+    "timestamp": "1979-01-03T00-45-00",
+    "epoch_losses": [
+      0.646224
+    ],
+    "final_loss": 0.646224,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0149_1979-01-03T00-45-00.txt"
+  },
+  {
+    "session": 150,
+    "timestamp": "1979-01-03T01-00-00",
+    "epoch_losses": [
+      0.639909
+    ],
+    "final_loss": 0.639909,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0150_1979-01-03T01-00-00.txt"
+  },
+  {
+    "session": 151,
+    "timestamp": "1979-01-03T01-15-00",
+    "epoch_losses": [
+      0.646265
+    ],
+    "final_loss": 0.646265,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0151_1979-01-03T01-15-00.txt"
+  },
+  {
+    "session": 152,
+    "timestamp": "1979-01-03T01-30-00",
+    "epoch_losses": [
+      0.645762
+    ],
+    "final_loss": 0.645762,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0152_1979-01-03T01-30-00.txt"
+  },
+  {
+    "session": 153,
+    "timestamp": "1979-01-03T01-45-00",
+    "epoch_losses": [
+      0.646731
+    ],
+    "final_loss": 0.646731,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0153_1979-01-03T01-45-00.txt"
+  },
+  {
+    "session": 154,
+    "timestamp": "1979-01-03T02-00-00",
+    "epoch_losses": [
+      0.644692
+    ],
+    "final_loss": 0.644692,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0154_1979-01-03T02-00-00.txt"
+  },
+  {
+    "session": 155,
+    "timestamp": "1979-01-03T02-15-00",
+    "epoch_losses": [
+      0.644688
+    ],
+    "final_loss": 0.644688,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0155_1979-01-03T02-15-00.txt"
+  },
+  {
+    "session": 156,
+    "timestamp": "1979-01-03T02-30-00",
+    "epoch_losses": [
+      0.641931
+    ],
+    "final_loss": 0.641931,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0156_1979-01-03T02-30-00.txt"
+  },
+  {
+    "session": 157,
+    "timestamp": "1979-01-03T02-45-00",
+    "epoch_losses": [
+      0.642817
+    ],
+    "final_loss": 0.642817,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0157_1979-01-03T02-45-00.txt"
+  },
+  {
+    "session": 158,
+    "timestamp": "1979-01-03T03-00-00",
+    "epoch_losses": [
+      0.640524
+    ],
+    "final_loss": 0.640524,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0158_1979-01-03T03-00-00.txt"
+  },
+  {
+    "session": 159,
+    "timestamp": "1979-01-03T03-15-00",
+    "epoch_losses": [
+      0.640638
+    ],
+    "final_loss": 0.640638,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0159_1979-01-03T03-15-00.txt"
+  },
+  {
+    "session": 160,
+    "timestamp": "1979-01-03T03-30-00",
+    "epoch_losses": [
+      0.642459
+    ],
+    "final_loss": 0.642459,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0160_1979-01-03T03-30-00.txt"
+  },
+  {
+    "session": 161,
+    "timestamp": "1979-01-03T03-45-00",
+    "epoch_losses": [
+      0.641769
+    ],
+    "final_loss": 0.641769,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0161_1979-01-03T03-45-00.txt"
+  },
+  {
+    "session": 162,
+    "timestamp": "1979-01-03T04-00-00",
+    "epoch_losses": [
+      0.643683
+    ],
+    "final_loss": 0.643683,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0162_1979-01-03T04-00-00.txt"
+  },
+  {
+    "session": 163,
+    "timestamp": "1979-01-03T04-15-00",
+    "epoch_losses": [
+      0.646279
+    ],
+    "final_loss": 0.646279,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0163_1979-01-03T04-15-00.txt"
+  },
+  {
+    "session": 164,
+    "timestamp": "1979-01-03T04-30-00",
+    "epoch_losses": [
+      0.639592
+    ],
+    "final_loss": 0.639592,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0164_1979-01-03T04-30-00.txt"
+  },
+  {
+    "session": 165,
+    "timestamp": "1979-01-03T04-45-00",
+    "epoch_losses": [
+      0.639653
+    ],
+    "final_loss": 0.639653,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0165_1979-01-03T04-45-00.txt"
+  },
+  {
+    "session": 166,
+    "timestamp": "1979-01-03T05-00-00",
+    "epoch_losses": [
+      0.63987
+    ],
+    "final_loss": 0.63987,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0166_1979-01-03T05-00-00.txt"
+  },
+  {
+    "session": 167,
+    "timestamp": "1979-01-03T05-15-00",
+    "epoch_losses": [
+      0.639803
+    ],
+    "final_loss": 0.639803,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0167_1979-01-03T05-15-00.txt"
+  },
+  {
+    "session": 168,
+    "timestamp": "1979-01-03T05-30-00",
+    "epoch_losses": [
+      0.636448
+    ],
+    "final_loss": 0.636448,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0168_1979-01-03T05-30-00.txt"
+  },
+  {
+    "session": 169,
+    "timestamp": "1979-01-03T05-45-00",
+    "epoch_losses": [
+      0.640296
+    ],
+    "final_loss": 0.640296,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0169_1979-01-03T05-45-00.txt"
+  },
+  {
+    "session": 170,
+    "timestamp": "1979-01-03T06-00-00",
+    "epoch_losses": [
+      0.641748
+    ],
+    "final_loss": 0.641748,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0170_1979-01-03T06-00-00.txt"
+  },
+  {
+    "session": 171,
+    "timestamp": "1979-01-03T06-15-00",
+    "epoch_losses": [
+      0.638755
+    ],
+    "final_loss": 0.638755,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0171_1979-01-03T06-15-00.txt"
+  },
+  {
+    "session": 172,
+    "timestamp": "1979-01-03T06-30-00",
+    "epoch_losses": [
+      0.636329
+    ],
+    "final_loss": 0.636329,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0172_1979-01-03T06-30-00.txt"
+  },
+  {
+    "session": 173,
+    "timestamp": "1979-01-03T06-45-00",
+    "epoch_losses": [
+      0.639512
+    ],
+    "final_loss": 0.639512,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0173_1979-01-03T06-45-00.txt"
+  },
+  {
+    "session": 174,
+    "timestamp": "1979-01-03T07-00-00",
+    "epoch_losses": [
+      0.638322
+    ],
+    "final_loss": 0.638322,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0174_1979-01-03T07-00-00.txt"
+  },
+  {
+    "session": 175,
+    "timestamp": "1979-01-03T07-15-00",
+    "epoch_losses": [
+      0.638867
+    ],
+    "final_loss": 0.638867,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0175_1979-01-03T07-15-00.txt"
+  },
+  {
+    "session": 176,
+    "timestamp": "1979-01-03T07-30-00",
+    "epoch_losses": [
+      0.638768
+    ],
+    "final_loss": 0.638768,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0176_1979-01-03T07-30-00.txt"
+  },
+  {
+    "session": 177,
+    "timestamp": "1979-01-03T07-45-00",
+    "epoch_losses": [
+      0.638376
+    ],
+    "final_loss": 0.638376,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0177_1979-01-03T07-45-00.txt"
+  },
+  {
+    "session": 178,
+    "timestamp": "1979-01-03T08-00-00",
+    "epoch_losses": [
+      0.638224
+    ],
+    "final_loss": 0.638224,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0178_1979-01-03T08-00-00.txt"
+  },
+  {
+    "session": 179,
+    "timestamp": "1979-01-03T08-15-00",
+    "epoch_losses": [
+      0.636747
+    ],
+    "final_loss": 0.636747,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0179_1979-01-03T08-15-00.txt"
+  },
+  {
+    "session": 180,
+    "timestamp": "1979-01-03T08-30-00",
+    "epoch_losses": [
+      0.637902
+    ],
+    "final_loss": 0.637902,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0180_1979-01-03T08-30-00.txt"
+  },
+  {
+    "session": 181,
+    "timestamp": "1979-01-03T08-45-00",
+    "epoch_losses": [
+      0.637761
+    ],
+    "final_loss": 0.637761,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0181_1979-01-03T08-45-00.txt"
+  },
+  {
+    "session": 182,
+    "timestamp": "1979-01-03T09-00-00",
+    "epoch_losses": [
+      0.636897
+    ],
+    "final_loss": 0.636897,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0182_1979-01-03T09-00-00.txt"
+  },
+  {
+    "session": 183,
+    "timestamp": "1979-01-03T09-15-00",
+    "epoch_losses": [
+      0.634498
+    ],
+    "final_loss": 0.634498,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0183_1979-01-03T09-15-00.txt"
+  },
+  {
+    "session": 184,
+    "timestamp": "1979-01-03T09-30-00",
+    "epoch_losses": [
+      0.633591
+    ],
+    "final_loss": 0.633591,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0184_1979-01-03T09-30-00.txt"
+  },
+  {
+    "session": 185,
+    "timestamp": "1979-01-03T09-45-00",
+    "epoch_losses": [
+      0.635234
+    ],
+    "final_loss": 0.635234,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0185_1979-01-03T09-45-00.txt"
+  },
+  {
+    "session": 186,
+    "timestamp": "1979-01-03T10-00-00",
+    "epoch_losses": [
+      0.634919
+    ],
+    "final_loss": 0.634919,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0186_1979-01-03T10-00-00.txt"
+  },
+  {
+    "session": 187,
+    "timestamp": "1979-01-03T10-15-00",
+    "epoch_losses": [
+      0.6326
+    ],
+    "final_loss": 0.6326,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0187_1979-01-03T10-15-00.txt"
+  },
+  {
+    "session": 188,
+    "timestamp": "1979-01-03T10-30-00",
+    "epoch_losses": [
+      0.638206
+    ],
+    "final_loss": 0.638206,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0188_1979-01-03T10-30-00.txt"
+  },
+  {
+    "session": 189,
+    "timestamp": "1979-01-03T10-45-00",
+    "epoch_losses": [
+      0.633699
+    ],
+    "final_loss": 0.633699,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0189_1979-01-03T10-45-00.txt"
+  },
+  {
+    "session": 190,
+    "timestamp": "1979-01-03T11-00-00",
+    "epoch_losses": [
+      0.637756
+    ],
+    "final_loss": 0.637756,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0190_1979-01-03T11-00-00.txt"
+  },
+  {
+    "session": 191,
+    "timestamp": "1979-01-03T11-15-00",
+    "epoch_losses": [
+      0.636015
+    ],
+    "final_loss": 0.636015,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0191_1979-01-03T11-15-00.txt"
+  },
+  {
+    "session": 192,
+    "timestamp": "1979-01-03T11-30-00",
+    "epoch_losses": [
+      0.63899
+    ],
+    "final_loss": 0.63899,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0192_1979-01-03T11-30-00.txt"
+  },
+  {
+    "session": 193,
+    "timestamp": "1979-01-03T11-45-00",
+    "epoch_losses": [
+      0.632697
+    ],
+    "final_loss": 0.632697,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0193_1979-01-03T11-45-00.txt"
+  },
+  {
+    "session": 194,
+    "timestamp": "1979-01-03T12-00-00",
+    "epoch_losses": [
+      0.632883
+    ],
+    "final_loss": 0.632883,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0194_1979-01-03T12-00-00.txt"
+  },
+  {
+    "session": 195,
+    "timestamp": "1979-01-03T12-15-00",
+    "epoch_losses": [
+      0.636068
+    ],
+    "final_loss": 0.636068,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0195_1979-01-03T12-15-00.txt"
+  },
+  {
+    "session": 196,
+    "timestamp": "1979-01-03T12-30-00",
+    "epoch_losses": [
+      0.634208
+    ],
+    "final_loss": 0.634208,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0196_1979-01-03T12-30-00.txt"
+  },
+  {
+    "session": 197,
+    "timestamp": "1979-01-03T12-45-00",
+    "epoch_losses": [
+      0.634452
+    ],
+    "final_loss": 0.634452,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0197_1979-01-03T12-45-00.txt"
+  },
+  {
+    "session": 198,
+    "timestamp": "1979-01-03T13-00-00",
+    "epoch_losses": [
+      0.633821
+    ],
+    "final_loss": 0.633821,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0198_1979-01-03T13-00-00.txt"
+  },
+  {
+    "session": 199,
+    "timestamp": "1979-01-03T13-15-00",
+    "epoch_losses": [
+      0.635688
+    ],
+    "final_loss": 0.635688,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0199_1979-01-03T13-15-00.txt"
+  },
+  {
+    "session": 200,
+    "timestamp": "1979-01-03T13-30-00",
+    "epoch_losses": [
+      0.632592
+    ],
+    "final_loss": 0.632592,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0200_1979-01-03T13-30-00.txt"
+  },
+  {
+    "session": 201,
+    "timestamp": "1979-01-03T13-45-00",
+    "epoch_losses": [
+      0.630743
+    ],
+    "final_loss": 0.630743,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0201_1979-01-03T13-45-00.txt"
+  },
+  {
+    "session": 202,
+    "timestamp": "1979-01-03T14-00-00",
+    "epoch_losses": [
+      0.634501
+    ],
+    "final_loss": 0.634501,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0202_1979-01-03T14-00-00.txt"
+  },
+  {
+    "session": 203,
+    "timestamp": "1979-01-03T14-15-00",
+    "epoch_losses": [
+      0.635867
+    ],
+    "final_loss": 0.635867,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0203_1979-01-03T14-15-00.txt"
+  },
+  {
+    "session": 204,
+    "timestamp": "1979-01-03T14-30-00",
+    "epoch_losses": [
+      0.632421
+    ],
+    "final_loss": 0.632421,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0204_1979-01-03T14-30-00.txt"
+  },
+  {
+    "session": 205,
+    "timestamp": "1979-01-03T14-45-00",
+    "epoch_losses": [
+      0.633071
+    ],
+    "final_loss": 0.633071,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0205_1979-01-03T14-45-00.txt"
+  },
+  {
+    "session": 206,
+    "timestamp": "1979-01-03T15-00-00",
+    "epoch_losses": [
+      0.630059
+    ],
+    "final_loss": 0.630059,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0206_1979-01-03T15-00-00.txt"
+  },
+  {
+    "session": 207,
+    "timestamp": "1979-01-03T15-15-00",
+    "epoch_losses": [
+      0.629912
+    ],
+    "final_loss": 0.629912,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0207_1979-01-03T15-15-00.txt"
+  },
+  {
+    "session": 208,
+    "timestamp": "1979-01-03T15-30-00",
+    "epoch_losses": [
+      0.635825
+    ],
+    "final_loss": 0.635825,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0208_1979-01-03T15-30-00.txt"
+  },
+  {
+    "session": 209,
+    "timestamp": "1979-01-03T15-45-00",
+    "epoch_losses": [
+      0.634321
+    ],
+    "final_loss": 0.634321,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0209_1979-01-03T15-45-00.txt"
+  },
+  {
+    "session": 210,
+    "timestamp": "1979-01-03T16-00-00",
+    "epoch_losses": [
+      0.634102
+    ],
+    "final_loss": 0.634102,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0210_1979-01-03T16-00-00.txt"
+  },
+  {
+    "session": 211,
+    "timestamp": "1979-01-03T16-15-00",
+    "epoch_losses": [
+      0.633155
+    ],
+    "final_loss": 0.633155,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0211_1979-01-03T16-15-00.txt"
+  },
+  {
+    "session": 212,
+    "timestamp": "1979-01-03T16-30-00",
+    "epoch_losses": [
+      0.632649
+    ],
+    "final_loss": 0.632649,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0212_1979-01-03T16-30-00.txt"
+  },
+  {
+    "session": 213,
+    "timestamp": "1979-01-03T16-45-00",
+    "epoch_losses": [
+      0.631352
+    ],
+    "final_loss": 0.631352,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0213_1979-01-03T16-45-00.txt"
+  },
+  {
+    "session": 214,
+    "timestamp": "1979-01-03T17-00-00",
+    "epoch_losses": [
+      0.635012
+    ],
+    "final_loss": 0.635012,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0214_1979-01-03T17-00-00.txt"
+  },
+  {
+    "session": 215,
+    "timestamp": "1979-01-03T17-15-00",
+    "epoch_losses": [
+      0.631197
+    ],
+    "final_loss": 0.631197,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0215_1979-01-03T17-15-00.txt"
+  },
+  {
+    "session": 216,
+    "timestamp": "1979-01-03T17-30-00",
+    "epoch_losses": [
+      0.633121
+    ],
+    "final_loss": 0.633121,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0216_1979-01-03T17-30-00.txt"
+  },
+  {
+    "session": 217,
+    "timestamp": "1979-01-03T17-45-00",
+    "epoch_losses": [
+      0.633677
+    ],
+    "final_loss": 0.633677,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0217_1979-01-03T17-45-00.txt"
+  },
+  {
+    "session": 218,
+    "timestamp": "1979-01-03T18-00-00",
+    "epoch_losses": [
+      0.629908
+    ],
+    "final_loss": 0.629908,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0218_1979-01-03T18-00-00.txt"
+  },
+  {
+    "session": 219,
+    "timestamp": "1979-01-03T18-15-00",
+    "epoch_losses": [
+      0.631581
+    ],
+    "final_loss": 0.631581,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0219_1979-01-03T18-15-00.txt"
+  },
+  {
+    "session": 220,
+    "timestamp": "1979-01-03T18-30-00",
+    "epoch_losses": [
+      0.631282
+    ],
+    "final_loss": 0.631282,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0220_1979-01-03T18-30-00.txt"
+  },
+  {
+    "session": 221,
+    "timestamp": "1979-01-03T18-45-00",
+    "epoch_losses": [
+      0.630467
+    ],
+    "final_loss": 0.630467,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0221_1979-01-03T18-45-00.txt"
+  },
+  {
+    "session": 222,
+    "timestamp": "1979-01-03T19-00-00",
+    "epoch_losses": [
+      0.631947
+    ],
+    "final_loss": 0.631947,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0222_1979-01-03T19-00-00.txt"
+  },
+  {
+    "session": 223,
+    "timestamp": "1979-01-03T19-15-00",
+    "epoch_losses": [
+      0.631953
+    ],
+    "final_loss": 0.631953,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0223_1979-01-03T19-15-00.txt"
+  },
+  {
+    "session": 224,
+    "timestamp": "1979-01-03T19-30-00",
+    "epoch_losses": [
+      0.632112
+    ],
+    "final_loss": 0.632112,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0224_1979-01-03T19-30-00.txt"
+  },
+  {
+    "session": 225,
+    "timestamp": "1979-01-03T19-45-00",
+    "epoch_losses": [
+      0.629989
+    ],
+    "final_loss": 0.629989,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0225_1979-01-03T19-45-00.txt"
+  },
+  {
+    "session": 226,
+    "timestamp": "1979-01-03T20-00-00",
+    "epoch_losses": [
+      0.631252
+    ],
+    "final_loss": 0.631252,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0226_1979-01-03T20-00-00.txt"
+  },
+  {
+    "session": 227,
+    "timestamp": "1979-01-03T20-15-00",
+    "epoch_losses": [
+      0.633632
+    ],
+    "final_loss": 0.633632,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0227_1979-01-03T20-15-00.txt"
+  },
+  {
+    "session": 228,
+    "timestamp": "1979-01-03T20-30-00",
+    "epoch_losses": [
+      0.63192
+    ],
+    "final_loss": 0.63192,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0228_1979-01-03T20-30-00.txt"
+  },
+  {
+    "session": 229,
+    "timestamp": "1979-01-03T20-45-00",
+    "epoch_losses": [
+      0.630285
+    ],
+    "final_loss": 0.630285,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0229_1979-01-03T20-45-00.txt"
+  },
+  {
+    "session": 230,
+    "timestamp": "1979-01-03T21-00-00",
+    "epoch_losses": [
+      0.631661
+    ],
+    "final_loss": 0.631661,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0230_1979-01-03T21-00-00.txt"
+  },
+  {
+    "session": 231,
+    "timestamp": "1979-01-03T21-15-00",
+    "epoch_losses": [
+      0.632927
+    ],
+    "final_loss": 0.632927,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0231_1979-01-03T21-15-00.txt"
+  },
+  {
+    "session": 232,
+    "timestamp": "1979-01-03T21-30-00",
+    "epoch_losses": [
+      0.630896
+    ],
+    "final_loss": 0.630896,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0232_1979-01-03T21-30-00.txt"
+  },
+  {
+    "session": 233,
+    "timestamp": "1979-01-03T21-45-00",
+    "epoch_losses": [
+      0.631754
+    ],
+    "final_loss": 0.631754,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0233_1979-01-03T21-45-00.txt"
+  },
+  {
+    "session": 234,
+    "timestamp": "1979-01-03T22-00-00",
+    "epoch_losses": [
+      0.628731
+    ],
+    "final_loss": 0.628731,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0234_1979-01-03T22-00-00.txt"
+  },
+  {
+    "session": 235,
+    "timestamp": "1979-01-03T22-15-00",
+    "epoch_losses": [
+      0.628371
+    ],
+    "final_loss": 0.628371,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0235_1979-01-03T22-15-00.txt"
+  },
+  {
+    "session": 236,
+    "timestamp": "1979-01-03T22-30-00",
+    "epoch_losses": [
+      0.630145
+    ],
+    "final_loss": 0.630145,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0236_1979-01-03T22-30-00.txt"
+  },
+  {
+    "session": 237,
+    "timestamp": "1979-01-03T22-45-00",
+    "epoch_losses": [
+      0.630563
+    ],
+    "final_loss": 0.630563,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0237_1979-01-03T22-45-00.txt"
+  },
+  {
+    "session": 238,
+    "timestamp": "1979-01-03T23-00-00",
+    "epoch_losses": [
+      0.628601
+    ],
+    "final_loss": 0.628601,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0238_1979-01-03T23-00-00.txt"
+  },
+  {
+    "session": 239,
+    "timestamp": "1979-01-03T23-15-00",
+    "epoch_losses": [
+      0.632196
+    ],
+    "final_loss": 0.632196,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0239_1979-01-03T23-15-00.txt"
+  },
+  {
+    "session": 240,
+    "timestamp": "1979-01-03T23-30-00",
+    "epoch_losses": [
+      0.630944
+    ],
+    "final_loss": 0.630944,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0240_1979-01-03T23-30-00.txt"
+  },
+  {
+    "session": 241,
+    "timestamp": "1979-01-03T23-45-00",
+    "epoch_losses": [
+      0.629849
+    ],
+    "final_loss": 0.629849,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0241_1979-01-03T23-45-00.txt"
+  },
+  {
+    "session": 242,
+    "timestamp": "1979-01-04T00-00-00",
+    "epoch_losses": [
+      0.630097
+    ],
+    "final_loss": 0.630097,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0242_1979-01-04T00-00-00.txt"
+  },
+  {
+    "session": 243,
+    "timestamp": "1979-01-04T00-15-00",
+    "epoch_losses": [
+      0.631061
+    ],
+    "final_loss": 0.631061,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0243_1979-01-04T00-15-00.txt"
+  },
+  {
+    "session": 244,
+    "timestamp": "1979-01-04T00-30-00",
+    "epoch_losses": [
+      0.630281
+    ],
+    "final_loss": 0.630281,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0244_1979-01-04T00-30-00.txt"
+  },
+  {
+    "session": 245,
+    "timestamp": "1979-01-04T00-45-00",
+    "epoch_losses": [
+      0.62823
+    ],
+    "final_loss": 0.62823,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0245_1979-01-04T00-45-00.txt"
+  },
+  {
+    "session": 246,
+    "timestamp": "1979-01-04T01-00-00",
+    "epoch_losses": [
+      0.627237
+    ],
+    "final_loss": 0.627237,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0246_1979-01-04T01-00-00.txt"
+  },
+  {
+    "session": 247,
+    "timestamp": "1979-01-04T01-15-00",
+    "epoch_losses": [
+      0.628425
+    ],
+    "final_loss": 0.628425,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0247_1979-01-04T01-15-00.txt"
+  },
+  {
+    "session": 248,
+    "timestamp": "1979-01-04T01-30-00",
+    "epoch_losses": [
+      0.626817
+    ],
+    "final_loss": 0.626817,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0248_1979-01-04T01-30-00.txt"
+  },
+  {
+    "session": 249,
+    "timestamp": "1979-01-04T01-45-00",
+    "epoch_losses": [
+      0.629916
+    ],
+    "final_loss": 0.629916,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0249_1979-01-04T01-45-00.txt"
+  },
+  {
+    "session": 250,
+    "timestamp": "1979-01-04T02-00-00",
+    "epoch_losses": [
+      0.62658
+    ],
+    "final_loss": 0.62658,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0250_1979-01-04T02-00-00.txt"
+  },
+  {
+    "session": 251,
+    "timestamp": "1979-01-04T02-15-00",
+    "epoch_losses": [
+      0.630248
+    ],
+    "final_loss": 0.630248,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0251_1979-01-04T02-15-00.txt"
+  },
+  {
+    "session": 252,
+    "timestamp": "1979-01-04T02-30-00",
+    "epoch_losses": [
+      0.62822
+    ],
+    "final_loss": 0.62822,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0252_1979-01-04T02-30-00.txt"
+  },
+  {
+    "session": 253,
+    "timestamp": "1979-01-04T02-45-00",
+    "epoch_losses": [
+      0.627155
+    ],
+    "final_loss": 0.627155,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0253_1979-01-04T02-45-00.txt"
+  },
+  {
+    "session": 254,
+    "timestamp": "1979-01-04T03-00-00",
+    "epoch_losses": [
+      0.628832
+    ],
+    "final_loss": 0.628832,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0254_1979-01-04T03-00-00.txt"
+  },
+  {
+    "session": 255,
+    "timestamp": "1979-01-04T03-15-00",
+    "epoch_losses": [
+      0.626169
+    ],
+    "final_loss": 0.626169,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0255_1979-01-04T03-15-00.txt"
+  },
+  {
+    "session": 256,
+    "timestamp": "1979-01-04T03-30-00",
+    "epoch_losses": [
+      0.627813
+    ],
+    "final_loss": 0.627813,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0256_1979-01-04T03-30-00.txt"
+  },
+  {
+    "session": 257,
+    "timestamp": "1979-01-04T03-45-00",
+    "epoch_losses": [
+      0.624403
+    ],
+    "final_loss": 0.624403,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0257_1979-01-04T03-45-00.txt"
+  },
+  {
+    "session": 258,
+    "timestamp": "1979-01-04T04-00-00",
+    "epoch_losses": [
+      0.630528
+    ],
+    "final_loss": 0.630528,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0258_1979-01-04T04-00-00.txt"
+  },
+  {
+    "session": 259,
+    "timestamp": "1979-01-04T04-15-00",
+    "epoch_losses": [
+      0.627175
+    ],
+    "final_loss": 0.627175,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0259_1979-01-04T04-15-00.txt"
+  },
+  {
+    "session": 260,
+    "timestamp": "1979-01-04T04-30-00",
+    "epoch_losses": [
+      0.628107
+    ],
+    "final_loss": 0.628107,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0260_1979-01-04T04-30-00.txt"
+  },
+  {
+    "session": 261,
+    "timestamp": "1979-01-04T04-45-00",
+    "epoch_losses": [
+      0.629285
+    ],
+    "final_loss": 0.629285,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0261_1979-01-04T04-45-00.txt"
+  },
+  {
+    "session": 262,
+    "timestamp": "1979-01-04T05-00-00",
+    "epoch_losses": [
+      0.630016
+    ],
+    "final_loss": 0.630016,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0262_1979-01-04T05-00-00.txt"
+  },
+  {
+    "session": 263,
+    "timestamp": "1979-01-04T05-15-00",
+    "epoch_losses": [
+      0.63082
+    ],
+    "final_loss": 0.63082,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0263_1979-01-04T05-15-00.txt"
+  },
+  {
+    "session": 264,
+    "timestamp": "1979-01-04T05-30-00",
+    "epoch_losses": [
+      0.627271
+    ],
+    "final_loss": 0.627271,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0264_1979-01-04T05-30-00.txt"
+  },
+  {
+    "session": 265,
+    "timestamp": "1979-01-04T05-45-00",
+    "epoch_losses": [
+      0.628572
+    ],
+    "final_loss": 0.628572,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0265_1979-01-04T05-45-00.txt"
+  },
+  {
+    "session": 266,
+    "timestamp": "1979-01-04T06-00-00",
+    "epoch_losses": [
+      0.628732
+    ],
+    "final_loss": 0.628732,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0266_1979-01-04T06-00-00.txt"
+  },
+  {
+    "session": 267,
+    "timestamp": "1979-01-04T06-15-00",
+    "epoch_losses": [
+      0.624625
+    ],
+    "final_loss": 0.624625,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0267_1979-01-04T06-15-00.txt"
+  },
+  {
+    "session": 268,
+    "timestamp": "1979-01-04T06-30-00",
+    "epoch_losses": [
+      0.626023
+    ],
+    "final_loss": 0.626023,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0268_1979-01-04T06-30-00.txt"
+  },
+  {
+    "session": 269,
+    "timestamp": "1979-01-04T06-45-00",
+    "epoch_losses": [
+      0.626982
+    ],
+    "final_loss": 0.626982,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0269_1979-01-04T06-45-00.txt"
+  },
+  {
+    "session": 270,
+    "timestamp": "1979-01-04T07-00-00",
+    "epoch_losses": [
+      0.626163
+    ],
+    "final_loss": 0.626163,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0270_1979-01-04T07-00-00.txt"
+  },
+  {
+    "session": 271,
+    "timestamp": "1979-01-04T07-15-00",
+    "epoch_losses": [
+      0.630587
+    ],
+    "final_loss": 0.630587,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0271_1979-01-04T07-15-00.txt"
+  },
+  {
+    "session": 272,
+    "timestamp": "1979-01-04T07-30-00",
+    "epoch_losses": [
+      0.62779
+    ],
+    "final_loss": 0.62779,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0272_1979-01-04T07-30-00.txt"
+  },
+  {
+    "session": 273,
+    "timestamp": "1979-01-04T07-45-00",
+    "epoch_losses": [
+      0.626756
+    ],
+    "final_loss": 0.626756,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0273_1979-01-04T07-45-00.txt"
+  },
+  {
+    "session": 274,
+    "timestamp": "1979-01-04T08-00-00",
+    "epoch_losses": [
+      0.625709
+    ],
+    "final_loss": 0.625709,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0274_1979-01-04T08-00-00.txt"
+  },
+  {
+    "session": 275,
+    "timestamp": "1979-01-04T08-15-00",
+    "epoch_losses": [
+      0.626976
+    ],
+    "final_loss": 0.626976,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0275_1979-01-04T08-15-00.txt"
+  },
+  {
+    "session": 276,
+    "timestamp": "1979-01-04T08-30-00",
+    "epoch_losses": [
+      0.628682
+    ],
+    "final_loss": 0.628682,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0276_1979-01-04T08-30-00.txt"
+  },
+  {
+    "session": 277,
+    "timestamp": "1979-01-04T08-45-00",
+    "epoch_losses": [
+      0.626945
+    ],
+    "final_loss": 0.626945,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0277_1979-01-04T08-45-00.txt"
+  },
+  {
+    "session": 278,
+    "timestamp": "1979-01-04T09-00-00",
+    "epoch_losses": [
+      0.62515
+    ],
+    "final_loss": 0.62515,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0278_1979-01-04T09-00-00.txt"
+  },
+  {
+    "session": 279,
+    "timestamp": "1979-01-04T09-15-00",
+    "epoch_losses": [
+      0.629008
+    ],
+    "final_loss": 0.629008,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0279_1979-01-04T09-15-00.txt"
+  },
+  {
+    "session": 280,
+    "timestamp": "1979-01-04T09-30-00",
+    "epoch_losses": [
+      0.628274
+    ],
+    "final_loss": 0.628274,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0280_1979-01-04T09-30-00.txt"
+  },
+  {
+    "session": 281,
+    "timestamp": "1979-01-04T09-45-00",
+    "epoch_losses": [
+      0.626538
+    ],
+    "final_loss": 0.626538,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0281_1979-01-04T09-45-00.txt"
+  },
+  {
+    "session": 282,
+    "timestamp": "1979-01-04T10-00-00",
+    "epoch_losses": [
+      0.625791
+    ],
+    "final_loss": 0.625791,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0282_1979-01-04T10-00-00.txt"
+  },
+  {
+    "session": 283,
+    "timestamp": "1979-01-04T10-15-00",
+    "epoch_losses": [
+      0.625361
+    ],
+    "final_loss": 0.625361,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0283_1979-01-04T10-15-00.txt"
+  },
+  {
+    "session": 284,
+    "timestamp": "1979-01-04T10-30-00",
+    "epoch_losses": [
+      0.625692
+    ],
+    "final_loss": 0.625692,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0284_1979-01-04T10-30-00.txt"
+  },
+  {
+    "session": 285,
+    "timestamp": "1979-01-04T10-45-00",
+    "epoch_losses": [
+      0.625419
+    ],
+    "final_loss": 0.625419,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0285_1979-01-04T10-45-00.txt"
+  },
+  {
+    "session": 286,
+    "timestamp": "1979-01-04T11-00-00",
+    "epoch_losses": [
+      0.630242
+    ],
+    "final_loss": 0.630242,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0286_1979-01-04T11-00-00.txt"
+  },
+  {
+    "session": 287,
+    "timestamp": "1979-01-04T11-15-00",
+    "epoch_losses": [
+      0.626813
+    ],
+    "final_loss": 0.626813,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0287_1979-01-04T11-15-00.txt"
+  },
+  {
+    "session": 288,
+    "timestamp": "1979-01-04T11-30-00",
+    "epoch_losses": [
+      0.626148
+    ],
+    "final_loss": 0.626148,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0288_1979-01-04T11-30-00.txt"
+  },
+  {
+    "session": 289,
+    "timestamp": "1979-01-04T11-45-00",
+    "epoch_losses": [
+      0.624966
+    ],
+    "final_loss": 0.624966,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0289_1979-01-04T11-45-00.txt"
+  },
+  {
+    "session": 290,
+    "timestamp": "1979-01-04T12-00-00",
+    "epoch_losses": [
+      0.62769
+    ],
+    "final_loss": 0.62769,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0290_1979-01-04T12-00-00.txt"
+  },
+  {
+    "session": 291,
+    "timestamp": "1979-01-04T12-15-00",
+    "epoch_losses": [
+      0.625308
+    ],
+    "final_loss": 0.625308,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0291_1979-01-04T12-15-00.txt"
+  },
+  {
+    "session": 292,
+    "timestamp": "1979-01-04T12-30-00",
+    "epoch_losses": [
+      0.629206
+    ],
+    "final_loss": 0.629206,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0292_1979-01-04T12-30-00.txt"
+  },
+  {
+    "session": 293,
+    "timestamp": "1979-01-04T12-45-00",
+    "epoch_losses": [
+      0.626589
+    ],
+    "final_loss": 0.626589,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0293_1979-01-04T12-45-00.txt"
+  },
+  {
+    "session": 294,
+    "timestamp": "1979-01-04T13-00-00",
+    "epoch_losses": [
+      0.625867
+    ],
+    "final_loss": 0.625867,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0294_1979-01-04T13-00-00.txt"
+  },
+  {
+    "session": 295,
+    "timestamp": "1979-01-04T13-15-00",
+    "epoch_losses": [
+      0.627648
+    ],
+    "final_loss": 0.627648,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0295_1979-01-04T13-15-00.txt"
+  },
+  {
+    "session": 296,
+    "timestamp": "1979-01-04T13-30-00",
+    "epoch_losses": [
+      0.628261
+    ],
+    "final_loss": 0.628261,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0296_1979-01-04T13-30-00.txt"
+  },
+  {
+    "session": 297,
+    "timestamp": "1979-01-04T13-45-00",
+    "epoch_losses": [
+      0.627159
+    ],
+    "final_loss": 0.627159,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0297_1979-01-04T13-45-00.txt"
+  },
+  {
+    "session": 298,
+    "timestamp": "1979-01-04T14-00-00",
+    "epoch_losses": [
+      0.631199
+    ],
+    "final_loss": 0.631199,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0298_1979-01-04T14-00-00.txt"
+  },
+  {
+    "session": 299,
+    "timestamp": "1979-01-04T14-15-00",
+    "epoch_losses": [
+      0.627894
+    ],
+    "final_loss": 0.627894,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0299_1979-01-04T14-15-00.txt"
+  },
+  {
+    "session": 300,
+    "timestamp": "1979-01-04T14-30-00",
+    "epoch_losses": [
+      0.629792
+    ],
+    "final_loss": 0.629792,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0300_1979-01-04T14-30-00.txt"
+  },
+  {
+    "session": 301,
+    "timestamp": "1979-01-04T14-45-00",
+    "epoch_losses": [
+      0.625376
+    ],
+    "final_loss": 0.625376,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0301_1979-01-04T14-45-00.txt"
+  },
+  {
+    "session": 302,
+    "timestamp": "1979-01-04T15-00-00",
+    "epoch_losses": [
+      0.629884
+    ],
+    "final_loss": 0.629884,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0302_1979-01-04T15-00-00.txt"
+  },
+  {
+    "session": 303,
+    "timestamp": "1979-01-04T15-15-00",
+    "epoch_losses": [
+      0.627725
+    ],
+    "final_loss": 0.627725,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0303_1979-01-04T15-15-00.txt"
+  },
+  {
+    "session": 304,
+    "timestamp": "1979-01-04T15-30-00",
+    "epoch_losses": [
+      0.625058
+    ],
+    "final_loss": 0.625058,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0304_1979-01-04T15-30-00.txt"
+  },
+  {
+    "session": 305,
+    "timestamp": "1979-01-04T15-45-00",
+    "epoch_losses": [
+      0.627937
+    ],
+    "final_loss": 0.627937,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0305_1979-01-04T15-45-00.txt"
+  },
+  {
+    "session": 306,
+    "timestamp": "1979-01-04T16-00-00",
+    "epoch_losses": [
+      0.631157
+    ],
+    "final_loss": 0.631157,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0306_1979-01-04T16-00-00.txt"
+  },
+  {
+    "session": 307,
+    "timestamp": "1979-01-04T16-15-00",
+    "epoch_losses": [
+      0.62689
+    ],
+    "final_loss": 0.62689,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0307_1979-01-04T16-15-00.txt"
+  },
+  {
+    "session": 308,
+    "timestamp": "1979-01-04T16-30-00",
+    "epoch_losses": [
+      0.625832
+    ],
+    "final_loss": 0.625832,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0308_1979-01-04T16-30-00.txt"
+  },
+  {
+    "session": 309,
+    "timestamp": "1979-01-04T16-45-00",
+    "epoch_losses": [
+      0.624078
+    ],
+    "final_loss": 0.624078,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0309_1979-01-04T16-45-00.txt"
+  },
+  {
+    "session": 310,
+    "timestamp": "1979-01-04T17-00-00",
+    "epoch_losses": [
+      0.631257
+    ],
+    "final_loss": 0.631257,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0310_1979-01-04T17-00-00.txt"
+  },
+  {
+    "session": 311,
+    "timestamp": "1979-01-04T17-15-00",
+    "epoch_losses": [
+      0.626327
+    ],
+    "final_loss": 0.626327,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0311_1979-01-04T17-15-00.txt"
+  },
+  {
+    "session": 312,
+    "timestamp": "1979-01-04T17-30-00",
+    "epoch_losses": [
+      0.625759
+    ],
+    "final_loss": 0.625759,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0312_1979-01-04T17-30-00.txt"
+  },
+  {
+    "session": 313,
+    "timestamp": "1979-01-04T17-45-00",
+    "epoch_losses": [
+      0.623371
+    ],
+    "final_loss": 0.623371,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0313_1979-01-04T17-45-00.txt"
+  },
+  {
+    "session": 314,
+    "timestamp": "1979-01-04T18-00-00",
+    "epoch_losses": [
+      0.626079
+    ],
+    "final_loss": 0.626079,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0314_1979-01-04T18-00-00.txt"
+  },
+  {
+    "session": 315,
+    "timestamp": "1979-01-04T18-15-00",
+    "epoch_losses": [
+      0.626701
+    ],
+    "final_loss": 0.626701,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0315_1979-01-04T18-15-00.txt"
+  },
+  {
+    "session": 316,
+    "timestamp": "1979-01-04T18-30-00",
+    "epoch_losses": [
+      0.626873
+    ],
+    "final_loss": 0.626873,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0316_1979-01-04T18-30-00.txt"
+  },
+  {
+    "session": 317,
+    "timestamp": "1979-01-04T18-45-00",
+    "epoch_losses": [
+      0.626526
+    ],
+    "final_loss": 0.626526,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0317_1979-01-04T18-45-00.txt"
+  },
+  {
+    "session": 318,
+    "timestamp": "1979-01-04T19-00-00",
+    "epoch_losses": [
+      0.625169
+    ],
+    "final_loss": 0.625169,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0318_1979-01-04T19-00-00.txt"
+  },
+  {
+    "session": 319,
+    "timestamp": "1979-01-04T19-15-00",
+    "epoch_losses": [
+      0.628848
+    ],
+    "final_loss": 0.628848,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0319_1979-01-04T19-15-00.txt"
+  },
+  {
+    "session": 320,
+    "timestamp": "1979-01-04T19-30-00",
+    "epoch_losses": [
+      0.626182
+    ],
+    "final_loss": 0.626182,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0320_1979-01-04T19-30-00.txt"
+  },
+  {
+    "session": 321,
+    "timestamp": "1979-01-04T19-45-00",
+    "epoch_losses": [
+      0.625766
+    ],
+    "final_loss": 0.625766,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0321_1979-01-04T19-45-00.txt"
+  },
+  {
+    "session": 322,
+    "timestamp": "1979-01-04T20-00-00",
+    "epoch_losses": [
+      0.628401
+    ],
+    "final_loss": 0.628401,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0322_1979-01-04T20-00-00.txt"
+  },
+  {
+    "session": 323,
+    "timestamp": "1979-01-04T20-15-00",
+    "epoch_losses": [
+      0.629955
+    ],
+    "final_loss": 0.629955,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0323_1979-01-04T20-15-00.txt"
+  },
+  {
+    "session": 324,
+    "timestamp": "1979-01-04T20-30-00",
+    "epoch_losses": [
+      0.626175
+    ],
+    "final_loss": 0.626175,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0324_1979-01-04T20-30-00.txt"
+  },
+  {
+    "session": 325,
+    "timestamp": "1979-01-04T20-45-00",
+    "epoch_losses": [
+      0.628084
+    ],
+    "final_loss": 0.628084,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0325_1979-01-04T20-45-00.txt"
+  },
+  {
+    "session": 326,
+    "timestamp": "1979-01-04T21-00-00",
+    "epoch_losses": [
+      0.627911
+    ],
+    "final_loss": 0.627911,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0326_1979-01-04T21-00-00.txt"
+  },
+  {
+    "session": 327,
+    "timestamp": "1979-01-04T21-15-00",
+    "epoch_losses": [
+      0.625194
+    ],
+    "final_loss": 0.625194,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0327_1979-01-04T21-15-00.txt"
+  },
+  {
+    "session": 328,
+    "timestamp": "1979-01-04T21-30-00",
+    "epoch_losses": [
+      0.624979
+    ],
+    "final_loss": 0.624979,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0328_1979-01-04T21-30-00.txt"
+  },
+  {
+    "session": 329,
+    "timestamp": "1979-01-04T21-45-00",
+    "epoch_losses": [
+      0.626593
+    ],
+    "final_loss": 0.626593,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0329_1979-01-04T21-45-00.txt"
+  },
+  {
+    "session": 330,
+    "timestamp": "1979-01-04T22-00-00",
+    "epoch_losses": [
+      0.621728
+    ],
+    "final_loss": 0.621728,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0330_1979-01-04T22-00-00.txt"
+  },
+  {
+    "session": 331,
+    "timestamp": "1979-01-04T22-15-00",
+    "epoch_losses": [
+      0.622743
+    ],
+    "final_loss": 0.622743,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0331_1979-01-04T22-15-00.txt"
+  },
+  {
+    "session": 332,
+    "timestamp": "1979-01-04T22-30-00",
+    "epoch_losses": [
+      0.623714
+    ],
+    "final_loss": 0.623714,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0332_1979-01-04T22-30-00.txt"
+  },
+  {
+    "session": 333,
+    "timestamp": "1979-01-04T22-45-00",
+    "epoch_losses": [
+      0.624733
+    ],
+    "final_loss": 0.624733,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0333_1979-01-04T22-45-00.txt"
+  },
+  {
+    "session": 334,
+    "timestamp": "1979-01-04T23-00-00",
+    "epoch_losses": [
+      0.623193
+    ],
+    "final_loss": 0.623193,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0334_1979-01-04T23-00-00.txt"
+  },
+  {
+    "session": 335,
+    "timestamp": "1979-01-04T23-15-00",
+    "epoch_losses": [
+      0.624468
+    ],
+    "final_loss": 0.624468,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0335_1979-01-04T23-15-00.txt"
+  },
+  {
+    "session": 336,
+    "timestamp": "1979-01-04T23-30-00",
+    "epoch_losses": [
+      0.626275
+    ],
+    "final_loss": 0.626275,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0336_1979-01-04T23-30-00.txt"
+  },
+  {
+    "session": 337,
+    "timestamp": "1979-01-04T23-45-00",
+    "epoch_losses": [
+      0.625044
+    ],
+    "final_loss": 0.625044,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0337_1979-01-04T23-45-00.txt"
+  },
+  {
+    "session": 338,
+    "timestamp": "1979-01-05T00-00-00",
+    "epoch_losses": [
+      0.623096
+    ],
+    "final_loss": 0.623096,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0338_1979-01-05T00-00-00.txt"
+  },
+  {
+    "session": 339,
+    "timestamp": "1979-01-05T00-15-00",
+    "epoch_losses": [
+      0.627749
+    ],
+    "final_loss": 0.627749,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0339_1979-01-05T00-15-00.txt"
+  },
+  {
+    "session": 340,
+    "timestamp": "1979-01-05T00-30-00",
+    "epoch_losses": [
+      0.625872
+    ],
+    "final_loss": 0.625872,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0340_1979-01-05T00-30-00.txt"
+  },
+  {
+    "session": 341,
+    "timestamp": "1979-01-05T00-45-00",
+    "epoch_losses": [
+      0.627414
+    ],
+    "final_loss": 0.627414,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0341_1979-01-05T00-45-00.txt"
+  },
+  {
+    "session": 342,
+    "timestamp": "1979-01-05T01-00-00",
+    "epoch_losses": [
+      0.623961
+    ],
+    "final_loss": 0.623961,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0342_1979-01-05T01-00-00.txt"
+  },
+  {
+    "session": 343,
+    "timestamp": "1979-01-05T01-15-00",
+    "epoch_losses": [
+      0.625524
+    ],
+    "final_loss": 0.625524,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0343_1979-01-05T01-15-00.txt"
+  },
+  {
+    "session": 344,
+    "timestamp": "1979-01-05T01-30-00",
+    "epoch_losses": [
+      0.624825
+    ],
+    "final_loss": 0.624825,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0344_1979-01-05T01-30-00.txt"
+  },
+  {
+    "session": 345,
+    "timestamp": "1979-01-05T01-45-00",
+    "epoch_losses": [
+      0.623333
+    ],
+    "final_loss": 0.623333,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0345_1979-01-05T01-45-00.txt"
+  },
+  {
+    "session": 346,
+    "timestamp": "1979-01-05T02-00-00",
+    "epoch_losses": [
+      0.625403
+    ],
+    "final_loss": 0.625403,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0346_1979-01-05T02-00-00.txt"
+  },
+  {
+    "session": 347,
+    "timestamp": "1979-01-05T02-15-00",
+    "epoch_losses": [
+      0.623079
+    ],
+    "final_loss": 0.623079,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0347_1979-01-05T02-15-00.txt"
+  },
+  {
+    "session": 348,
+    "timestamp": "1979-01-05T02-30-00",
+    "epoch_losses": [
+      0.623998
+    ],
+    "final_loss": 0.623998,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0348_1979-01-05T02-30-00.txt"
+  },
+  {
+    "session": 349,
+    "timestamp": "1979-01-05T02-45-00",
+    "epoch_losses": [
+      0.62403
+    ],
+    "final_loss": 0.62403,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0349_1979-01-05T02-45-00.txt"
+  },
+  {
+    "session": 350,
+    "timestamp": "1979-01-05T03-00-00",
+    "epoch_losses": [
+      0.626013
+    ],
+    "final_loss": 0.626013,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0350_1979-01-05T03-00-00.txt"
+  },
+  {
+    "session": 351,
+    "timestamp": "1979-01-05T03-15-00",
+    "epoch_losses": [
+      0.624845
+    ],
+    "final_loss": 0.624845,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0351_1979-01-05T03-15-00.txt"
+  },
+  {
+    "session": 352,
+    "timestamp": "1979-01-05T03-30-00",
+    "epoch_losses": [
+      0.621681
+    ],
+    "final_loss": 0.621681,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0352_1979-01-05T03-30-00.txt"
+  },
+  {
+    "session": 353,
+    "timestamp": "1979-01-05T03-45-00",
+    "epoch_losses": [
+      0.62441
+    ],
+    "final_loss": 0.62441,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0353_1979-01-05T03-45-00.txt"
+  },
+  {
+    "session": 354,
+    "timestamp": "1979-01-05T04-00-00",
+    "epoch_losses": [
+      0.623109
+    ],
+    "final_loss": 0.623109,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0354_1979-01-05T04-00-00.txt"
+  },
+  {
+    "session": 355,
+    "timestamp": "1979-01-05T04-15-00",
+    "epoch_losses": [
+      0.622556
+    ],
+    "final_loss": 0.622556,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0355_1979-01-05T04-15-00.txt"
+  },
+  {
+    "session": 356,
+    "timestamp": "1979-01-05T04-30-00",
+    "epoch_losses": [
+      0.624709
+    ],
+    "final_loss": 0.624709,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0356_1979-01-05T04-30-00.txt"
+  },
+  {
+    "session": 357,
+    "timestamp": "1979-01-05T04-45-00",
+    "epoch_losses": [
+      0.625488
+    ],
+    "final_loss": 0.625488,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0357_1979-01-05T04-45-00.txt"
+  },
+  {
+    "session": 358,
+    "timestamp": "1979-01-05T05-00-00",
+    "epoch_losses": [
+      0.625874
+    ],
+    "final_loss": 0.625874,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0358_1979-01-05T05-00-00.txt"
+  },
+  {
+    "session": 359,
+    "timestamp": "1979-01-05T05-15-00",
+    "epoch_losses": [
+      0.623502
+    ],
+    "final_loss": 0.623502,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0359_1979-01-05T05-15-00.txt"
+  },
+  {
+    "session": 360,
+    "timestamp": "1979-01-05T05-30-00",
+    "epoch_losses": [
+      0.626049
+    ],
+    "final_loss": 0.626049,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0360_1979-01-05T05-30-00.txt"
+  },
+  {
+    "session": 361,
+    "timestamp": "1979-01-05T05-45-00",
+    "epoch_losses": [
+      0.62254
+    ],
+    "final_loss": 0.62254,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0361_1979-01-05T05-45-00.txt"
+  },
+  {
+    "session": 362,
+    "timestamp": "1979-01-05T06-00-00",
+    "epoch_losses": [
+      0.626573
+    ],
+    "final_loss": 0.626573,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0362_1979-01-05T06-00-00.txt"
+  },
+  {
+    "session": 363,
+    "timestamp": "1979-01-05T06-15-00",
+    "epoch_losses": [
+      0.624728
+    ],
+    "final_loss": 0.624728,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0363_1979-01-05T06-15-00.txt"
+  },
+  {
+    "session": 364,
+    "timestamp": "1979-01-05T06-30-00",
+    "epoch_losses": [
+      0.626031
+    ],
+    "final_loss": 0.626031,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0364_1979-01-05T06-30-00.txt"
+  },
+  {
+    "session": 365,
+    "timestamp": "1979-01-05T06-45-00",
+    "epoch_losses": [
+      0.624116
+    ],
+    "final_loss": 0.624116,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0365_1979-01-05T06-45-00.txt"
+  },
+  {
+    "session": 366,
+    "timestamp": "1979-01-05T07-00-00",
+    "epoch_losses": [
+      0.62331
+    ],
+    "final_loss": 0.62331,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0366_1979-01-05T07-00-00.txt"
+  },
+  {
+    "session": 367,
+    "timestamp": "1979-01-05T07-15-00",
+    "epoch_losses": [
+      0.626781
+    ],
+    "final_loss": 0.626781,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0367_1979-01-05T07-15-00.txt"
+  },
+  {
+    "session": 368,
+    "timestamp": "1979-01-05T07-30-00",
+    "epoch_losses": [
+      0.624813
+    ],
+    "final_loss": 0.624813,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0368_1979-01-05T07-30-00.txt"
+  },
+  {
+    "session": 369,
+    "timestamp": "1979-01-05T07-45-00",
+    "epoch_losses": [
+      0.623452
+    ],
+    "final_loss": 0.623452,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0369_1979-01-05T07-45-00.txt"
+  },
+  {
+    "session": 370,
+    "timestamp": "1979-01-05T08-00-00",
+    "epoch_losses": [
+      0.623317
+    ],
+    "final_loss": 0.623317,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0370_1979-01-05T08-00-00.txt"
+  },
+  {
+    "session": 371,
+    "timestamp": "1979-01-05T08-15-00",
+    "epoch_losses": [
+      0.623933
+    ],
+    "final_loss": 0.623933,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0371_1979-01-05T08-15-00.txt"
+  },
+  {
+    "session": 372,
+    "timestamp": "1979-01-05T08-30-00",
+    "epoch_losses": [
+      0.623716
+    ],
+    "final_loss": 0.623716,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0372_1979-01-05T08-30-00.txt"
+  },
+  {
+    "session": 373,
+    "timestamp": "1979-01-05T08-45-00",
+    "epoch_losses": [
+      0.623709
+    ],
+    "final_loss": 0.623709,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0373_1979-01-05T08-45-00.txt"
+  },
+  {
+    "session": 374,
+    "timestamp": "1979-01-05T09-00-00",
+    "epoch_losses": [
+      0.621846
+    ],
+    "final_loss": 0.621846,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0374_1979-01-05T09-00-00.txt"
+  },
+  {
+    "session": 375,
+    "timestamp": "1979-01-05T09-15-00",
+    "epoch_losses": [
+      0.624039
+    ],
+    "final_loss": 0.624039,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0375_1979-01-05T09-15-00.txt"
+  },
+  {
+    "session": 376,
+    "timestamp": "1979-01-05T09-30-00",
+    "epoch_losses": [
+      0.625587
+    ],
+    "final_loss": 0.625587,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0376_1979-01-05T09-30-00.txt"
+  },
+  {
+    "session": 377,
+    "timestamp": "1979-01-05T09-45-00",
+    "epoch_losses": [
+      0.622842
+    ],
+    "final_loss": 0.622842,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0377_1979-01-05T09-45-00.txt"
+  },
+  {
+    "session": 378,
+    "timestamp": "1979-01-05T10-00-00",
+    "epoch_losses": [
+      0.620267
+    ],
+    "final_loss": 0.620267,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0378_1979-01-05T10-00-00.txt"
+  },
+  {
+    "session": 379,
+    "timestamp": "1979-01-05T10-15-00",
+    "epoch_losses": [
+      0.620891
+    ],
+    "final_loss": 0.620891,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0379_1979-01-05T10-15-00.txt"
+  },
+  {
+    "session": 380,
+    "timestamp": "1979-01-05T10-30-00",
+    "epoch_losses": [
+      0.621746
+    ],
+    "final_loss": 0.621746,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0380_1979-01-05T10-30-00.txt"
+  },
+  {
+    "session": 381,
+    "timestamp": "1979-01-05T10-45-00",
+    "epoch_losses": [
+      0.622044
+    ],
+    "final_loss": 0.622044,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0381_1979-01-05T10-45-00.txt"
+  },
+  {
+    "session": 382,
+    "timestamp": "1979-01-05T11-00-00",
+    "epoch_losses": [
+      0.623279
+    ],
+    "final_loss": 0.623279,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0382_1979-01-05T11-00-00.txt"
+  },
+  {
+    "session": 383,
+    "timestamp": "1979-01-05T11-15-00",
+    "epoch_losses": [
+      0.622321
+    ],
+    "final_loss": 0.622321,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0383_1979-01-05T11-15-00.txt"
+  },
+  {
+    "session": 384,
+    "timestamp": "1979-01-05T11-30-00",
+    "epoch_losses": [
+      0.619303
+    ],
+    "final_loss": 0.619303,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0384_1979-01-05T11-30-00.txt"
+  },
+  {
+    "session": 385,
+    "timestamp": "1979-01-05T11-45-00",
+    "epoch_losses": [
+      0.621201
+    ],
+    "final_loss": 0.621201,
+    "log_file": "/scratch/m/m301250/icon_exercise_comin/log_session_0385_1979-01-05T11-45-00.txt"
+  }
+]
