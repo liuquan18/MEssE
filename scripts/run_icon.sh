@@ -45,7 +45,7 @@ sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
 
 # Adjust experiment runtime to 24 hours (default generated script used 6 hours)
 if [[ -f "${ICON_RUN_SCRIPT}" ]]; then
-    sed -i 's|end_date=${end_date:="1979-01-01T06:00:00Z"}|end_date=${end_date:="1979-01-02T00:00:00Z"}|' ${ICON_RUN_SCRIPT}
+    sed -i 's|end_date=${end_date:="1979-01-01T06:00:00Z"}|end_date=${end_date:="1980-01-02T00:00:00Z"}|' ${ICON_RUN_SCRIPT}
 fi
 
 sbatch --account=$LEVANTE_ACCOUNT $ICON_RUN_SCRIPT
