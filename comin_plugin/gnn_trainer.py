@@ -5,6 +5,8 @@ This is a ComIn Python plugin designed for use in the ICON 2024 training course.
 # %%
 import comin
 import sys
+import os
+import shutil
 
 # %%
 import numpy as np
@@ -33,54 +35,26 @@ torch.manual_seed(0)
 glob_data = comin.descrdata_get_global()
 n_dom = glob_data.n_dom
 n_dom = np.array(n_dom)
-print("number of domains:", n_dom, file=sys.stderr)
+# print("number of domains:", n_dom, file=sys.stderr)
 
 
+# domain info
 jg = 1  # set the domain id
-
-## primary constructor
-# request to register the variable
-# Note: Only register NEW variables that we create (like "log")
-# Do NOT register existing ICON variables (like "temp", "sfcwind") - just read them with var_get
-log_descriptor = ("log", jg)
-
-comin.var_request_add(log_descriptor, lmodexclusive=False)
-
-
 domain = comin.descrdata_get_domain(jg)
 domain_np = np.asarray(domain.cells.decomp_domain)
-
-# no. of local cells (incl. halos):
 nc = domain.cells.ncells
-print("number of cells:", nc, file=sys.stderr)
-
-
-# Set metadata
-comin.metadata_set(
-    log_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_2D,
-    long_name="Log file",
-    units="",
-)
 
 
 ## secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
-    global temp, sfcwind, log
+    global temp, sfcwind, domain
     # Read existing ICON variables directly (no need for descriptors since they're not registered)
     temp = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", jg), flag=comin.COMIN_FLAG_READ
     )
     sfcwind = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("sfcwind", jg), flag=comin.COMIN_FLAG_READ
-    )
-
-    # Write to our custom registered variable
-    log = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        log_descriptor,
-        flag=comin.COMIN_FLAG_WRITE,
     )
 
 
@@ -121,13 +95,12 @@ def util_gather(data_array: np.ndarray, root=0):
         return None
 
 
-# Model and utilities are now imported from separate files
-
-
+# training callback
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
     global net, optimizer, losses, pos_np  # Declare as global to persist
 
+    ## about time
     # Get timing information first to decide if we should proceed
     start_time_obj = comin.descrdata_get_simulation_interval().run_start
     current_time_obj = comin.current_get_datetime()
@@ -147,6 +120,7 @@ def get_batch_callback():
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
     should_train = elapsed_hours > 24.0  # Only train after 24 hours
 
+    ## Skip training and data gathering
     # Skip everything if training time hasn't arrived yet
     if not should_train:
         if rank == 0:
@@ -155,6 +129,11 @@ def get_batch_callback():
                 file=sys.stderr,
             )
         return
+
+    # ===========================================
+    #           data gathering
+    # as an exmple, from temp to sfcwind
+    # ===========================================
 
     # Proceed with data gathering (only when training time has arrived)
     temp_np_glb = util_gather(np.asarray(temp))
@@ -166,25 +145,25 @@ def get_batch_callback():
     cy = np.rad2deg(domain.cells.clat)
     cy_glb = util_gather(cy)
 
-    print("data gathered!", file=sys.stderr)
-
+    # on process 0, proceed with training
     if rank == 0:
 
-        # Decide whether to use GNN or MLP based on data size
-        print("shape of temp_np_glb:", temp_np_glb.shape, file=sys.stderr)
-
-        num_nodes = len(temp_np_glb)
-
         print(
-            f"Elapsed time: {elapsed_time} ({elapsed_hours:.2f} hours)", file=sys.stderr
+            f"data gathered! input shape {temp_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
+            file=sys.stderr,
         )
-        print(f"Training enabled: {should_train}", file=sys.stderr)
+        print(
+            f"Training enabled: {should_train}, elapsed hours: {elapsed_hours:.2f}",
+            file=sys.stderr,
+        )
 
-        # Create scratch directory if it doesn't exist
-        import os
-
+        ## prepare directory and data
+        # directory to store model checkpoints and logs
         scratch_dir = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
-        os.makedirs(scratch_dir, exist_ok=True)
+        # Remove directory and all contents if it exists, then recreate it
+        if os.path.exists(scratch_dir):
+            shutil.rmtree(scratch_dir)
+        os.makedirs(scratch_dir)
 
         # Store positions for graph construction
         pos_np = np.column_stack([cx_glb, cy_glb])
@@ -192,6 +171,11 @@ def get_batch_callback():
         # Check if checkpoint exists to decide whether to initialize or load
         checkpoint_path = f"{scratch_dir}/net_{start_time_str}.pth"
 
+        # ===========================================
+        #       model initialization / loading
+        # ===========================================
+
+        # load models if checkpoint exists
         if os.path.exists(checkpoint_path):
             # Load existing model from checkpoint
             print("=" * 60, file=sys.stderr)
@@ -215,6 +199,8 @@ def get_batch_callback():
                 f"✓ Model loaded from checkpoint at {current_time_str}", file=sys.stderr
             )
             print(f"  Checkpoint: {checkpoint_path}", file=sys.stderr)
+
+        # initialize new model if no checkpoint
         else:
             # Initialize new model with random weights
             print("=" * 60, file=sys.stderr)
@@ -231,7 +217,6 @@ def get_batch_callback():
             )
 
             print(f"Model: Mini-batch SimpleGNN", file=sys.stderr)
-            print(f"  Nodes: {num_nodes}", file=sys.stderr)
 
             num_params = sum(p.numel() for p in net.parameters())
             print(
@@ -241,12 +226,17 @@ def get_batch_callback():
             print(f"  Parameters: {num_params:,}", file=sys.stderr)
             print(f"  Learning rate: {learning_rate}", file=sys.stderr)
 
+        # ===========================================
+        # mini-batch training
+        # ===========================================
+
+        # Mini-batch configuration
+        num_nodes = temp_np_glb.shape[0]
+        batch_size = 2000  # Process 2000 nodes per batch
+        num_batches = (num_nodes + batch_size - 1) // batch_size
+
         lossfunc = torch.nn.MSELoss()
         losses = []
-
-        # ============================================
-        # Mini-batch GNN Training (always runs when we reach here, since should_train=True)
-        # ============================================
 
         print(f"\n{'='*60}", file=sys.stderr)
         print(f"🚀 Mini-batch GNN Training on {num_nodes} nodes", file=sys.stderr)
@@ -255,10 +245,6 @@ def get_batch_callback():
         # Prepare full data
         x_full = torch.FloatTensor(temp_np_glb).unsqueeze(1)  # [num_nodes, 1]
         y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
-
-        # Mini-batch configuration
-        batch_size = 2000  # Process 2000 nodes per batch
-        num_batches = (num_nodes + batch_size - 1) // batch_size
 
         print(f"Configuration:", file=sys.stderr)
         print(f"  Batch size: {batch_size} nodes/batch", file=sys.stderr)
@@ -316,7 +302,9 @@ def get_batch_callback():
         print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
         print(f"  Total batches processed: {num_batches}", file=sys.stderr)
 
-        # Save checkpoint (always save after training)
+        # ===========================================
+        #       save model and logs
+        # ===========================================
         if "net" in locals():
             torch.save(
                 {
