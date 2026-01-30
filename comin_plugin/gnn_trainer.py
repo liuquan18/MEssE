@@ -100,7 +100,9 @@ def util_gather(data_array: np.ndarray, root=0):
 def get_batch_callback():
     global net, optimizer, losses, pos_np  # Declare as global to persist
 
-    ## about time
+    #============================================
+    #      check time condition
+    #===========================================
     # Get timing information first to decide if we should proceed
     start_time_obj = comin.descrdata_get_simulation_interval().run_start
     current_time_obj = comin.current_get_datetime()
