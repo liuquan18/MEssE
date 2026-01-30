@@ -317,13 +317,13 @@ def get_batch_callback():
                 f"{scratch_dir}/net_{start_time_str}.pth",
             )
 
-        # save log file
+        # save log file (save only average loss per timestep)
+        avg_loss = np.mean(losses)
         with open(
             f"{scratch_dir}/log_{current_time_str}.txt",
             "w",
         ) as f:
-            for item in losses:
-                f.write("%s\n" % item)
+            f.write(f"{avg_loss}\n")
 
         # Write monitoring status JSON for real-time monitoring
         try:
@@ -337,9 +337,7 @@ def get_batch_callback():
                     "start_time": str(start_time),
                     "current_time": str(current_time),
                     "elapsed_time": str(elapsed_time),
-                    "n_domains": (
-                        int(n_dom[0]) if hasattr(n_dom, "__len__") else int(n_dom)
-                    ),
+                    "n_domains": int(n_dom) if n_dom is not None else 1,
                     "total_points": num_nodes,
                     "output_count": len(glob.glob(f"{scratch_dir}/log_*.txt")),
                 },
