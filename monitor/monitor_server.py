@@ -30,24 +30,45 @@ def get_latest_status():
 
 
 def get_loss_history():
-    """Get loss history from log files"""
+    """Get loss history from log files with timestamps"""
     log_files = glob.glob(os.path.join(SCRATCH_DIR, "log_*.txt"))
     if not log_files:
         return []
 
-    # Sort by modification time
-    log_files.sort(key=os.path.getmtime)
+    # Sort by filename (which contains timestamp)
+    log_files.sort()
 
-    all_losses = []
-    for log_file in log_files[-10:]:  # Last 10 files
+    loss_data = []
+    for log_file in log_files[-100:]:  # Last 100 timesteps
         try:
+            # Extract timestamp from filename
+            filename = os.path.basename(log_file)
+            time_str = filename.replace("log_", "").replace(".txt", "")
+
+            # Parse timestamp - format is YYYY-MM-DDTHH-MM-SS.sss
+            # Convert to more standard format for parsing
+            time_str_clean = time_str.replace("T", " ").replace(
+                "-", ":", 2
+            )  # Replace first 2 dashes with colons
+            time_str_clean = time_str_clean.rsplit("-", 1)[
+                0
+            ]  # Remove milliseconds part
+
+            # Read loss from file (should be single value - average of batches)
             with open(log_file, "r") as f:
-                losses = [float(line.strip()) for line in f if line.strip()]
-                all_losses.extend(losses)
-        except:
+                loss_line = f.readline().strip()
+                if loss_line:
+                    loss = float(loss_line)
+                    loss_data.append(
+                        {
+                            "time": time_str,  # Keep original format for display
+                            "loss": loss,
+                        }
+                    )
+        except Exception as e:
             pass
 
-    return all_losses[-100:]  # Return last 100 loss values
+    return loss_data
 
 
 @app.route("/")

@@ -288,12 +288,14 @@
         function updateTrainingPanel(training, losses) {
             if (!training) return;
             
-            const currentLoss = losses.length > 0 ? losses[losses.length - 1].toExponential(4) : 'N/A';
-            const avgLoss = losses.length > 0 
-                ? (losses.reduce((a, b) => a + b, 0) / losses.length).toExponential(4) 
+            // Extract loss values and times from the array of objects
+            const lossValues = losses.map(item => item.loss);
+            const currentLoss = lossValues.length > 0 ? lossValues[lossValues.length - 1].toExponential(4) : 'N/A';
+            const avgLoss = lossValues.length > 0 
+                ? (lossValues.reduce((a, b) => a + b, 0) / lossValues.length).toExponential(4) 
                 : 'N/A';
-            const minLoss = losses.length > 0 ? Math.min(...losses).toExponential(4) : 'N/A';
-            const maxLoss = losses.length > 0 ? Math.max(...losses).toExponential(4) : 'N/A';
+            const minLoss = lossValues.length > 0 ? Math.min(...lossValues).toExponential(4) : 'N/A';
+            const maxLoss = lossValues.length > 0 ? Math.max(...lossValues).toExponential(4) : 'N/A';
             
             const html = `
                 <div class="chart-container">
@@ -311,8 +313,8 @@
                         <span class="info-value">${training.model_type || 'Unknown'}</span>
                     </div>
                     <div class="info-row">
-                        <span class="info-label">Total Batches Trained</span>
-                        <span class="info-value">${training.total_batches || losses.length}</span>
+                        <span class="info-label">Total Timesteps</span>
+                        <span class="info-value">${losses.length}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Batches/Timestep</span>
@@ -353,19 +355,23 @@
                 lossChart.destroy();
             }
             
+            // Extract times and values
+            const times = losses.map(item => item.time);
+            const values = losses.map(item => item.loss);
+            
             lossChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: losses.map((_, i) => i + 1),
+                    labels: times,
                     datasets: [{
-                        label: 'Training Loss',
-                        data: losses,
+                        label: 'Training Loss (Avg per Timestep)',
+                        data: values,
                         borderColor: '#667eea',
                         backgroundColor: 'rgba(102, 126, 234, 0.1)',
                         borderWidth: 2,
                         tension: 0.4,
                         fill: true,
-                        pointRadius: 0,
+                        pointRadius: 2,
                         pointHoverRadius: 5
                     }]
                 },
@@ -381,10 +387,16 @@
                         x: {
                             title: {
                                 display: true,
-                                text: 'Batch Number'
+                                text: 'Simulation Time'
                             },
                             grid: {
                                 display: false
+                            },
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45,
+                                autoSkip: true,
+                                maxTicksLimit: 10
                             }
                         },
                         y: {
