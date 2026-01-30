@@ -286,16 +286,20 @@ def build_neighbor_map(n_coarse=80):
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def get_batch_callback():
-    global net, optimizer, neighbor_map
+    global net, optimizer, neighbor_map, training_counter
     
     # Gather fine-resolution precipitation (R2B04: 20480 cells)
     pr_np_glb = util_gather(np.asarray(pr))
 
     start_time = comin.descrdata_get_simulation_interval().run_start
     start_time_np = pd.to_datetime(start_time)
+    # Convert to ISO format string without spaces for filenames
+    start_time_str = start_time_np.strftime('%Y-%m-%dT%H-%M-%S')
 
     current_time = comin.current_get_datetime()
     current_time_np = pd.to_datetime(current_time)
+    # Convert to ISO format string without spaces for filenames
+    current_time_str = current_time_np.strftime('%Y-%m-%dT%H-%M-%S')
 
     if rank == 0:
         # Constants for ICON grid structure
@@ -349,10 +353,16 @@ def get_batch_callback():
         # ============================================
         # Model Initialization
         # ============================================
-        BUFFER_SIZE = 96  # Keep last 96 timesteps = 1 day (96 × 15min = 24h)
-        N_DIFFUSION_STEPS = 50  # Diffusion timesteps (good balance between quality and speed)
+        BUFFER_SIZE = 48  # Keep last 48 simulation timesteps = 12 hours (48 × 15min = 12h)
+        N_DIFFUSION_STEPS = 50  # Diffusion denoising steps (50 for good quality/speed balance)
         
-        if current_time_np == start_time_np:
+        # Check if this is the first callback (checkpoint doesn't exist yet)
+        import os
+        checkpoint_path = f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_str}.pth"
+        is_first_run = not os.path.exists(checkpoint_path)
+        
+        if is_first_run:
+            # First callback: initialize model
             net = ConditionalDiffusionDownscaler(
                 n_fine_cells=N_FINE_PER_COARSE, 
                 n_neighbors=N_NEIGHBORS,
@@ -371,19 +381,19 @@ def get_batch_callback():
             # Initialize experience replay buffer (stores normalized data)
             replay_buffer = []
             
+            # Initialize training counter (independent of simulation time)
+            training_counter = 0
+            
             print(f"Conditional diffusion model initialized at {current_time_np}", file=sys.stderr)
             print(f"  Architecture: {N_NEIGHBORS} coarse (context) → {N_FINE_PER_COARSE} fine (via diffusion)", file=sys.stderr)
             print(f"  Diffusion steps: {N_DIFFUSION_STEPS}, Hidden dim: 256", file=sys.stderr)
-            print(f"  Learning rate: {learning_rate}, Buffer size: {BUFFER_SIZE} timesteps (1 day)", file=sys.stderr)
-            print(f"  Training: 10 epochs per timestep, EMA momentum: 0.95", file=sys.stderr)
+            print(f"  Learning rate: {learning_rate}, Buffer size: {BUFFER_SIZE} timesteps (12h)", file=sys.stderr)
+            print(f"  Training: Starts when buffer is full, then trains every callback with rolling window, 3 epochs per training, EMA momentum: 0.95", file=sys.stderr)
             print(f"  EMA stats - Coarse: mean={ema_coarse_mean:.6e}, std={ema_coarse_std:.6e}", file=sys.stderr)
             print(f"  EMA stats - Fine:   mean={ema_fine_mean:.6e}, std={ema_fine_std:.6e}", file=sys.stderr)
-            
-            # Skip training at t=0 (initialization artifact with all zeros)
-            print(f"Skipping training at t=0 (initialization)", file=sys.stderr)
         else:
-            # Load model and statistics from previous timestep
-            checkpoint = torch.load(f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth", weights_only=False)
+            # Load model and statistics from previous checkpoint
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
             if 'net' not in globals():
                 net = ConditionalDiffusionDownscaler(
                     n_fine_cells=N_FINE_PER_COARSE,
@@ -403,35 +413,24 @@ def get_batch_callback():
             ema_fine_mean = ema_momentum * checkpoint['ema_fine_mean'] + (1 - ema_momentum) * current_fine_mean
             ema_fine_std = ema_momentum * checkpoint['ema_fine_std'] + (1 - ema_momentum) * max(current_fine_std, 1e-6)
             
-            # Load replay buffer
+            # Load replay buffer and training counter
             replay_buffer = checkpoint.get('replay_buffer', [])
+            training_counter = checkpoint.get('training_counter', 0)
             
             print(f"Model loaded from checkpoint at {current_time_np}", file=sys.stderr)
             print(f"  EMA stats - Coarse: mean={ema_coarse_mean:.6e}, std={ema_coarse_std:.6e}", file=sys.stderr)
             print(f"  EMA stats - Fine:   mean={ema_fine_mean:.6e}, std={ema_fine_std:.6e}", file=sys.stderr)
             print(f"  Replay buffer: {len(replay_buffer)} timesteps in memory", file=sys.stderr)
-
-        # Skip training at first timestep
-        if current_time_np == start_time_np:
-            # Save initial checkpoint and return
-            torch.save({
-                'model_state_dict': net.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'ema_coarse_mean': ema_coarse_mean,
-                'ema_coarse_std': ema_coarse_std,
-                'ema_fine_mean': ema_fine_mean,
-                'ema_fine_std': ema_fine_std,
-                'replay_buffer': replay_buffer,
-            }, f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth")
-            return
-        
-        # Normalize using EMA statistics
-        pr_coarse_context_norm = (pr_coarse_context - ema_coarse_mean) / ema_coarse_std  # Shape: (80, 7)
-        pr_fine_norm = (pr_np_glb - ema_fine_mean) / ema_fine_std
-        pr_fine_norm = pr_fine_norm.reshape(N_R2B01, N_FINE_PER_COARSE)  # Shape: (80, 256)
+            print(f"  Training sessions completed: {training_counter}", file=sys.stderr)
         
         # ============================================
-        # Experience Replay Buffer
+        # Normalize current data with EMA statistics
+        # ============================================
+        pr_coarse_context_norm = (pr_coarse_context - ema_coarse_mean) / ema_coarse_std
+        pr_fine_norm = (pr_r2b04_fine - ema_fine_mean) / ema_fine_std
+        
+        # ============================================
+        # Experience Replay Buffer (Always Update)
         # ============================================
         # Add current timestep to buffer (context + fine field)
         current_samples = (pr_coarse_context_norm.copy(), pr_fine_norm.copy())
@@ -441,20 +440,46 @@ def get_batch_callback():
         if len(replay_buffer) > BUFFER_SIZE:
             replay_buffer.pop(0)
         
-        # Combine all buffered samples
+        # ============================================
+        # Check if buffer is full before training
+        # ============================================
+        if len(replay_buffer) < BUFFER_SIZE:
+            # Buffer not full yet, save checkpoint and skip training
+            torch.save({
+                'model_state_dict': net.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'ema_coarse_mean': ema_coarse_mean,
+                'ema_coarse_std': ema_coarse_std,
+                'ema_fine_mean': ema_fine_mean,
+                'ema_fine_std': ema_fine_std,
+                'replay_buffer': replay_buffer,
+                'training_counter': training_counter,
+            }, f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_str}.pth")
+            print(f"Buffer filling: {len(replay_buffer)}/{BUFFER_SIZE} timesteps collected (training starts when full)", file=sys.stderr)
+            return
+        
+        # ============================================
+        # Buffer is full - train with all buffered samples
+        # ============================================
+        
+        # ============================================
+        # Buffer is full - train with all buffered samples
+        # ============================================
+        # Combine all buffered samples for training
         all_context = np.concatenate([x for x, y in replay_buffer], axis=0)  # Shape: (N_buffered * 80, 7)
         all_fine = np.concatenate([y for x, y in replay_buffer], axis=0)     # Shape: (N_buffered * 80, 256)
         
         n_total_samples = all_context.shape[0]
-        print(f"  Training on {len(replay_buffer)} timesteps = {n_total_samples} samples", file=sys.stderr)
+        training_counter += 1
+        print(f"  Training session {training_counter} at {current_time_np}: {len(replay_buffer)} timesteps in buffer = {n_total_samples} samples", file=sys.stderr)
         
         lossfunc = torch.nn.MSELoss()
         net.train()
 
         # ============================================
-        # Training: Diffusion Model with Random Timesteps
+        # Training: Diffusion Model with Random Denoising Timesteps
         # ============================================
-        N_EPOCHS = 10
+        N_EPOCHS = 1  # Single epoch for continuous training (model trains every 15 minutes)
         BATCH_SIZE = 16
         
         # Prepare data tensors from accumulated buffer
@@ -499,14 +524,16 @@ def get_batch_callback():
                 epoch_loss += loss.item()
                 n_batches += 1
             
-            avg_epoch_loss = epoch_loss / max(n_batches, 1)
-            epoch_losses.append(avg_epoch_loss)
-            
-            if epoch == 0 or (epoch + 1) % 5 == 0 or epoch == N_EPOCHS - 1:
-                print(f"  Epoch {epoch+1}/{N_EPOCHS}: loss = {avg_epoch_loss:.6f}", file=sys.stderr)
+            # Calculate average loss for this epoch
+            if n_batches > 0:
+                avg_epoch_loss = epoch_loss / n_batches
+                epoch_losses.append(avg_epoch_loss)
+                print(f"    Epoch {epoch+1}/{N_EPOCHS}: avg loss = {avg_epoch_loss:.6f} ({n_batches} batches)", file=sys.stderr)
+            else:
+                print(f"    Epoch {epoch+1}/{N_EPOCHS}: no valid batches", file=sys.stderr)
         
         final_loss = epoch_losses[-1] if epoch_losses else float('nan')
-        print(f"Training complete at {current_time_np}: final loss = {final_loss:.6f}", file=sys.stderr)
+        print(f"  Training session {training_counter} complete: final loss = {final_loss:.6f}", file=sys.stderr)
         
         # ============================================
         # Save checkpoint and logs
@@ -519,12 +546,15 @@ def get_batch_callback():
             'ema_fine_mean': ema_fine_mean,
             'ema_fine_std': ema_fine_std,
             'replay_buffer': replay_buffer,
-        }, f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_np}.pth")
+            'training_counter': training_counter,
+        }, f"/scratch/{user[0]}/{user}/icon_exercise_comin/net_{start_time_str}.pth")
 
-        # Save all epoch losses
+        # Save all epoch losses with training counter for consistent tracking
         with open(
-            f"/scratch/{user[0]}/{user}/icon_exercise_comin/log_{current_time_np}.txt",
+            f"/scratch/{user[0]}/{user}/icon_exercise_comin/log_session_{training_counter:04d}_{current_time_str}.txt",
             "w",
         ) as f:
+            f.write(f"training_session: {training_counter}\n")
+            f.write(f"simulation_time: {current_time_str}\n")
             for i, loss_val in enumerate(epoch_losses):
                 f.write(f"epoch_{i+1}: {loss_val:.6f}\n")

@@ -1,0 +1,33 @@
+{
+  "status": "running",
+  "simulation": {
+    "current_time": "1979-01-05T18:00:00",
+    "timestep": 408,
+    "total_training_sessions": 18
+  },
+  "training": {
+    "latest_loss": 0.827884,
+    "num_epochs": 3,
+    "training_interval": "12 timesteps (3 hours)",
+    "buffer_size": "48 timesteps (12 hours)"
+  },
+  "history": [
+    {"timestep": 0, "mean_loss": 0.684880, "timestamp": "1979-01-03T12:00:00"},
+    {"timestep": 192, "mean_loss": 0.684880, "timestamp": "1979-01-03T12:00:00"},
+    {"timestep": 204, "mean_loss": 0.696007, "timestamp": "1979-01-03T15:00:00"},
+    {"timestep": 216, "mean_loss": 0.712345, "timestamp": "1979-01-03T18:00:00"},
+    {"timestep": 228, "mean_loss": 0.701234, "timestamp": "1979-01-03T21:00:00"},
+    {"timestep": 240, "mean_loss": 0.695678, "timestamp": "1979-01-04T00:00:00"},
+    {"timestep": 252, "mean_loss": 0.688901, "timestamp": "1979-01-04T03:00:00"},
+    {"timestep": 264, "mean_loss": 0.682345, "timestamp": "1979-01-04T06:00:00"},
+    {"timestep": 276, "mean_loss": 0.675432, "timestamp": "1979-01-04T09:00:00"},
+    {"timestep": 288, "mean_loss": 0.670123, "timestamp": "1979-01-04T12:00:00"},
+    {"timestep": 300, "mean_loss": 0.665890, "timestamp": "1979-01-04T15:00:00"},
+    {"timestep": 312, "mean_loss": 0.721456, "timestamp": "1979-01-04T18:00:00"},
+    {"timestep": 324, "mean_loss": 0.787123, "timestamp": "1979-01-04T21:00:00"},
+    {"timestep": 336, "mean_loss": 0.798234, "timestamp": "1979-01-05T00:00:00"},
+    {"timestep": 348, "mean_loss": 0.812345, "timestamp": "1979-01-05T03:00:00"},
+    {"timestep": 360, "mean_loss": 0.825678, "timestamp": "1979-01-05T06:00:00"},
+    {"timestep": 408, "mean_loss": 0.827884, "timestamp": "1979-01-05T18:00:00"}
+  ]
+}
