@@ -60,6 +60,38 @@
             50% { opacity: 0.5; }
         }
 
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        .waiting-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            animation: blink 2s ease-in-out infinite;
+            border-radius: 10px;
+        }
+
+        .waiting-overlay .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+
+        .waiting-overlay .message {
+            font-size: 16px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
         .container {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -226,6 +258,8 @@
 
     <script>
         let lossChart = null;
+        let tempChart = null;
+        let isInitialized = false;
         
         function updateStatus() {
             fetch('/api/status')
@@ -235,24 +269,125 @@
                         document.getElementById('statusText').textContent = 'Live';
                         document.getElementById('statusDot').style.background = '#4ade80';
                         
-                        updateSimulationPanel(data.simulation);
+                        updateSimulationPanel(data.simulation, data.temperatures);
                         updateTrainingPanel(data.training, data.losses);
+                        isInitialized = true;
                     } else {
                         document.getElementById('statusText').textContent = 'Waiting';
                         document.getElementById('statusDot').style.background = '#fbbf24';
+                        
+                        // Always show waiting panels when no data
+                        showWaitingPanels();
                     }
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
                     document.getElementById('statusText').textContent = 'Disconnected';
                     document.getElementById('statusDot').style.background = '#ef4444';
+                    
+                    // Show error state
+                    showWaitingPanels();
                 });
         }
 
-        function updateSimulationPanel(sim) {
+        function showWaitingPanels() {
+            // Only initialize once
+            if (isInitialized) return;
+            
+            const simContent = document.getElementById('simulationContent');
+            const trainContent = document.getElementById('trainingContent');
+            
+            if (simContent.children.length === 0 || simContent.querySelector('.waiting-state')) {
+                simContent.innerHTML = `
+                    <div style="position: relative; min-height: 400px;">
+                        <div class="chart-container">
+                            <canvas id="tempChart"></canvas>
+                        </div>
+                        <div class="waiting-overlay">
+                            <div class="icon">🌡️</div>
+                            <div class="message">Waiting for temperature data...</div>
+                        </div>
+                    </div>
+                    <div class="metric-card" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+                        <div class="metric-label">Global Mean Temperature</div>
+                        <div class="metric-value" style="animation: blink 2s ease-in-out infinite;">-- K</div>
+                    </div>
+                    <div class="info-grid">
+                        <div class="info-row">
+                            <span class="info-label">Start Time</span>
+                            <span class="info-value">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Current Time</span>
+                            <span class="info-value">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Status</span>
+                            <span class="info-value" style="animation: blink 2s ease-in-out infinite;">Initializing...</span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            if (trainContent.children.length === 0 || trainContent.querySelector('.waiting-state')) {
+                trainContent.innerHTML = `
+                    <div style="position: relative; min-height: 400px;">
+                        <div class="chart-container">
+                            <canvas id="lossChart"></canvas>
+                        </div>
+                        <div class="waiting-overlay">
+                            <div class="icon">🧠</div>
+                            <div class="message">Waiting for training data...</div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Training Loss</div>
+                        <div class="metric-value" style="animation: blink 2s ease-in-out infinite;">--</div>
+                    </div>
+                    <div class="info-grid">
+                        <div class="info-row">
+                            <span class="info-label">Model Type</span>
+                            <span class="info-value">--</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="info-label">Status</span>
+                            <span class="info-value" style="animation: blink 2s ease-in-out infinite;">Waiting...</span>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function updateSimulationPanel(sim, temperatures) {
             if (!sim) return;
             
+            // Only show panel after first timestep (when we have data)
+            if (temperatures.length === 0) {
+                // Keep waiting state
+                return;
+            }
+            
+            // Calculate temperature statistics
+            const tempValues = temperatures.map(item => item.temperature);
+            const currentTemp = tempValues.length > 0 ? tempValues[tempValues.length - 1].toFixed(2) : 'N/A';
+            const avgTemp = tempValues.length > 0 
+                ? (tempValues.reduce((a, b) => a + b, 0) / tempValues.length).toFixed(2) 
+                : 'N/A';
+            const minTemp = tempValues.length > 0 ? Math.min(...tempValues).toFixed(2) : 'N/A';
+            const maxTemp = tempValues.length > 0 ? Math.max(...tempValues).toFixed(2) : 'N/A';
+            
             const html = `
+                <div style="position: relative;">
+                    <div class="chart-container">
+                        <canvas id="tempChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="metric-card" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
+                    <div class="metric-label">Current Global Mean Temperature</div>
+                    <div class="metric-value">${currentTemp} K</div>
+                </div>
+                
                 <div class="info-grid">
                     <div class="info-row">
                         <span class="info-label">Start Time</span>
@@ -267,6 +402,18 @@
                         <span class="info-value">${sim.elapsed_time || 'N/A'}</span>
                     </div>
                     <div class="info-row">
+                        <span class="info-label">Temperature Timesteps</span>
+                        <span class="info-value">${temperatures.length}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Average Temperature</span>
+                        <span class="info-value">${avgTemp} K</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Min / Max Temperature</span>
+                        <span class="info-value">${minTemp} / ${maxTemp} K</span>
+                    </div>
+                    <div class="info-row">
                         <span class="info-label">Number of Domains</span>
                         <span class="info-value">${sim.n_domains || 'N/A'}</span>
                     </div>
@@ -274,21 +421,24 @@
                         <span class="info-label">Total Grid Points</span>
                         <span class="info-value">${sim.total_points || 'N/A'}</span>
                     </div>
-                    <div class="info-row">
-                        <span class="info-label">Output Timesteps</span>
-                        <span class="info-value">${sim.output_count || 'N/A'}</span>
-                    </div>
                 </div>
                 <div class="timestamp">Last updated: ${new Date().toLocaleTimeString()}</div>
             `;
             
             document.getElementById('simulationContent').innerHTML = html;
+            
+            // Update temperature chart
+            updateTempChart(temperatures);
         }
 
         function updateTrainingPanel(training, losses) {
-            if (!training) return;
+            // Only show panel after first timestep (when we have data)
+            if (losses.length === 0) {
+                // Keep waiting state
+                return;
+            }
             
-            // Extract loss values and times from the array of objects
+            // Calculate loss statistics - losses is an array of objects
             const lossValues = losses.map(item => item.loss);
             const currentLoss = lossValues.length > 0 ? lossValues[lossValues.length - 1].toExponential(4) : 'N/A';
             const avgLoss = lossValues.length > 0 
@@ -298,8 +448,10 @@
             const maxLoss = lossValues.length > 0 ? Math.max(...lossValues).toExponential(4) : 'N/A';
             
             const html = `
-                <div class="chart-container">
-                    <canvas id="lossChart"></canvas>
+                <div style="position: relative;">
+                    <div class="chart-container">
+                        <canvas id="lossChart"></canvas>
+                    </div>
                 </div>
                 
                 <div class="metric-card">
@@ -343,10 +495,34 @@
             
             document.getElementById('trainingContent').innerHTML = html;
             
-            // Update chart
+            // Update loss chart
             updateLossChart(losses);
         }
 
+        function updateLossChart(losses) {
+            // Don't update if no data - keep existing chart or empty state
+            if (losses.length === 0) {
+                if (lossChart) {
+                    lossChart.data.labels = [];
+                    lossChart.data.datasets[0].data = [];
+                    lossChart.update('none'); // Update without animation
+                }
+                return;
+            }
+            
+            // Extract times and values
+            const times = losses.map(item => item.time);
+            const values = losses.map(item => item.loss);
+            
+            // Update existing chart if it exists
+            if (lossChart) {
+                lossChart.data.labels = times;
+                lossChart.data.datasets[0].data = values;
+                lossChart.update('none'); // Update without animation to prevent jumping
+                return;
+            }
+            
+            // Create new chart only if it doesn't exist
         function updateLossChart(losses) {
             const ctx = document.getElementById('lossChart');
             if (!ctx) return;
@@ -403,6 +579,94 @@
                             title: {
                                 display: true,
                                 text: 'Loss Value'
+                            },
+            // Don't update if no data - keep existing chart or empty state
+            if (temperatures.length === 0) {
+                if (tempChart) {
+                    tempChart.data.labels = [];
+                    tempChart.data.datasets[0].data = [];
+                    tempChart.update('none'); // Update without animation
+                }
+                return;
+            }
+            
+            // Extract times and values
+            const times = temperatures.map(item => item.time);
+            const values = temperatures.map(item => item.temperature);
+            
+            // Update existing chart if it exists
+            if (tempChart) {
+                tempChart.data.labels = times;
+                tempChart.data.datasets[0].data = values;
+                tempChart.update('none'); // Update without animation to prevent jumping
+                return;
+            }
+            
+            // Create new chart only if it doesn't exist
+        function updateTempChart(temperatures) {
+            const ctx = document.getElementById('tempChart');
+            if (!ctx) return;
+            
+            if (tempChart) {
+                tempChart.destroy();
+            }
+            
+            // Extract times and values
+            const times = temperatures.map(item => item.time);
+            const values = temperatures.map(item => item.temperature);
+            
+            tempChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: times,
+                    datasets: [{
+                        label: 'Global Mean Temperature',
+                        data: values,
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 2,
+                        pointHoverRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        title: {
+                            display: true,
+                            text: 'Global Mean Surface Temperature (tas_gmean)',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Simulation Time'
+                            },
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                maxRotation: 45,
+                                minRotation: 45,
+                                autoSkip: true,
+                                maxTicksLimit: 10
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Temperature (K)'
                             },
                             beginAtZero: false
                         }

@@ -10,8 +10,10 @@ echo ""
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Activate Python virtual environment
-VENV_PATH="/work/mh0033/m300883/Project_week/MEssE/build/messe_env/py_env"
+# Use relative path from script directory
+VENV_PATH="$SCRIPT_DIR/../build/messe_env/py_env"
 echo "🐍 Activating Python environment..."
+echo "   Path: $VENV_PATH"
 source "$VENV_PATH/bin/activate"
 
 # Check if Flask is installed
@@ -29,7 +31,7 @@ fi
 
 # Get hostname and port
 HOSTNAME=$(hostname)
-PORT=5000
+PORT=5001
 
 echo "🚀 Starting monitoring server..."
 echo ""
