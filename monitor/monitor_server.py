@@ -4,6 +4,7 @@ MEssE v1.0 Monitoring Server
 Real-time monitoring of ICON simulation and NN training
 """
 
+import sys
 from flask import Flask, render_template, jsonify
 import os
 import glob
@@ -23,6 +24,7 @@ EXPERIMENT_DIR = os.path.join(
     PROJECT_ROOT, "build/messe_env/build_dir/icon-model/experiments/esm_bb_ruby0"
 )
 
+PORT=sys.argv[1] if len(sys.argv) > 1 else "5005"
 
 def get_latest_status():
     """Read the latest status file"""
@@ -142,18 +144,13 @@ def api_status():
             }
         )
 
-    # Only return data after first timestep (skip timestep 0)
-    # Filter to show data only from timestep 1 onwards
-    filtered_losses = losses[1:] if len(losses) > 1 else []
-    filtered_temperatures = temperatures[1:] if len(temperatures) > 1 else []
-
     return jsonify(
         {
             "status": "running",
             "simulation": status.get("simulation", {}),
             "training": status.get("training", {}),
-            "losses": filtered_losses,
-            "temperatures": filtered_temperatures,
+            "losses": losses,
+            "temperatures": temperatures,
             "timestamp": status.get("timestamp", ""),
         }
     )
@@ -166,8 +163,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  MEssE v1.0 - Monitoring Server Starting...")
     print("=" * 60)
-    print(f"\n  🌐 Access the interface at: http://localhost:5001")
+    print(f"\n  🌐 Access the interface at: http://localhost:{PORT}")
     print(f"  📁 Data directory: {SCRATCH_DIR}")
     print("\n" + "=" * 60 + "\n")
 
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    app.run(host="0.0.0.0", port=int(PORT), debug=False)
