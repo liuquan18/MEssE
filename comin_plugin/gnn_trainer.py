@@ -259,7 +259,7 @@ def get_batch_callback():
         # ===========================================
 
         num_batches = len(dataloader)
-        num_epochs = 10  # Train for 10 epochs
+        num_epochs = 2  # Train for 2 epochs
 
         lossfunc = torch.nn.MSELoss()
         losses = []
