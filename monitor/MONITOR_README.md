@@ -46,8 +46,6 @@ Then access: http://localhost:5000 in your local browser
 
 The monitoring interface will automatically detect and display data from your running ICON simulation with the ComIn plugin.
 
-**Note**: Neural network training begins only after 24 hours of simulation elapsed time. Before that, the interface will show "Training: Waiting" status.
-
 ## Interface Layout
 
 ```
@@ -84,10 +82,9 @@ scripts/plugin/
 ```
 
 ### Data Flow
-1. The `gnn_trainer_gpu.py` ComIn plugin writes status files to `/scratch/.../icon_exercise_comin/`
-2. Training begins only after 24 hours of simulation elapsed time
-3. The web server reads these files and serves them via API
-4. The browser fetches updates every 2 seconds and displays them
+1. The `comin_plugin.py` script writes status files to `/scratch/.../icon_exercise_comin/`
+2. The web server reads these files and serves them via API
+3. The browser fetches updates every 2 seconds and displays them
 
 ### Requirements
 - Python 3.x

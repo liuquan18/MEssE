@@ -326,24 +326,24 @@ def get_batch_callback():
                 f"{scratch_dir}/net_{start_time_str}.pth",
             )
 
-        # save log file with detailed batch losses and epoch averages
-        avg_loss = np.mean(losses)
+        # Save the final epoch's average loss for this timestep
+        # This will be displayed as one point per timestep in the monitor
+        final_epoch_avg_loss = losses[-1]  # Last epoch's average loss
         with open(
             f"{scratch_dir}/log_{current_time_str}.txt",
             "w",
         ) as f:
-            # Write epoch average losses (one per epoch)
-            for epoch_loss in losses:
-                f.write(f"{epoch_loss}\n")
+            # Write only the final epoch's average loss
+            f.write(f"{final_epoch_avg_loss}\n")
 
-        # Also save detailed batch-level losses for analysis
+        # Also save detailed epoch-level losses for analysis
         with open(
             f"{scratch_dir}/log_detailed_{current_time_str}.txt",
             "w",
         ) as f:
-            f.write(f"# Epoch-level average losses\n")
+            f.write(f"# Epoch-level average losses for this timestep\n")
             for i, epoch_loss in enumerate(losses):
-                f.write(f"{epoch_loss:.6e}\n")
+                f.write(f"Epoch {i+1}: {epoch_loss:.6e}\n")
 
         # Write monitoring status JSON for real-time monitoring
         try:
