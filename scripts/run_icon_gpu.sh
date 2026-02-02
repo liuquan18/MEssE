@@ -98,8 +98,10 @@ sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
 
 # Clean previous training data
 echo "Cleaning previous training data..."
-rm -rf /scratch/m/m301250/icon_exercise_comin/*
-echo "Starting fresh training run"
+USER_FIRST_CHAR="${USER:0:1}"
+LOSS_OUTPUT_DIR="/scratch/${USER_FIRST_CHAR}/${USER}/icon_exercise_comin"
+rm -rf ${LOSS_OUTPUT_DIR}/*
+echo "Starting fresh training run (cleaned ${LOSS_OUTPUT_DIR})"
 
 
 sbatch --account=$LEVANTE_ACCOUNT $ICON_RUN_SCRIPT

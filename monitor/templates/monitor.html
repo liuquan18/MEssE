@@ -237,7 +237,7 @@
                         document.getElementById('statusDot').style.background = '#4ade80';
                         
                         updateSimulationPanel(data.simulation, data.temperatures);
-                        updateTrainingPanel(data.training, data.epoch_losses);
+                        updateTrainingPanel(data.training, data.hardware, data.epoch_losses);
                     } else {
                         document.getElementById('statusText').textContent = 'Waiting';
                         document.getElementById('statusDot').style.background = '#fbbf24';
@@ -304,7 +304,7 @@
             }
         }
 
-        function updateTrainingPanel(training, epoch_losses) {
+        function updateTrainingPanel(training, hardware, epoch_losses) {
             if (!training) return;
             
             const currentLoss = epoch_losses.length > 0 ? epoch_losses[epoch_losses.length - 1].toExponential(4) : 'N/A';
@@ -313,6 +313,12 @@
                 : 'N/A';
             const minLoss = epoch_losses.length > 0 ? Math.min(...epoch_losses).toExponential(4) : 'N/A';
             const maxLoss = epoch_losses.length > 0 ? Math.max(...epoch_losses).toExponential(4) : 'N/A';
+            
+            // GPU status
+            const gpuStatus = hardware && hardware.gpu_available 
+                ? `🚀 ${hardware.gpu_name}` 
+                : '💻 CPU';
+            const deviceInfo = hardware ? hardware.device : 'N/A';
             
             const html = `
                 <div class="metric-card">
@@ -328,6 +334,14 @@
                     <div class="info-row">
                         <span class="info-label">Model Type</span>
                         <span class="info-value">${training.model_type || 'Unknown'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Training Device</span>
+                        <span class="info-value">${gpuStatus}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Device Name</span>
+                        <span class="info-value">${deviceInfo}</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Total Epochs Trained</span>
