@@ -326,13 +326,24 @@ def get_batch_callback():
                 f"{scratch_dir}/net_{start_time_str}.pth",
             )
 
-        # save log file (save only average loss per timestep)
+        # save log file with detailed batch losses and epoch averages
         avg_loss = np.mean(losses)
         with open(
             f"{scratch_dir}/log_{current_time_str}.txt",
             "w",
         ) as f:
-            f.write(f"{avg_loss}\n")
+            # Write epoch average losses (one per epoch)
+            for epoch_loss in losses:
+                f.write(f"{epoch_loss}\n")
+
+        # Also save detailed batch-level losses for analysis
+        with open(
+            f"{scratch_dir}/log_detailed_{current_time_str}.txt",
+            "w",
+        ) as f:
+            f.write(f"# Epoch-level average losses\n")
+            for i, epoch_loss in enumerate(losses):
+                f.write(f"{epoch_loss:.6e}\n")
 
         # Write monitoring status JSON for real-time monitoring
         try:
@@ -357,6 +368,21 @@ def get_batch_callback():
                     "current_loss": float(losses[-1]) if losses else 0.0,
                     "num_epochs": num_epochs if "num_epochs" in locals() else 10,
                     "num_batches": num_batches if "num_batches" in locals() else 0,
+                    "batches_per_epoch": (
+                        num_batches if "num_batches" in locals() else 0
+                    ),
+                    "total_batches": (
+                        num_epochs * num_batches
+                        if "num_epochs" in locals() and "num_batches" in locals()
+                        else 0
+                    ),
+                    "batches_per_timestep": (
+                        num_epochs * num_batches
+                        if "num_epochs" in locals() and "num_batches" in locals()
+                        else 0
+                    ),
+                    "num_samples": num_samples if "num_samples" in locals() else 0,
+                    "sample_size": sample_size if "sample_size" in locals() else 2500,
                     "learning_rate": 0.001,
                     "avg_loss": float(np.mean(losses)) if losses else 0.0,
                     "min_loss": float(np.min(losses)) if losses else 0.0,
