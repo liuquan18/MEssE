@@ -4,27 +4,30 @@ MEssE v1.0 Monitoring Server
 Real-time monitoring of ICON simulation and NN training
 """
 
-import sys
 from flask import Flask, render_template, jsonify
 import os
+import sys
 import glob
 import json
 import getpass
-from datetime import datetime
 import numpy as np
+from datetime import datetime
+
+PORT=sys.argv[1] if len(sys.argv) > 1 else 5000
 
 app = Flask(__name__)
 
 user = getpass.getuser()
 SCRATCH_DIR = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
-# Get the project root directory (parent of monitor/)
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-EXPERIMENT_DIR = os.path.join(
-    PROJECT_ROOT, "build/messe_env/build_dir/icon-model/experiments/esm_bb_ruby0"
-)
 
-PORT=sys.argv[1] if len(sys.argv) > 1 else "5005"
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Construct relative path to experiment directory
+EXPERIMENT_DIR = os.path.join(
+    SCRIPT_DIR, "../build/messe_env/build_dir/icon-model/experiments/esm_bb_ruby0"
+)
+EXPERIMENT_DIR = os.path.abspath(EXPERIMENT_DIR)
+
 
 def get_latest_status():
     """Read the latest status file"""
@@ -39,13 +42,13 @@ def get_latest_status():
 
 
 def get_loss_history():
-    """Get loss history from log files with timestamps"""
+    """Get loss history from log files (timestep-level final epoch average)"""
     log_files = glob.glob(os.path.join(SCRATCH_DIR, "log_*.txt"))
     if not log_files:
         return []
 
-    # Sort by filename (which contains timestamp)
-    log_files.sort()
+    # Sort by modification time
+    log_files.sort(key=os.path.getmtime)
 
     loss_data = []
     for log_file in log_files[-100:]:  # Last 100 timesteps
@@ -54,38 +57,58 @@ def get_loss_history():
             filename = os.path.basename(log_file)
             time_str = filename.replace("log_", "").replace(".txt", "")
 
-            # Parse timestamp - format is YYYY-MM-DDTHH-MM-SS.sss
-            # Convert to more standard format for parsing
-            time_str_clean = time_str.replace("T", " ").replace(
-                "-", ":", 2
-            )  # Replace first 2 dashes with colons
-            time_str_clean = time_str_clean.rsplit("-", 1)[
-                0
-            ]  # Remove milliseconds part
-
-            # Read loss from file (should be single value - average of batches)
             with open(log_file, "r") as f:
-                loss_line = f.readline().strip()
-                if loss_line:
-                    loss = float(loss_line)
-                    loss_data.append(
-                        {
-                            "time": time_str,  # Keep original format for display
-                            "loss": loss,
-                        }
-                    )
-        except Exception as e:
+                # Read the final epoch average loss for this timestep
+                loss_value = float(f.readline().strip())
+                loss_data.append({"time": time_str, "loss": loss_value})
+        except:
             pass
 
     return loss_data
+
+
+def get_epoch_loss_history():
+    """Get detailed epoch-level loss history from detailed log files"""
+    log_files = glob.glob(os.path.join(SCRATCH_DIR, "log_detailed_*.txt"))
+    if not log_files:
+        return []
+
+    # Sort by modification time
+    log_files.sort(key=os.path.getmtime)
+
+    all_epoch_losses = []
+    for log_file in log_files[-10:]:  # Last 10 timesteps
+        try:
+            with open(log_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        # Parse "Epoch X: loss_value" format
+                        if ":" in line:
+                            loss_str = line.split(":")[1].strip()
+                            all_epoch_losses.append(float(loss_str))
+        except:
+            pass
+
+    return all_epoch_losses[-100:]  # Return last 100 epoch losses
 
 
 def get_temperature_history():
     """Get global mean temperature from NetCDF files"""
     try:
         import netCDF4 as nc
+        import warnings
     except ImportError:
         return []
+
+    # Suppress HDF5 error messages (files may be locked by ICON simulation)
+    import os as os_hdf5
+
+    os_hdf5.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+    # Suppress warnings from netCDF4/HDF5
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+    warnings.filterwarnings("ignore", message=".*HDF5.*")
 
     nc_files = glob.glob(os.path.join(EXPERIMENT_DIR, "esm_bb_ruby0_atm_mon_*.nc"))
     if not nc_files:
@@ -106,17 +129,24 @@ def get_temperature_history():
                 .replace("Z", "")
             )
 
-            # Open NetCDF file and read tas_gmean
-            with nc.Dataset(nc_file, "r") as dataset:
+            # Open NetCDF file and read tas_gmean (skip if locked)
+            with nc.Dataset(nc_file, "r", parallel=False) as dataset:
                 if "tas_gmean" in dataset.variables:
                     tas_gmean = dataset.variables["tas_gmean"][:]
                     # Take mean over spatial dimensions (should already be global mean)
-                    # tas_gmean is (time, lat, lon) but for gmean might be scalar or need averaging
                     if tas_gmean.size > 0:
                         temp_value = float(np.mean(tas_gmean))  # Take mean if needed
                         temp_data.append({"time": time_str, "temperature": temp_value})
-        except Exception as e:
+        except (OSError, IOError, RuntimeError):
+            # Skip files that are locked or being written to
+            continue
+        except Exception:
+            # Skip any other errors silently
             pass
+
+    # Skip the first timestep
+    if len(temp_data) > 1:
+        temp_data = temp_data[1:]
 
     return temp_data
 
@@ -132,6 +162,7 @@ def api_status():
     """API endpoint for current status"""
     status = get_latest_status()
     losses = get_loss_history()
+    epoch_losses = get_epoch_loss_history()
     temperatures = get_temperature_history()
 
     if status is None:
@@ -140,6 +171,7 @@ def api_status():
                 "status": "waiting",
                 "message": "Waiting for simulation data...",
                 "losses": [],
+                "epoch_losses": [],
                 "temperatures": [],
             }
         )
@@ -150,6 +182,7 @@ def api_status():
             "simulation": status.get("simulation", {}),
             "training": status.get("training", {}),
             "losses": losses,
+            "epoch_losses": epoch_losses,
             "temperatures": temperatures,
             "timestamp": status.get("timestamp", ""),
         }
