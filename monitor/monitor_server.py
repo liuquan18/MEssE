@@ -180,6 +180,7 @@ def api_status():
         {
             "status": "running",
             "simulation": status.get("simulation", {}),
+            "hardware": status.get("hardware", {}),
             "training": status.get("training", {}),
             "losses": losses,
             "epoch_losses": epoch_losses,

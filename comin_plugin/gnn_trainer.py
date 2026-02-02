@@ -111,6 +111,19 @@ def get_batch_callback():
     global net, optimizer, losses, pos_np  # Declare as global to persist
 
     # ============================================
+    #      GPU detection
+    # ===========================================
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if rank == 0:
+        if torch.cuda.is_available():
+            print(
+                f"\n🚀 GPU detected: {torch.cuda.get_device_name(0)}", file=sys.stderr
+            )
+            print(f"   Using device: {device}", file=sys.stderr)
+        else:
+            print(f"\n💻 No GPU detected, using CPU", file=sys.stderr)
+
+    # ============================================
     #      check time condition
     # ===========================================
     # Get timing information first to decide if we should proceed
@@ -225,10 +238,14 @@ def get_batch_callback():
             net.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+            # Move model to GPU if available
+            net = net.to(device)
+
             print(
                 f"✓ Model loaded from checkpoint at {current_time_str}", file=sys.stderr
             )
             print(f"  Checkpoint: {checkpoint_path}", file=sys.stderr)
+            print(f"  Model moved to: {device}", file=sys.stderr)
 
         # initialize new model if no checkpoint
         else:
@@ -246,6 +263,9 @@ def get_batch_callback():
                 net.parameters(), lr=learning_rate, weight_decay=1e-5
             )
 
+            # Move model to GPU if available
+            net = net.to(device)
+
             num_params = sum(p.numel() for p in net.parameters())
             print(
                 f"✓ Model initialized with random weights at {current_time_str}",
@@ -253,6 +273,7 @@ def get_batch_callback():
             )
             print(f"  Parameters: {num_params:,}", file=sys.stderr)
             print(f"  Learning rate: {learning_rate}", file=sys.stderr)
+            print(f"  Model moved to: {device}", file=sys.stderr)
 
         # ===========================================
         # training
@@ -283,6 +304,12 @@ def get_batch_callback():
                 x_batch, y_batch, edge_batch, mask_batch = batch_graphs(
                     x_list, y_list, edge_list, mask_list
                 )
+
+                # Move data to GPU if available
+                x_batch = x_batch.to(device)
+                y_batch = y_batch.to(device)
+                edge_batch = edge_batch.to(device)
+                mask_batch = mask_batch.to(device)
 
                 optimizer.zero_grad()
                 y_hat_extended = net(x_batch, edge_batch)
@@ -360,6 +387,18 @@ def get_batch_callback():
                     "n_domains": int(n_dom) if n_dom is not None else 1,
                     "total_points": num_nodes,
                     "output_count": len(glob.glob(f"{scratch_dir}/log_*.txt")),
+                },
+                "hardware": {
+                    "device": str(device),
+                    "gpu_available": torch.cuda.is_available(),
+                    "gpu_name": (
+                        torch.cuda.get_device_name(0)
+                        if torch.cuda.is_available()
+                        else "N/A"
+                    ),
+                    "gpu_count": (
+                        torch.cuda.device_count() if torch.cuda.is_available() else 0
+                    ),
                 },
                 "training": {
                     "model_type": "GNN (Sample-based)",
