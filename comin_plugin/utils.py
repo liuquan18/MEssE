@@ -4,6 +4,97 @@ Utility functions for graph construction and batch processing on ICON grid.
 
 import numpy as np
 import torch
+from torch.utils.data import Dataset
+
+
+class RegionalSampleDataset(Dataset):
+    """Dataset for regional samples from ICON grid."""
+
+    def __init__(self, x_full, y_full, pos_np, sample_size=2500, k=6, extended_k=8):
+        """
+        Parameters:
+        -----------
+        x_full : torch.Tensor
+            Full input data [num_nodes, features]
+        y_full : torch.Tensor
+            Full target data [num_nodes, features]
+        pos_np : np.ndarray
+            Node positions [num_nodes, 2]
+        sample_size : int
+            Number of nodes per regional sample
+        k : int
+            Number of nearest neighbors
+        extended_k : int
+            Extended neighbors for context
+        """
+        self.x_full = x_full
+        self.y_full = y_full
+        self.pos_np = pos_np
+        self.sample_size = sample_size
+        self.k = k
+        self.extended_k = extended_k
+
+        self.num_nodes = x_full.shape[0]
+        self.num_samples = (self.num_nodes + sample_size - 1) // sample_size
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        start_node = idx * self.sample_size
+        end_node = min(start_node + self.sample_size, self.num_nodes)
+        sample_node_range = range(start_node, end_node)
+
+        # Build subgraph for this sample
+        sample_edge_index_np, sample_node_ids = build_knn_graph_batch_numpy(
+            self.pos_np, sample_node_range, k=self.k, extended_k=self.extended_k
+        )
+
+        # Convert to tensors
+        sample_edge_index = torch.LongTensor(sample_edge_index_np)
+        x_sample = self.x_full[sample_node_ids]
+        y_sample = self.y_full[sample_node_range]
+
+        # Create target mask
+        target_mask = torch.isin(
+            torch.LongTensor(sample_node_ids),
+            torch.LongTensor(list(sample_node_range)),
+        )
+
+        return x_sample, y_sample, sample_edge_index, target_mask
+
+
+def collate_samples(batch):
+    """Collate function to keep variable-sized graph samples in lists."""
+    x_list, y_list, edge_list, mask_list = zip(*batch)
+    return list(x_list), list(y_list), list(edge_list), list(mask_list)
+
+
+def batch_graphs(x_list, y_list, edge_list, mask_list):
+    """Combine variable-sized graph samples into one big graph for a single forward/backward.
+
+    Offsets edge indices per sample and concatenates node features, targets, and masks.
+    """
+    offsets = []
+    total = 0
+    for x in x_list:
+        offsets.append(total)
+        total += x.shape[0]
+
+    x_cat = torch.cat(x_list, dim=0)
+    y_cat = torch.cat(y_list, dim=0)
+    mask_cat = torch.cat(mask_list, dim=0)
+
+    edge_cat_list = []
+    for offset, edge in zip(offsets, edge_list):
+        edge_cat_list.append(edge + offset)
+    edge_cat = (
+        torch.cat(edge_cat_list, dim=1)
+        if edge_cat_list
+        else torch.zeros((2, 0), dtype=torch.long)
+    )
+
+    return x_cat, y_cat, edge_cat, mask_cat
 
 
 def build_knn_graph_batch_numpy(pos, batch_nodes, k=6, extended_k=8):
