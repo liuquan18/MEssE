@@ -1,5 +1,5 @@
 """
-This is a ComIn Python plugin designed for use in the ICON 2024 training course.
+This is a ComIn Python plugin project week 2026.
 """
 
 # %%
@@ -13,10 +13,12 @@ import numpy as np
 import numpy.ma as ma
 import json
 import glob
+import math
 from datetime import datetime
 
 # %%
 import torch
+from torch.utils.data import DataLoader
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,7 +28,12 @@ import getpass
 
 # Import model and utilities
 from gnn_model import SimpleGNN
-from utils import build_knn_graph_batch_numpy
+from utils import (
+    build_knn_graph_batch_numpy,
+    RegionalSampleDataset,
+    collate_samples,
+    batch_graphs,
+)
 
 user = getpass.getuser()
 torch.manual_seed(0)
@@ -136,7 +143,7 @@ def get_batch_callback():
         return
 
     # ===========================================
-    #           data gathering
+    #           data preparing
     # as an exmple, from temp to sfcwind
     # ===========================================
 
@@ -153,30 +160,50 @@ def get_batch_callback():
     # on process 0, proceed with training
     if rank == 0:
 
-        print(
-            f"data gathered! input shape {tas_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
-            file=sys.stderr,
-        )
-        print(
-            f"Training enabled: {should_train}, elapsed hours: {elapsed_hours:.2f}",
-            file=sys.stderr,
+        # data size info
+        num_nodes = tas_np_glb.shape[0]
+        sample_size = 2500  # Each regional sample contains 2500 nodes
+
+        # Prepare full data (1 batch = 1 timestep from ICON simulation)
+        x_full = torch.FloatTensor(tas_np_glb).unsqueeze(1)  # [num_nodes, 1]
+        y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
+
+        # Store positions for graph construction
+        pos_np = np.column_stack([cx_glb, cy_glb])
+
+        # Create dataset and dataloader
+        dataset = RegionalSampleDataset(
+            x_full, y_full, pos_np, sample_size=sample_size, k=6, extended_k=8
         )
 
+        num_samples = len(dataset)
+        batch_size = max(1, math.ceil(num_samples / 2))  # target 2 batches/epoch
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0,
+            collate_fn=collate_samples,
+        )
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(
+            f"data gathered!\n input shape {tas_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
+            file=sys.stderr,
+        )
+        print(f"{'='*60}", file=sys.stderr)
+
+        # ===========================================
+        #       model initialization / loading
+        # ===========================================
         ## prepare directory and data
         # directory to store model checkpoints and logs
         scratch_dir = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
         # Create directory if it doesn't exist (don't delete existing checkpoints)
         os.makedirs(scratch_dir, exist_ok=True)
 
-        # Store positions for graph construction
-        pos_np = np.column_stack([cx_glb, cy_glb])
-
         # Check if checkpoint exists to decide whether to initialize or load
         checkpoint_path = f"{scratch_dir}/net_{start_time_str}.pth"
-
-        # ===========================================
-        #       model initialization / loading
-        # ===========================================
 
         # load models if checkpoint exists
         if os.path.exists(checkpoint_path):
@@ -207,7 +234,7 @@ def get_batch_callback():
         else:
             # Initialize new model with random weights
             print("=" * 60, file=sys.stderr)
-            print("🚀 Initializing new Mini-batch GNN model", file=sys.stderr)
+            print("🚀 Initializing new Sample-based GNN model", file=sys.stderr)
             print("=" * 60, file=sys.stderr)
 
             # Initialize GNN model
@@ -219,8 +246,6 @@ def get_batch_callback():
                 net.parameters(), lr=learning_rate, weight_decay=1e-5
             )
 
-            print(f"Model: Mini-batch SimpleGNN", file=sys.stderr)
-
             num_params = sum(p.numel() for p in net.parameters())
             print(
                 f"✓ Model initialized with random weights at {current_time_str}",
@@ -230,80 +255,64 @@ def get_batch_callback():
             print(f"  Learning rate: {learning_rate}", file=sys.stderr)
 
         # ===========================================
-        # mini-batch training
+        # training
         # ===========================================
 
-        # Mini-batch configuration
-        num_nodes = tas_np_glb.shape[0]
-        batch_size = 2000  # Process 2000 nodes per batch
-        num_batches = (num_nodes + batch_size - 1) // batch_size
+        num_batches = len(dataloader)
+        num_epochs = 2  # Train for 2 epochs
 
         lossfunc = torch.nn.MSELoss()
         losses = []
 
-        print(f"\n{'='*60}", file=sys.stderr)
-        print(f"🚀 Mini-batch GNN Training on {num_nodes} nodes", file=sys.stderr)
-        print(f"{'='*60}", file=sys.stderr)
+        print(
+            f"Training enabled: {should_train}, elapsed hours: {elapsed_hours:.2f}",
+            file=sys.stderr,
+        )
+        # Train over multiple epochs
+        for epoch in range(num_epochs):
+            epoch_losses = []
+            print(f"\n{'='*60}", file=sys.stderr)
+            print(f"Epoch {epoch+1}/{num_epochs}", file=sys.stderr)
+            print(f"{'='*60}", file=sys.stderr)
 
-        # Prepare full data
-        x_full = torch.FloatTensor(tas_np_glb).unsqueeze(1)  # [num_nodes, 1]
-        y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
+            # Loop over batches (each batch contains multiple samples)
+            for batch_idx, (x_list, y_list, edge_list, mask_list) in enumerate(
+                dataloader
+            ):
+                # Merge all samples in the batch into a single big graph
+                x_batch, y_batch, edge_batch, mask_batch = batch_graphs(
+                    x_list, y_list, edge_list, mask_list
+                )
 
-        print(f"Configuration:", file=sys.stderr)
-        print(f"  Batch size: {batch_size} nodes/batch", file=sys.stderr)
-        print(f"  Num batches: {num_batches}", file=sys.stderr)
-        print(f"  Strategy: Spatial blocks with extended neighbors", file=sys.stderr)
+                optimizer.zero_grad()
+                y_hat_extended = net(x_batch, edge_batch)
+                y_hat = y_hat_extended[mask_batch]
 
-        # Train on each batch
-        for batch_idx in range(num_batches):
-            start_node = batch_idx * batch_size
-            end_node = min(start_node + batch_size, num_nodes)
-            batch_node_range = range(start_node, end_node)
+                batch_loss = lossfunc(y_hat, y_batch)
+                batch_loss.backward()
+                optimizer.step()
 
+                epoch_losses.append(batch_loss.item())
+                print(
+                    f"  Batch {batch_idx+1}/{num_batches}: Loss = {batch_loss.item():.6e}",
+                    file=sys.stderr,
+                )
+
+            # Report epoch statistics
+            epoch_avg_loss = np.mean(epoch_losses)
+            losses.append(epoch_avg_loss)
             print(
-                f"\n  📦 Batch {batch_idx+1}/{num_batches}: nodes [{start_node}:{end_node}]",
+                f"  Epoch {epoch+1} completed: Avg Loss = {epoch_avg_loss:.6e}",
                 file=sys.stderr,
             )
 
-            # Build subgraph for this batch
-            batch_edge_index_np, batch_node_ids = build_knn_graph_batch_numpy(
-                pos_np, batch_node_range, k=6, extended_k=8
-            )
-
-            # Convert to tensors
-            batch_edge_index = torch.LongTensor(batch_edge_index_np)
-            x_batch = x_full[batch_node_ids]
-            y_batch = y_full[batch_node_range]  # Only compute loss on target nodes
-
-            num_batch_edges = batch_edge_index.shape[1]
-            print(
-                f"     Subgraph: {len(batch_node_ids)} nodes, {num_batch_edges} edges",
-                file=sys.stderr,
-            )
-
-            # Forward pass
-            optimizer.zero_grad()
-            y_hat_extended = net(x_batch, batch_edge_index)
-
-            # Extract predictions for target nodes (first len(batch_node_range) nodes)
-            target_mask = torch.isin(
-                torch.LongTensor(batch_node_ids),
-                torch.LongTensor(list(batch_node_range)),
-            )
-            y_hat = y_hat_extended[target_mask]
-
-            # Compute loss and update
-            loss = lossfunc(y_hat, y_batch)
-            loss.backward()
-            optimizer.step()
-
-            losses.append(loss.item())
-            print(f"     Loss: {loss.item():.6e}", file=sys.stderr)
-
-        print(f"\n✓ Mini-batch GNN training completed", file=sys.stderr)
-        print(f"  Final loss: {losses[-1]:.6e}", file=sys.stderr)
-        print(f"  Average loss: {np.mean(losses):.6e}", file=sys.stderr)
-        print(f"  Total batches processed: {num_batches}", file=sys.stderr)
+        print(f"\n✓ GNN training completed", file=sys.stderr)
+        print(f"  Final epoch avg loss: {losses[-1]:.6e}", file=sys.stderr)
+        print(f"  Overall avg loss: {np.mean(losses):.6e}", file=sys.stderr)
+        print(
+            f"  Total epochs: {num_epochs}, Batches per epoch: {num_batches}",
+            file=sys.stderr,
+        )
 
         # ===========================================
         #       save model and logs
@@ -317,13 +326,24 @@ def get_batch_callback():
                 f"{scratch_dir}/net_{start_time_str}.pth",
             )
 
-        # save log file (save only average loss per timestep)
+        # save log file with detailed batch losses and epoch averages
         avg_loss = np.mean(losses)
         with open(
             f"{scratch_dir}/log_{current_time_str}.txt",
             "w",
         ) as f:
-            f.write(f"{avg_loss}\n")
+            # Write epoch average losses (one per epoch)
+            for epoch_loss in losses:
+                f.write(f"{epoch_loss}\n")
+
+        # Also save detailed batch-level losses for analysis
+        with open(
+            f"{scratch_dir}/log_detailed_{current_time_str}.txt",
+            "w",
+        ) as f:
+            f.write(f"# Epoch-level average losses\n")
+            for i, epoch_loss in enumerate(losses):
+                f.write(f"{epoch_loss:.6e}\n")
 
         # Write monitoring status JSON for real-time monitoring
         try:
@@ -342,12 +362,27 @@ def get_batch_callback():
                     "output_count": len(glob.glob(f"{scratch_dir}/log_*.txt")),
                 },
                 "training": {
-                    "model_type": "GNN (Mini-batch)",
+                    "model_type": "GNN (Sample-based)",
                     "training_enabled": should_train,
                     "elapsed_hours": elapsed_hours,
                     "current_loss": float(losses[-1]) if losses else 0.0,
-                    "total_batches": len(losses),
-                    "batches_per_timestep": len(losses) if losses else 0,
+                    "num_epochs": num_epochs if "num_epochs" in locals() else 10,
+                    "num_batches": num_batches if "num_batches" in locals() else 0,
+                    "batches_per_epoch": (
+                        num_batches if "num_batches" in locals() else 0
+                    ),
+                    "total_batches": (
+                        num_epochs * num_batches
+                        if "num_epochs" in locals() and "num_batches" in locals()
+                        else 0
+                    ),
+                    "batches_per_timestep": (
+                        num_epochs * num_batches
+                        if "num_epochs" in locals() and "num_batches" in locals()
+                        else 0
+                    ),
+                    "num_samples": num_samples if "num_samples" in locals() else 0,
+                    "sample_size": sample_size if "sample_size" in locals() else 2500,
                     "learning_rate": 0.001,
                     "avg_loss": float(np.mean(losses)) if losses else 0.0,
                     "min_loss": float(np.min(losses)) if losses else 0.0,
