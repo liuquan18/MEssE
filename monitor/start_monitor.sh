@@ -29,7 +29,7 @@ fi
 
 # Get hostname and port
 HOSTNAME=$(hostname)
-PORT=${MONITOR_PORT:-5000}
+PORT=5000
 
 echo "🚀 Starting monitoring server..."
 echo ""
@@ -43,4 +43,4 @@ echo ""
 
 # Start the server
 cd "$SCRIPT_DIR"
-python monitor_server.py $PORT
+python monitor_server.py
