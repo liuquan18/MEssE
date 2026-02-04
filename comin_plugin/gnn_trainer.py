@@ -225,21 +225,22 @@ def get_batch_callback():
             print("📂 Loading model from checkpoint", file=sys.stderr)
             print("=" * 60, file=sys.stderr)
 
-            checkpoint = torch.load(checkpoint_path)
+            checkpoint = torch.load(checkpoint_path, map_location=device)
 
             net = SimpleGNN(
                 in_channels=1, hidden_channels=32, out_channels=1, num_layers=3
             )
+            # Move model to device FIRST, then create optimizer
+            net = net.to(device)
+
             learning_rate = 0.001
             optimizer = torch.optim.Adam(
                 net.parameters(), lr=learning_rate, weight_decay=1e-5
             )
 
+            # Now load state dicts (model already on correct device)
             net.load_state_dict(checkpoint["model_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-            # Move model to GPU if available
-            net = net.to(device)
 
             print(
                 f"✓ Model loaded from checkpoint at {current_time_str}", file=sys.stderr
@@ -305,11 +306,11 @@ def get_batch_callback():
                     x_list, y_list, edge_list, mask_list
                 )
 
-                # Move data to GPU if available
-                x_batch = x_batch.to(device)
-                y_batch = y_batch.to(device)
-                edge_batch = edge_batch.to(device)
-                mask_batch = mask_batch.to(device)
+                # Move data to device (ensure non_blocking=False for safety)
+                x_batch = x_batch.to(device, non_blocking=False)
+                y_batch = y_batch.to(device, non_blocking=False)
+                edge_batch = edge_batch.to(device, non_blocking=False)
+                mask_batch = mask_batch.to(device, non_blocking=False)
 
                 optimizer.zero_grad()
                 y_hat_extended = net(x_batch, edge_batch)
@@ -344,14 +345,13 @@ def get_batch_callback():
         # ===========================================
         #       save model and logs
         # ===========================================
-        if "net" in locals():
-            torch.save(
-                {
-                    "model_state_dict": net.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                },
-                f"{scratch_dir}/net_{start_time_str}.pth",
-            )
+        torch.save(
+            {
+                "model_state_dict": net.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+            },
+            f"{scratch_dir}/net_{start_time_str}.pth",
+        )
 
         # Save the final epoch's average loss for this timestep
         # This will be displayed as one point per timestep in the monitor
