@@ -187,3 +187,4 @@ experiment/NAMELIST_ICON
 *.out
 scripts/run_icon/_run_icon_LAM_replay.sh
 scripts/tmp/
+build*
