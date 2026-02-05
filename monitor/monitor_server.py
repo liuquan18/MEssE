@@ -13,7 +13,20 @@ import getpass
 import numpy as np
 from datetime import datetime
 
-PORT = sys.argv[1] if len(sys.argv) > 1 else 5000
+# PORT must be provided as command line argument
+if len(sys.argv) < 2:
+    print("Error: PORT number is required")
+    print("Usage: python monitor_server.py <PORT>")
+    print("Example: python monitor_server.py 5005")
+    sys.exit(1)
+# PORT must be provided as command line argument
+if len(sys.argv) < 2:
+    print("Error: PORT number is required")
+    print("Usage: python monitor_server.py <PORT>")
+    print("Example: python monitor_server.py 5005")
+    sys.exit(1)
+
+PORT = int(sys.argv[1])
 
 app = Flask(__name__)
 
@@ -164,8 +177,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  MEssE v1.0 - Monitoring Server Starting...")
     print("=" * 60)
-    print(f"\n  🌐 Access the interface at: http://localhost:5005")
+    print(f"\n  🌐 Access the interface at: http://localhost:{PORT}")
     print(f"  📁 Data directory: {SCRATCH_DIR}")
     print("\n" + "=" * 60 + "\n")
 
-    app.run(host="0.0.0.0", port=5005, debug=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False)

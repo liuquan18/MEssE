@@ -1,6 +1,16 @@
 #!/bin/bash
 # MEssE v1.0 Monitoring Server Launcher
 
+# Check if PORT argument is provided
+if [ -z "$1" ]; then
+    echo "Error: PORT number is required"
+    echo "Usage: $0 <PORT>"
+    echo "Example: $0 5005"
+    exit 1
+fi
+
+PORT="$1"
+
 echo "=============================================="
 echo "  MEssE v1.0 - Monitoring Server"
 echo "=============================================="
@@ -27,11 +37,10 @@ if ! python -c "import flask" &> /dev/null; then
     echo ""
 fi
 
-# Get hostname and port
+# Get hostname
 HOSTNAME=$(hostname)
-PORT=5000
 
-echo "🚀 Starting monitoring server..."
+echo "🚀 Starting monitoring server on port $PORT..."
 echo ""
 echo "📡 Access URLs:"
 echo "   Local:    http://localhost:$PORT"
@@ -41,6 +50,6 @@ echo "💡 Press Ctrl+C to stop the server"
 echo "=============================================="
 echo ""
 
-# Start the server
+# Start the server with PORT argument
 cd "$SCRIPT_DIR"
-python monitor_server.py
+python monitor_server.py "$PORT"
