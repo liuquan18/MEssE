@@ -386,10 +386,15 @@
                 lossChart.destroy();
             }
             
+            // Convert epoch numbers to timestep-based x-axis
+            // Assuming 2 epochs per timestep, convert epoch number to fractional timestep
+            const epochsPerTimestep = 2;
+            const timestepLabels = losses.map((_, i) => (i / epochsPerTimestep).toFixed(1));
+            
             lossChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: losses.map((_, i) => i + 1),
+                    labels: timestepLabels,
                     datasets: [{
                         label: 'Training Loss',
                         data: losses,
@@ -412,12 +417,16 @@
                     },
                     scales: {
                         x: {
+                            type: 'linear',
                             title: {
                                 display: true,
-                                text: 'Epoch Number'
+                                text: 'Timestep (Epoch-level resolution)'
                             },
                             grid: {
                                 display: false
+                            },
+                            ticks: {
+                                stepSize: 1
                             }
                         },
                         y: {

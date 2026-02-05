@@ -343,6 +343,19 @@ def get_batch_callback():
             file=sys.stderr,
         )
 
+
+        #==========================
+        # save global mean tas for monitoring purposes
+        #==========================
+        global_mean_tas = np.mean(tas_np_glb)
+        with open(
+            f"{scratch_dir}/global_mean_tas_{current_time_str}.txt",
+            "w",
+        ) as f:
+            f.write(f"{global_mean_tas:.6f}\n")
+
+
+
         # ===========================================
         #       save model and logs
         # ===========================================

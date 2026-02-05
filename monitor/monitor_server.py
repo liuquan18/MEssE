@@ -94,59 +94,26 @@ def get_epoch_loss_history():
 
 
 def get_temperature_history():
-    """Get global mean temperature from NetCDF files"""
-    try:
-        import netCDF4 as nc
-        import warnings
-    except ImportError:
+    """Get global mean temperature from .txt files saved by gnn_trainer"""
+    temp_files = glob.glob(os.path.join(SCRATCH_DIR, "global_mean_tas_*.txt"))
+    if not temp_files:
         return []
 
-    # Suppress HDF5 error messages (files may be locked by ICON simulation)
-    import os as os_hdf5
-
-    os_hdf5.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
-
-    # Suppress warnings from netCDF4/HDF5
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
-    warnings.filterwarnings("ignore", message=".*HDF5.*")
-
-    nc_files = glob.glob(os.path.join(EXPERIMENT_DIR, "esm_bb_ruby0_atm_mon_*.nc"))
-    if not nc_files:
-        return []
-
-    # Sort by filename
-    nc_files.sort()
+    # Sort by modification time
+    temp_files.sort(key=os.path.getmtime)
 
     temp_data = []
-    for nc_file in nc_files[-100:]:  # Last 100 timesteps
+    for temp_file in temp_files[-100:]:  # Last 100 timesteps
         try:
             # Extract timestamp from filename
-            filename = os.path.basename(nc_file)
-            # Format: esm_bb_ruby0_atm_mon_19790101T180000Z.nc
-            time_str = (
-                filename.replace("esm_bb_ruby0_atm_mon_", "")
-                .replace(".nc", "")
-                .replace("Z", "")
-            )
+            filename = os.path.basename(temp_file)
+            time_str = filename.replace("global_mean_tas_", "").replace(".txt", "")
 
-            # Open NetCDF file and read tas_gmean (skip if locked)
-            with nc.Dataset(nc_file, "r", parallel=False) as dataset:
-                if "tas_gmean" in dataset.variables:
-                    tas_gmean = dataset.variables["tas_gmean"][:]
-                    # Take mean over spatial dimensions (should already be global mean)
-                    if tas_gmean.size > 0:
-                        temp_value = float(np.mean(tas_gmean))  # Take mean if needed
-                        temp_data.append({"time": time_str, "temperature": temp_value})
-        except (OSError, IOError, RuntimeError):
-            # Skip files that are locked or being written to
-            continue
-        except Exception:
-            # Skip any other errors silently
+            with open(temp_file, "r") as f:
+                temp_value = float(f.readline().strip())
+                temp_data.append({"time": time_str, "temperature": temp_value})
+        except:
             pass
-
-    # Skip the first timestep
-    if len(temp_data) > 1:
-        temp_data = temp_data[1:]
 
     return temp_data
 
