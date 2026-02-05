@@ -143,14 +143,15 @@ def get_batch_callback():
     # Calculate elapsed time and check if more than 24 hours have passed
     elapsed_time = current_time - start_time
     elapsed_hours = elapsed_time.total_seconds() / 3600  # Convert to hours
-    should_train = elapsed_hours > 1.0  # Only train after 24 hours
+    threshold_hours = 2.0  # Set threshold to 1 hour for testing (use 24.0 for actual)
+    should_train = elapsed_hours > threshold_hours  # Only train after 24 hours
 
     ## Skip training and data gathering
     # Skip everything if training time hasn't arrived yet
     if not should_train:
         if rank == 0:
             print(
-                f"\n⏸ Waiting for training time (elapsed: {elapsed_hours:.2f}/2.0 hours)",
+                f"\n⏸ Waiting for training time (elapsed: {elapsed_hours:.2f}/{threshold_hours:.1f} hours)",
                 file=sys.stderr,
             )
         return
@@ -287,7 +288,7 @@ def get_batch_callback():
         losses = []
 
         print(
-            f"Training enabled: {should_train}, elapsed hours: {elapsed_hours:.2f}",
+            f"Training enabled: {should_train}, elapsed hours: {elapsed_hours:.2f}/{threshold_hours:.1f}",
             file=sys.stderr,
         )
         # Train over multiple epochs
