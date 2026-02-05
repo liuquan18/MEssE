@@ -27,7 +27,7 @@ Run ICON with the plugin like so: `./scripts/run_icon.sh $ICON_BUILD_DIR $COMIN_
 
 ```bash
 cd $(pwd)/monitor
-./start_monitor.sh
+./start_monitor.sh 5000 (any port number)
 ```
 
 Then access: **http://localhost:5000**
