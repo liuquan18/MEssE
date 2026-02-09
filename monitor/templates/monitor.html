@@ -378,10 +378,10 @@
             document.getElementById('trainingContent').innerHTML = html;
             
             // Update loss chart
-            updateLossChart(epoch_losses);
+            updateLossChart(epoch_losses, training);
         }
 
-        function updateLossChart(losses) {
+        function updateLossChart(losses, training) {
             const ctx = document.getElementById('lossChart');
             if (!ctx) return;
             
@@ -390,8 +390,8 @@
             }
             
             // Convert epoch numbers to timestep-based x-axis
-            // Assuming 2 epochs per timestep, convert epoch index to fractional timestep
-            const epochsPerTimestep = 2;
+            // Use actual epochs per timestep from training data
+            const epochsPerTimestep = training && training.num_epochs ? training.num_epochs : 1;
             
             // Create data points with x-values representing timesteps (starting from 0.5, 1.0, 1.5, etc.)
             const dataPoints = losses.map((loss, i) => ({
@@ -430,7 +430,7 @@
                             type: 'linear',
                             title: {
                                 display: true,
-                                text: 'Timestep (Epoch-level resolution, 2 epochs/timestep)'
+                                text: `Timestep (Epoch-level resolution, ${epochsPerTimestep} epoch${epochsPerTimestep !== 1 ? 's' : ''}/timestep)`
                             },
                             grid: {
                                 display: false
