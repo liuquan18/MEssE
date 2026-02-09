@@ -298,6 +298,9 @@
             
             document.getElementById('simulationContent').innerHTML = html;
             
+            // Store max timestep globally for synchronizing charts
+            window.maxTimestep = temperatures && temperatures.length > 0 ? temperatures.length : 0;
+            
             // Update temperature chart
             if (temperatures && temperatures.length > 0) {
                 updateTempChart(temperatures);
@@ -387,17 +390,24 @@
             }
             
             // Convert epoch numbers to timestep-based x-axis
-            // Assuming 2 epochs per timestep, convert epoch number to fractional timestep
+            // Assuming 2 epochs per timestep, convert epoch index to fractional timestep
             const epochsPerTimestep = 2;
-            const timestepLabels = losses.map((_, i) => (i / epochsPerTimestep).toFixed(1));
+            
+            // Create data points with x-values representing timesteps (starting from 0.5, 1.0, 1.5, etc.)
+            const dataPoints = losses.map((loss, i) => ({
+                x: (i + 1) / epochsPerTimestep,  // Converts epoch number to timestep
+                y: loss
+            }));
+            
+            // Get max timestep from temperature data (stored globally)
+            const maxTimestep = window.maxTimestep || losses.length / epochsPerTimestep;
             
             lossChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: timestepLabels,
                     datasets: [{
                         label: 'Training Loss',
-                        data: losses,
+                        data: dataPoints,
                         borderColor: '#667eea',
                         backgroundColor: 'rgba(102, 126, 234, 0.1)',
                         borderWidth: 2,
@@ -420,11 +430,13 @@
                             type: 'linear',
                             title: {
                                 display: true,
-                                text: 'Timestep (Epoch-level resolution)'
+                                text: 'Timestep (Epoch-level resolution, 2 epochs/timestep)'
                             },
                             grid: {
                                 display: false
                             },
+                            min: 0,
+                            max: maxTimestep,
                             ticks: {
                                 stepSize: 1
                             }
@@ -452,13 +464,20 @@
             // Use Kelvin (no conversion needed)
             const tempsKelvin = temperatures.map(t => t.temperature);
             
+            // Create data points with timestep indices (1, 2, 3, ...)
+            const dataPoints = temperatures.map((t, i) => ({
+                x: i + 1,
+                y: t.temperature
+            }));
+            
+            const maxTimestep = temperatures.length;
+            
             tempChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: temperatures.map((_, i) => i + 1),
                     datasets: [{
                         label: 'Global Mean Temperature',
-                        data: tempsKelvin,
+                        data: dataPoints,
                         borderColor: '#f59e0b',
                         backgroundColor: 'rgba(245, 158, 11, 0.1)',
                         borderWidth: 2,
@@ -478,12 +497,18 @@
                     },
                     scales: {
                         x: {
+                            type: 'linear',
                             title: {
                                 display: true,
                                 text: 'Timestep'
                             },
                             grid: {
                                 display: false
+                            },
+                            min: 0,
+                            max: maxTimestep,
+                            ticks: {
+                                stepSize: 1
                             }
                         },
                         y: {

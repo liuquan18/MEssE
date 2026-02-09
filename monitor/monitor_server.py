@@ -90,7 +90,7 @@ def get_epoch_loss_history():
     log_files.sort(key=os.path.getmtime)
 
     all_epoch_losses = []
-    for log_file in log_files[-10:]:  # Last 10 timesteps
+    for log_file in log_files[-100:]:  # Last 100 timesteps (increased from 10)
         try:
             with open(log_file, "r") as f:
                 for line in f:
@@ -103,7 +103,9 @@ def get_epoch_loss_history():
         except:
             pass
 
-    return all_epoch_losses[-100:]  # Return last 100 epoch losses
+    return all_epoch_losses[
+        -200:
+    ]  # Return last 200 epoch losses (100 timesteps * 2 epochs)
 
 
 def get_temperature_history():
