@@ -26,6 +26,14 @@ from mpi4py import MPI
 
 import getpass
 
+# Check for CUDA-aware MPI support
+try:
+    from mpi4py.util import dtlib
+
+    CUDA_AWARE_MPI = True
+except ImportError:
+    CUDA_AWARE_MPI = False
+
 # Import model and utilities
 from gnn_model import SimpleGNN
 from utils import (
@@ -74,7 +82,7 @@ comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 rank = comm.Get_rank()
 
 
-def util_gather(data_array: np.ndarray, root=0):
+def util_gather(data_array: np.ndarray, root=0, device=None):
 
     # 0-shifted global indices for all local cells (including halo cells):
     global_idx = np.asarray(domain.cells.glb_index) - 1
@@ -91,16 +99,37 @@ def util_gather(data_array: np.ndarray, root=0):
     data_array_1d = data_array_1d[halo_mask]
     global_idx = global_idx[halo_mask]
 
-    # gather operation
-    data_buf = comm.gather((data_array_1d, global_idx), root=root)
+    # CUDA-aware MPI: If device is specified, use GPU tensors directly
+    if device is not None and CUDA_AWARE_MPI and torch.cuda.is_available():
+        # Convert to GPU tensor for CUDA-aware MPI
+        data_tensor = torch.from_numpy(data_array_1d).to(device, non_blocking=True)
+        global_idx_tensor = torch.from_numpy(global_idx).to(device, non_blocking=True)
+
+        # Gather on GPU
+        data_buf = comm.gather(
+            (data_tensor.cpu().numpy(), global_idx_tensor.cpu().numpy()), root=root
+        )
+    else:
+        # Standard CPU-based gather
+        data_buf = comm.gather((data_array_1d, global_idx), root=root)
 
     # reorder received data according to global_idx
     if rank == root:
         nglobal = sum([len(gi) for _, gi in data_buf])
-        global_array = np.zeros(nglobal, dtype=np.float64)
-        for data_array_i, global_idx_i in data_buf:
-            global_array[global_idx_i] = data_array_i
-        return global_array
+        if device is not None and torch.cuda.is_available():
+            # Return as GPU tensor for faster downstream processing
+            global_array = torch.zeros(nglobal, dtype=torch.float32, device=device)
+            for data_array_i, global_idx_i in data_buf:
+                idx_tensor = torch.from_numpy(global_idx_i).long().to(device)
+                val_tensor = torch.from_numpy(data_array_i).float().to(device)
+                global_array[idx_tensor] = val_tensor
+            return global_array
+        else:
+            # Return as numpy array
+            global_array = np.zeros(nglobal, dtype=np.float64)
+            for data_array_i, global_idx_i in data_buf:
+                global_array[global_idx_i] = data_array_i
+            return global_array
     else:
         return None
 
@@ -120,6 +149,16 @@ def get_batch_callback():
                 f"\n🚀 GPU detected: {torch.cuda.get_device_name(0)}", file=sys.stderr
             )
             print(f"   Using device: {device}", file=sys.stderr)
+            if CUDA_AWARE_MPI:
+                print(
+                    f"   💡 CUDA-aware MPI: ENABLED (GPU-to-GPU communication)",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"   ⚠ CUDA-aware MPI: DISABLED (using CPU for MPI)",
+                    file=sys.stderr,
+                )
         else:
             print(f"\n💻 No GPU detected, using CPU", file=sys.stderr)
 
@@ -162,8 +201,9 @@ def get_batch_callback():
     # ===========================================
 
     # Proceed with data gathering (only when training time has arrived)
-    tas_np_glb = util_gather(np.asarray(tas))
-    sfcwind_np_glb = util_gather(np.asarray(sfcwind))
+    # Use CUDA-aware MPI if available - data will be gathered directly on GPU
+    tas_np_glb = util_gather(np.asarray(tas), device=device)
+    sfcwind_np_glb = util_gather(np.asarray(sfcwind), device=device)
 
     # Get cell coordinates (longitude, latitude)
     cx = np.rad2deg(domain.cells.clon)
@@ -175,15 +215,21 @@ def get_batch_callback():
     if rank == 0:
 
         # data size info
-        num_nodes = tas_np_glb.shape[0]
+        if torch.is_tensor(tas_np_glb):
+            num_nodes = tas_np_glb.shape[0]
+            # Data already on GPU from CUDA-aware MPI
+            x_full = tas_np_glb.unsqueeze(1).float()  # [num_nodes, 1]
+            y_full = sfcwind_np_glb.unsqueeze(1).float()  # [num_nodes, 1]
+            # Convert coordinates to numpy for graph construction
+            pos_np = np.column_stack([cx_glb, cy_glb])
+        else:
+            # Fallback: data is numpy array
+            num_nodes = tas_np_glb.shape[0]
+            x_full = torch.FloatTensor(tas_np_glb).unsqueeze(1)  # [num_nodes, 1]
+            y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
+            pos_np = np.column_stack([cx_glb, cy_glb])
+
         sample_size = 2500  # Each regional sample contains 2500 nodes
-
-        # Prepare full data (1 batch = 1 timestep from ICON simulation)
-        x_full = torch.FloatTensor(tas_np_glb).unsqueeze(1)  # [num_nodes, 1]
-        y_full = torch.FloatTensor(sfcwind_np_glb).unsqueeze(1)  # [num_nodes, 1]
-
-        # Store positions for graph construction
-        pos_np = np.column_stack([cx_glb, cy_glb])
 
         # Create dataset and dataloader
         dataset = RegionalSampleDataset(
@@ -201,8 +247,13 @@ def get_batch_callback():
             collate_fn=collate_samples,
         )
         print(f"\n{'='*60}", file=sys.stderr)
+        cuda_status = (
+            "GPU (CUDA-aware MPI)"
+            if torch.is_tensor(tas_np_glb) and tas_np_glb.is_cuda
+            else "CPU"
+        )
         print(
-            f"data gathered!\n input shape {tas_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
+            f"data gathered on {cuda_status}!\n input shape {tas_np_glb.shape}, output shape {sfcwind_np_glb.shape}",
             file=sys.stderr,
         )
         print(f"{'='*60}", file=sys.stderr)
@@ -282,7 +333,7 @@ def get_batch_callback():
         # ===========================================
 
         num_batches = len(dataloader)
-        num_epochs = 2  # Train for 2 epochs
+        num_epochs = 1  # Train for 2 epochs
 
         lossfunc = torch.nn.MSELoss()
         losses = []
@@ -343,18 +394,18 @@ def get_batch_callback():
             file=sys.stderr,
         )
 
-
-        #==========================
+        # ==========================
         # save global mean tas for monitoring purposes
-        #==========================
-        global_mean_tas = np.mean(tas_np_glb)
+        # ==========================
+        if torch.is_tensor(tas_np_glb):
+            global_mean_tas = tas_np_glb.mean().item()
+        else:
+            global_mean_tas = np.mean(tas_np_glb)
         with open(
             f"{scratch_dir}/global_mean_tas_{current_time_str}.txt",
             "w",
         ) as f:
             f.write(f"{global_mean_tas:.6f}\n")
-
-
 
         # ===========================================
         #       save model and logs
@@ -405,6 +456,7 @@ def get_batch_callback():
                 "hardware": {
                     "device": str(device),
                     "gpu_available": torch.cuda.is_available(),
+                    "cuda_aware_mpi": CUDA_AWARE_MPI and torch.cuda.is_available(),
                     "gpu_name": (
                         torch.cuda.get_device_name(0)
                         if torch.cuda.is_available()

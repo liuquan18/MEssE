@@ -7,6 +7,11 @@ IFS=$'\n\t'
 # GPU-enabled version of run_icon.sh
 # Automatically requests GPU partition and A100 GPU resources
 
+# Load CUDA-aware MPI for GPU acceleration
+echo "Loading CUDA-aware OpenMPI module..."
+module load openmpi/4.1.5-nvhpc-25.7
+echo "✓ CUDA-aware MPI loaded: openmpi/4.1.5-nvhpc-25.7"
+
 # require three to seven arguments
 if [[ $# -lt 3 ]] || [[ $# -gt 7 ]]; then
     echo "Usage: $0 <ICON_BUILD_DIR> <COMIN_PLUGIN_SCRIPT> <LEVANTE_ACCOUNT> [START_DATE] [END_DATE] [NUM_NODES] [TIME_LIMIT]" >&2
