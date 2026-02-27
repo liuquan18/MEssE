@@ -17,7 +17,7 @@ Prepare environment using `./scripts/build_env.sh ${desired_path}`
 On successful completion of the script, a py_venv is created under ${desired_path}
 
 ## Run
-Run ICON with the plugin like so: `./scripts/run_icon.sh $ICON_BUILD_DIR $COMIN_PLUGIN_PATH $LEVANTE_ACCOUNT`
+Run ICON with the plugin like so: `./scripts/run_icon_gpu.sh $ICON_BUILD_DIR $COMIN_PLUGIN_PATH $LEVANTE_ACCOUNT`
 
 `ICON_BUILD_DIR` can be found under `${desired_path}/build_dir`
 `COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin/minimal_trainer.py`
