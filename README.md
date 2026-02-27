@@ -7,6 +7,7 @@
 ├── monitors                    # monitoring scripts for online interface
 └── scripts                     # scripts 
     ├── build_env.sh            # script for building ICON, ComIn, YAC and preparing python env
+    ├── run_icon_gpu.sh         # script for running ICON with A100
     └── run_icon                # script for running ICON
 ```
 # Workflow
@@ -21,7 +22,7 @@ Run ICON with the plugin like so: `./scripts/run_icon_gpu.sh $ICON_BUILD_DIR $CO
 
 `ICON_BUILD_DIR` can be found under `${desired_path}/build_dir`
 
-`COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin/minimal_trainer.py`
+`COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin/gnn_trainer.py`
 
 `LEVANTE_ACCOUNT` is your levante project id
 
