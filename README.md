@@ -7,7 +7,7 @@
     ├── gnn_model.py            # where the GNN is defined.
     ├── gnn_trainer.py          # scripts to train the GNN.
     ├── minimal_trainer.py      # a very simple FCN to train.
-    ├── utils.py                # some help function.
+    └── utils.py                # some help function.
 ├── monitors                    # monitoring scripts for online interface
 └── scripts                     # scripts 
     ├── build_env.sh            # script for building ICON, ComIn, YAC and preparing python env
