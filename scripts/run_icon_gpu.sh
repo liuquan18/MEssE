@@ -12,9 +12,9 @@ echo "Loading CUDA-aware OpenMPI module..."
 module load openmpi/4.1.5-nvhpc-25.7
 echo "✓ CUDA-aware MPI loaded: openmpi/4.1.5-nvhpc-25.7"
 
-# require three to seven arguments
-if [[ $# -lt 3 ]] || [[ $# -gt 7 ]]; then
-    echo "Usage: $0 <ICON_BUILD_DIR> <COMIN_PLUGIN_SCRIPT> <LEVANTE_ACCOUNT> [START_DATE] [END_DATE] [NUM_NODES] [TIME_LIMIT]" >&2
+# require three to eight arguments
+if [[ $# -lt 3 ]] || [[ $# -gt 8 ]]; then
+    echo "Usage: $0 <ICON_BUILD_DIR> <COMIN_PLUGIN_SCRIPT> <LEVANTE_ACCOUNT> [START_DATE] [END_DATE] [NUM_NODES] [TIME_LIMIT] [NUM_GPUS]" >&2
     echo "  ICON_BUILD_DIR:       Path to ICON build directory" >&2
     echo "  COMIN_PLUGIN_SCRIPT:  Path to the ComIn plugin Python script" >&2
     echo "  LEVANTE_ACCOUNT:      Levante account for sbatch submission" >&2
@@ -22,6 +22,7 @@ if [[ $# -lt 3 ]] || [[ $# -gt 7 ]]; then
     echo "  END_DATE:             Optional end date (default: 1979-01-01T06:00:00Z)" >&2
     echo "  NUM_NODES:            Optional number of nodes (default: 1)" >&2
     echo "  TIME_LIMIT:           Optional time limit in HH:MM:SS format (default: 02:00:00)" >&2
+    echo "  NUM_GPUS:             Optional GPUs per node (default: 4)" >&2
     exit 1
 fi
 
@@ -32,6 +33,7 @@ START_DATE="${4:-1979-01-01T00:00:00Z}"
 END_DATE="${5:-1980-01-01T06:00:00Z}"
 NUM_NODES="${6:-1}"
 TIME_LIMIT="${7:-02:00:00}"
+NUM_GPUS="${8:-4}"
 
 # check ICON_BUILD_DIR exists
 if [[ ! -d "$ICON_BUILD_DIR" ]]; then
@@ -73,11 +75,13 @@ else
     sed -i "/^#SBATCH --nodes=/a #SBATCH --partition=gpu" ${ICON_RUN_SCRIPT}
 fi
 
-# Add GPU resource request (1 A100 80GB GPU per node)
-if ! grep -q "^#SBATCH --gres=" ${ICON_RUN_SCRIPT}; then
-    sed -i "/^#SBATCH --partition=/a #SBATCH --gres=gpu:a100_80:1" ${ICON_RUN_SCRIPT}
+# Set GPU resource request (A100 80GB GPUs per node)
+if grep -q "^#SBATCH --gres=" ${ICON_RUN_SCRIPT}; then
+    sed -i "s|^#SBATCH --gres=.*|#SBATCH --gres=gpu:a100_80:${NUM_GPUS}|" ${ICON_RUN_SCRIPT}
+else
+    sed -i "/^#SBATCH --partition=/a #SBATCH --gres=gpu:a100_80:${NUM_GPUS}" ${ICON_RUN_SCRIPT}
 fi
-echo "   Requesting: 1× A100 80GB GPU per node"
+echo "   Requesting: ${NUM_GPUS}× A100 80GB GPU(s) per node"
 echo "   Partition: gpu"
 
 # Adjust MPI tasks for GPU nodes (they have fewer CPU cores than compute nodes)
