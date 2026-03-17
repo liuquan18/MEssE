@@ -188,3 +188,4 @@ experiment/NAMELIST_ICON
 scripts/run_icon/_run_icon_LAM_replay.sh
 scripts/tmp/
 build*
+.github/
