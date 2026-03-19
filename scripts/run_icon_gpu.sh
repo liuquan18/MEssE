@@ -32,7 +32,7 @@ LEVANTE_ACCOUNT="$3"
 START_DATE="${4:-1979-01-01T00:00:00Z}"
 END_DATE="${5:-1980-01-01T06:00:00Z}"
 NUM_NODES="${6:-1}"
-TIME_LIMIT="${7:-02:00:00}"
+TIME_LIMIT="${7:-00:10:00}"
 NUM_GPUS="${8:-4}"
 
 # check ICON_BUILD_DIR exists
@@ -77,9 +77,9 @@ fi
 
 # Set GPU resource request (A100 80GB GPUs per node)
 if grep -q "^#SBATCH --gres=" ${ICON_RUN_SCRIPT}; then
-    sed -i "s|^#SBATCH --gres=.*|#SBATCH --gres=gpu:a100_80:${NUM_GPUS}|" ${ICON_RUN_SCRIPT}
+    sed -i "s|^#SBATCH --gres=.*|#SBATCH --gres=gpu:${NUM_GPUS}|" ${ICON_RUN_SCRIPT}
 else
-    sed -i "/^#SBATCH --partition=/a #SBATCH --gres=gpu:a100_80:${NUM_GPUS}" ${ICON_RUN_SCRIPT}
+    sed -i "/^#SBATCH --partition=/a #SBATCH --gres=gpu:${NUM_GPUS}" ${ICON_RUN_SCRIPT}
 fi
 echo "   Requesting: ${NUM_GPUS}× A100 80GB GPU(s) per node"
 echo "   Partition: gpu"
