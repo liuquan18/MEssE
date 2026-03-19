@@ -63,11 +63,8 @@ nc = domain.cells.ncells
 ## secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
-    global temp, tas, sfcwind, domain
+    global tas, sfcwind, domain
     # Read existing ICON variables directly (no need for descriptors since they're not registered)
-    temp = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", jg), flag=comin.COMIN_FLAG_READ
-    )
     tas = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("tas", jg), flag=comin.COMIN_FLAG_READ
     )
@@ -140,7 +137,7 @@ def prepare_data(x_arr, y_arr, device):
         device: Device to place data on (cpu or cuda)
 
     Returns:
-        Tuple: (dataloader, pos_np) or (None, None) on non-root ranks
+        dataloader on root rank, None on non-root ranks
     """
     # Proceed with data gathering (only when training time has arrived)
     # Use CUDA-aware MPI if available - data will be gathered directly on GPU
@@ -161,8 +158,10 @@ def prepare_data(x_arr, y_arr, device):
             # Data already on GPU from CUDA-aware MPI
             x_full = tas_np_glb.unsqueeze(1).float()  # [num_nodes, 1]
             y_full = sfcwind_np_glb.unsqueeze(1).float()  # [num_nodes, 1]
-            # Convert coordinates to numpy for graph construction
-            pos_np = np.column_stack([cx_glb, cy_glb])
+            # Convert coordinates to CPU numpy for graph construction
+            cx_np = cx_glb.cpu().numpy() if torch.is_tensor(cx_glb) else cx_glb
+            cy_np = cy_glb.cpu().numpy() if torch.is_tensor(cy_glb) else cy_glb
+            pos_np = np.column_stack([cx_np, cy_np])
         else:
             # Fallback: data is numpy array
             x_full = torch.FloatTensor(tas_np_glb).unsqueeze(1)  # [num_nodes, 1]
@@ -186,9 +185,9 @@ def prepare_data(x_arr, y_arr, device):
             num_workers=0,
             collate_fn=collate_samples,
         )
-        return dataloader, pos_np
+        return dataloader
     else:
-        return None, None
+        return None
 
 
 # ============================================================================
@@ -257,7 +256,7 @@ def load_or_init_model(net, optimizer, checkpoint_path, device):
 # ============================================================================
 # Unit function: Initialize model and optimizer
 # ============================================================================
-def initialize_model(device, start_time_str):
+def config_model(device, start_time_str):
     """Create and initialize a fresh GNN model and optimizer.
 
     Args:
@@ -483,12 +482,18 @@ def training_callback():
     """
     global net, optimizer, is_model_initialized
 
+
+
+    # ========== Prepare data for this timestep ==========
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dataloader = prepare_data(np.asarray(tas), np.asarray(sfcwind), device)
+
+    
     # Only execute on root rank (rank 0)
     if cpu_rank != 0:
-        return
-
-    # ========== Device Detection ==========
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return 
+    
     if torch.cuda.is_available():
         print(f"\n🚀 GPU detected: {torch.cuda.get_device_name(0)}", file=sys.stderr)
     else:
@@ -512,7 +517,7 @@ def training_callback():
 
     # ========== Lazy model initialization ==========
     if not is_model_initialized:
-        net, optimizer, scratch_dir, checkpoint_path = initialize_model(
+        net, optimizer, scratch_dir, checkpoint_path = config_model(
             device, start_time_str
         )
         is_model_initialized = True
@@ -520,8 +525,7 @@ def training_callback():
     else:
         scratch_dir = f"/scratch/{user[0]}/{user}/icon_exercise_comin"
 
-    # ========== Prepare data for this timestep ==========
-    dataloader, pos_np = prepare_data(np.asarray(tas), np.asarray(sfcwind), device)
+
     if dataloader is None:
         print("⚠ Data preparation failed on non-root rank", file=sys.stderr)
         return
@@ -538,8 +542,8 @@ def training_callback():
     else:
         global_mean_tas = np.mean(tas)
 
-    # Get number of nodes from gathered data (approximation on rank 0)
-    num_nodes = pos_np.shape[0] if pos_np is not None else 0
+    # Get number of nodes from dataset
+    num_nodes = num_samples * sample_size if num_samples > 0 else 0
 
     # ========== Run training loop ==========
     print(f"\n{'='*60}", file=sys.stderr)
