@@ -91,6 +91,13 @@ echo "   Set to 32 cores / 2 threads = 16 MPI tasks/node (fits GPU node allocati
 # Set restart_interval to avoid auto-restart (use a long interval like 100 years)
 sed -i 's|restart_interval="PT6H"|restart_interval="P100Y"|' ${ICON_RUN_SCRIPT}
 
+# Add proc0_shift=1 in &parallel_nml to exclude rank 0 from computation
+if ! sed -n '/&parallel_nml/,/^\//p' ${ICON_RUN_SCRIPT} | grep -q 'proc0_shift'; then
+    sed -i '/&parallel_nml/,/^\//{/num_prefetch_proc[[:space:]]*=.*/a\
+ proc0_shift       = 1        ! Exclude rank 0 from computation
+}' ${ICON_RUN_SCRIPT}
+fi
+
 # Add comin_nml to the atmo_namelist block in the generated run script
 sed -i "/cat > \${atmo_namelist} << EOF/,/^EOF$/{/^EOF$/i\\
 &comin_nml\\
