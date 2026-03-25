@@ -56,7 +56,7 @@ sed -i "s|start_date=\${start_date:=.*}|start_date=\${start_date:=\"${START_DATE
 # Modify end_date in the run script
 sed -i "s|end_date=\${end_date:=.*}|end_date=\${end_date:=\"${END_DATE}\"}|" ${ICON_RUN_SCRIPT}
 
-# Modify number of nodes in SBATCH header
+# Modify number of nodes in SBATCH header (default: 1)
 sed -i "s|^#SBATCH --nodes=.*|#SBATCH --nodes=${NUM_NODES}|" ${ICON_RUN_SCRIPT}
 
 # Modify time limit in SBATCH header
@@ -73,11 +73,13 @@ else
     sed -i "/^#SBATCH --nodes=/a #SBATCH --partition=gpu" ${ICON_RUN_SCRIPT}
 fi
 
-# Add GPU resource request (1 A100 80GB GPU per node)
-if ! grep -q "^#SBATCH --gres=" ${ICON_RUN_SCRIPT}; then
-    sed -i "/^#SBATCH --partition=/a #SBATCH --gres=gpu:a100_80:1" ${ICON_RUN_SCRIPT}
+# Add GPU resource request (4 A100 80GB GPUs on a single node)
+if grep -q "^#SBATCH --gres=" ${ICON_RUN_SCRIPT}; then
+    sed -i "s|^#SBATCH --gres=.*|#SBATCH --gres=gpu:a100_80:4|" ${ICON_RUN_SCRIPT}
+else
+    sed -i "/^#SBATCH --partition=/a #SBATCH --gres=gpu:a100_80:4" ${ICON_RUN_SCRIPT}
 fi
-echo "   Requesting: 1× A100 80GB GPU per node"
+echo "   Requesting: ${NUM_NODES} node(s) with 4× A100 80GB GPUs per node"
 echo "   Partition: gpu"
 
 # Adjust MPI tasks for GPU nodes (they have fewer CPU cores than compute nodes)
@@ -91,10 +93,10 @@ echo "   Set to 32 cores / 2 threads = 16 MPI tasks/node (fits GPU node allocati
 # Set restart_interval to avoid auto-restart (use a long interval like 100 years)
 sed -i 's|restart_interval="PT6H"|restart_interval="P100Y"|' ${ICON_RUN_SCRIPT}
 
-# Add proc0_shift=1 in &parallel_nml to exclude rank 0 from computation
+# Add proc0_shift=4 in &parallel_nml to use first 4 ranks for IO
 if ! sed -n '/&parallel_nml/,/^\//p' ${ICON_RUN_SCRIPT} | grep -q 'proc0_shift'; then
     sed -i '/&parallel_nml/,/^\//{/num_prefetch_proc[[:space:]]*=.*/a\
- proc0_shift       = 1        ! Exclude rank 0 from computation
+ proc0_shift       = 4        ! Use first 4 ranks for IO
 }' ${ICON_RUN_SCRIPT}
 fi
 
