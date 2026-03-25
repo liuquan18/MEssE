@@ -31,7 +31,7 @@ LEVANTE_ACCOUNT="$3"
 START_DATE="${4:-1979-01-01T00:00:00Z}"
 END_DATE="${5:-1980-01-01T06:00:00Z}"
 NUM_NODES="${6:-1}"
-TIME_LIMIT="${7:-02:00:00}"
+TIME_LIMIT="${7:-00:30:00}"
 
 # check ICON_BUILD_DIR exists
 if [[ ! -d "$ICON_BUILD_DIR" ]]; then
@@ -96,7 +96,7 @@ sed -i 's|restart_interval="PT6H"|restart_interval="P100Y"|' ${ICON_RUN_SCRIPT}
 # Add proc0_shift=4 in &parallel_nml to use first 4 ranks for IO
 if ! sed -n '/&parallel_nml/,/^\//p' ${ICON_RUN_SCRIPT} | grep -q 'proc0_shift'; then
     sed -i '/&parallel_nml/,/^\//{/num_prefetch_proc[[:space:]]*=.*/a\
- proc0_shift       = 4        ! Use first 4 ranks for IO
+ proc0_shift       = 1        ! Use first 1 ranks for IO
 }' ${ICON_RUN_SCRIPT}
 fi
 
