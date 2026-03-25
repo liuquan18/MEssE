@@ -43,6 +43,7 @@ try:
 except ImportError:
     CUDA_AWARE_MPI = False
 
+CUDA_AWARE_MPI = False
 # %%
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 cpu_rank = comm.Get_rank()
@@ -56,18 +57,12 @@ user = getpass.getuser()
 jg = 1  # set the domain id
 domain = comin.descrdata_get_domain(jg)
 domain_np = np.asarray(domain.cells.decomp_domain)
+
 nc = domain.cells.ncells
-proc0_shift = 4  # Use first 4 ranks for IO, adjust as the same as run_icon_gpu.sh
-
-
-IO_RANKS = [0, 1, 2, 3]
-FIRST_COMPUTE_RANK = 4
-GROUP_SIZE = 3
+proc0_shift = 1  # Use first rank for gathering data, keep the same with run_icon_gpu.sh
 
 
 # %%
-
-
 ## secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def simple_python_constructor():
@@ -82,35 +77,6 @@ def simple_python_constructor():
 
 
 # %%
-# rank grouping and owner mapping
-# 0<-[4,5,6], 1<-[7,8,9], 2<-[10,11,12], 3<-[13,14,15]
-
-
-def build_io_groups(
-    world_size,
-    io_ranks=IO_RANKS,
-    first_compute=FIRST_COMPUTE_RANK,
-    group_size=GROUP_SIZE,
-):
-    groups = {r: [] for r in io_ranks}
-    compute_ranks = list(range(first_compute, world_size))
-
-    for i, r in enumerate(compute_ranks):
-        owner_idx = i // group_size
-        if owner_idx >= len(io_ranks):
-            # strict mode: if more compute groups than IO roots, stop or raise
-            # raise RuntimeError("Not enough IO ranks for compute groups")
-            break
-        groups[io_ranks[owner_idx]].append(r)
-
-    owner_of = {}
-    for io_root, members in groups.items():
-        owner_of[io_root] = io_root
-        for r in members:
-            owner_of[r] = io_root
-    return groups, owner_of
-
-
 # utility to extract non-halo data and global indices
 def no_halo_data(data_array):
     """Extracts non-halo data and corresponding global indices."""
@@ -127,160 +93,116 @@ def no_halo_data(data_array):
     return data_np[halo_mask], global_idx[:nc][halo_mask]
 
 
-# grouped gather with CUDA-aware MPI path (per subgroup only)
-def util_gather_grouped(
+# %%
+
+
+# Gather all ranks to root=0 with optional CUDA-aware MPI path.
+def util_gather(
     data_array,
-    cpu_rank,  # 0-15
+    cpu_rank,
     cuda_aware_mpi,
-    io_ranks=IO_RANKS,
-    first_compute=FIRST_COMPUTE_RANK,
-    group_size=GROUP_SIZE,
+    root=0,
 ):
-    world_size = comm.Get_size()
-    groups, owner_of = build_io_groups(world_size, io_ranks, first_compute, group_size)
+    vals, idxs = no_halo_data(data_array)
+    n_local = int(vals.size)
+    counts = comm.gather(n_local, root=root)
 
-    if cpu_rank not in owner_of:
+    use_cuda_buffers = bool(cuda_aware_mpi and torch.cuda.is_available())
+
+    recv_vals = None
+    displs = None
+
+    if cpu_rank == root:
+        counts = np.asarray(counts, dtype=np.int32)
+        displs = np.zeros(len(counts), dtype=np.int32)
+        displs[1:] = np.cumsum(counts[:-1])
+        n_total = int(np.sum(counts))
+
+        if use_cuda_buffers:
+            recv_vals = torch.empty(n_total, dtype=torch.float32, device="cuda")
+        else:
+            recv_vals = np.empty(n_total, dtype=np.float32)
+
+    if use_cuda_buffers:
+        send_vals = torch.as_tensor(vals, dtype=torch.float32, device="cuda")
+        comm.Gatherv(send_vals, [recv_vals, counts, displs, MPI.FLOAT], root=root)
+    else:
+        send_vals = vals.astype(np.float32, copy=False)
+        comm.Gatherv(send_vals, [recv_vals, counts, displs, MPI.FLOAT], root=root)
+
+    if cpu_rank != root:
         return None
 
-    io_root = owner_of[cpu_rank]
-    subgroup_members = [io_root] + groups[io_root]
+    if use_cuda_buffers:
+        vals_jax = jax.dlpack.from_dlpack(torch_dlpack.to_dlpack(recv_vals))
+    else:
+        vals_jax = jnp.asarray(recv_vals)
 
-    color = io_root if cpu_rank in subgroup_members else MPI.UNDEFINED
-    subcomm = comm.Split(color=color, key=cpu_rank)
-
-    if subcomm == MPI.COMM_NULL:
-        return None
-
-    try:
-        sub_rank = subcomm.Get_rank()
-
-        # local payload: remove halo and keep global index
-        vals, idxs = no_halo_data(data_array)
-
-        # gather sizes first
-        n_local = np.array([vals.size], dtype=np.int32)
-        counts = subcomm.gather(int(n_local[0]), root=0)
-
-        recv_vals = None
-        recv_idxs = None
-        displs = None
-
-        if sub_rank == 0:
-            displs = np.zeros(len(counts), dtype=np.int32)
-            displs[1:] = np.cumsum(np.array(counts[:-1], dtype=np.int32))
-            n_total = int(np.sum(counts))
-
-            if cuda_aware_mpi:
-                dev = torch.device("cuda")
-                recv_vals = torch.empty(n_total, dtype=torch.float32, device=dev)
-                recv_idxs = torch.empty(n_total, dtype=torch.int64, device=dev)
-            else:
-                recv_vals = np.empty(n_total, dtype=np.float32)
-                recv_idxs = np.empty(n_total, dtype=np.int64)
-
-        if cuda_aware_mpi:
-            send_vals = torch.as_tensor(vals, device="cuda", dtype=torch.float32)
-            send_idxs = torch.as_tensor(idxs, device="cuda", dtype=torch.int64)
-            subcomm.Gatherv(send_vals, [recv_vals, counts, displs, MPI.FLOAT], root=0)
-            subcomm.Gatherv(send_idxs, [recv_idxs, counts, displs, MPI.INT64_T], root=0)
-        else:
-            subcomm.Gatherv(vals, [recv_vals, counts, displs, MPI.FLOAT], root=0)
-            subcomm.Gatherv(idxs, [recv_idxs, counts, displs, MPI.INT64_T], root=0)
-
-        if cpu_rank != io_root:
-            return None
-
-        # on each IO root: convert to JAX array
-        if cuda_aware_mpi:
-            vals_jax = jax.dlpack.from_dlpack(torch_dlpack.to_dlpack(recv_vals))
-            idxs_jax = jax.dlpack.from_dlpack(torch_dlpack.to_dlpack(recv_idxs))
-        else:
-            vals_jax = jnp.asarray(recv_vals)
-            idxs_jax = jnp.asarray(recv_idxs)
-
-        return {
-            "io_root": io_root,
-            "group_members": subgroup_members,
-            "values": vals_jax,
-            "indices": idxs_jax,
-        }
-    finally:
-        # Crucial: Free the sub-communicator to avoid memory leaks
-        if subcomm != MPI.COMM_NULL:
-            subcomm.Free()
+    return vals_jax
 
 
-def build_io_mesh(io_ranks=IO_RANKS):
-    # requires distributed JAX init done for all ranks
-    io_devices = [d for d in jax.devices() if d.process_index in io_ranks]
-    if len(io_devices) != len(io_ranks):
-        raise RuntimeError(
-            f"Expected {len(io_ranks)} IO devices, got {len(io_devices)}"
-        )
-    mesh = Mesh(np.array(io_devices), axis_names=("io",))
-    return mesh
+# %%
 
 
-def make_global_io_array(local_batch, mesh):
-    # local_batch lives on each IO rank as one shard
-    # local shape: [B, F]
-    # global shape: [4, B, F] with axis 0 sharded by io
-    pspec = P("io", None, None)
-    global_arr = multihost_utils.host_local_array_to_global_array(
-        local_batch[None, ...], mesh, pspec
-    )
-    return global_arr
-
-
-@comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
+@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def data_test_callback():
     global tas, sfcwind, domain
-    world_size = comm.Get_size()
-    groups, owner_of = build_io_groups(world_size)
 
-    role = "IO" if cpu_rank in IO_RANKS else "COMPUTE"
-    owner = owner_of.get(cpu_rank, None)
-    local_cells = int(np.sum(domain_np == 0))
+    batch_size = 512
+    input_dim = 16
+    ouput_dim = 16
+
+    local_prognostic_cells = int(np.sum(np.asarray(domain_np).ravel("F")[:nc] == 0))
+    rank_role = "IO" if local_prognostic_cells == 0 else "COMPUTE"
     print(
-        f"[rank={cpu_rank}] role={role} owner_io={owner} local_nonhalo_cells={local_cells} "
-        f"cuda_aware_mpi={CUDA_AWARE_MPI}",
+        f"[rank={cpu_rank}] role={rank_role} local_prognostic_cells={local_prognostic_cells}",
         file=sys.stderr,
     )
 
-    if cpu_rank in IO_RANKS:
-        print(
-            f"[rank={cpu_rank}] subgroup_members={ [cpu_rank] + groups.get(cpu_rank, []) }",
-            file=sys.stderr,
-        )
+    gather_input = util_gather(tas, cpu_rank, CUDA_AWARE_MPI, root=0)
+    gather_output = util_gather(sfcwind, cpu_rank, CUDA_AWARE_MPI, root=0)
 
-    gather_out = util_gather_grouped(tas, cpu_rank, CUDA_AWARE_MPI)
-
-    if gather_out is None:
+    if gather_input is None or gather_output is None:
         return
 
-    vals = gather_out["values"]
-    idxs = gather_out["indices"]
-    print(
-        f"[rank={cpu_rank}] gathered_shard: values_shape={tuple(vals.shape)} values_dtype={vals.dtype} "
-        f"indices_shape={tuple(idxs.shape)} indices_dtype={idxs.dtype}",
-        file=sys.stderr,
-    )
+    if cpu_rank == 0:
 
-    try:
-        mesh = build_io_mesh()
+        # info about devices and MPI
+        print(f"CUDA-aware MPI: {CUDA_AWARE_MPI}")
+        local_devices = jax.local_devices()
+        print(f"Rank 0 local JAX devices: {local_devices}")
+
+        # prepare data
+        size_input = int(gather_input.shape[0])
+        size_output = int(gather_output.shape[0])
+
+        # reshape the gathered data to (num_samples, feature_dim) for dataloader
+        n_input = (size_input // input_dim) * input_dim
+        n_output = (size_output // ouput_dim) * ouput_dim
+
+        gather_input = gather_input[:n_input].reshape(-1, input_dim)
+        gather_output = gather_output[:n_output].reshape(-1, ouput_dim)
+
         print(
-            f"[rank={cpu_rank}] mesh_shape={mesh.devices.shape} mesh_axis={mesh.axis_names}",
-            file=sys.stderr,
+            f"Gathered input shape: {gather_input.shape}, Gathered output shape: {gather_output.shape}"
         )
 
-        local_batch = jnp.asarray(vals).reshape(-1, 1)
-        global_arr = make_global_io_array(local_batch, mesh)
+        # prepare a 4-GPU mesh on rank 0
+        mesh = Mesh(np.array(jax.devices()), ("data",))
+
+        sharded_input = jax.device_put(gather_input, NamedSharding(mesh, P("data")))
+        sharded_output = jax.device_put(gather_output, NamedSharding(mesh, P("data")))
+
         print(
-            f"[rank={cpu_rank}] global_sharded_shape={global_arr.shape} global_sharding={global_arr.sharding}",
-            file=sys.stderr,
+            f"Sharded input shape: {sharded_input.shape}, Sharded output shape: {sharded_output.shape}"
         )
-    except Exception as exc:
-        print(
-            f"[rank={cpu_rank}] mesh_test_skipped: {type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
+        for shard in sharded_input.addressable_shards:
+            print(
+                f"Input shard index={shard.index} device={shard.device} shape={shard.data.shape}",
+                file=sys.stderr,
+            )
+        for shard in sharded_output.addressable_shards:
+            print(
+                f"Output shard index={shard.index} device={shard.device} shape={shard.data.shape}",
+                file=sys.stderr,
+            )
