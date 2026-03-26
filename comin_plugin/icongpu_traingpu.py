@@ -73,38 +73,39 @@ def no_halo_data(data_array):
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def joo():
     # ComIn variable -> CuPy array on GPU
-    if cpu_rank != 0:  # proc0_shift=1, Use first 1 ranks for training
-        comin.print_info(f"{ta.__cuda_array_interface__=}")
-        ta_cp = xp.asarray(ta)  # xp is cupy in your NVIDIA path
-        ta_cp, _ = no_halo_data(ta_cp)  # Extract non-halo data and global indices
-        comin.print_info(f"CuPy device: {ta_cp.device}, ptr: {ta_cp.data.ptr}")
-        # CuPy -> JAX (GPU) via DLPack
-        ta_jax = jdlpack.from_dlpack(ta_cp)
-        comin.print_info(f"JAX device: {ta_jax.device}")
+    comin.print_info(f"{ta.__cuda_array_interface__=}")
+    ta_cp = xp.asarray(ta)  # xp is cupy in your NVIDIA path
+    ta_cp, _ = no_halo_data(ta_cp)  # Extract non-halo data and global indices
+    comin.print_info(f"CuPy device: {ta_cp.device}, ptr: {ta_cp.data.ptr}") #0:  INFO(cuda_test): ta.__cuda_array_interface__={'shape': (8000, 30, 4, 1, 1), 'typestr': '<f8', 'data': (23455338594304, False), 'version': 3, 'strides': (8, 64000, 1920000, 7680000, 7680000)}
 
-        ua_cp = xp.asarray(ua)
-        ua_cp, _ = no_halo_data(ua_cp)  # Extract non-halo data and global indices
-        ua_jax = jdlpack.from_dlpack(ua_cp)
+    # CuPy -> JAX (GPU) via DLPack
+    ta_jax = jdlpack.from_dlpack(ta_cp)
+    comin.print_info(f"JAX device: {ta_jax.device}")
+
+    ua_cp = xp.asarray(ua)
+    ua_cp, _ = no_halo_data(ua_cp)  # Extract non-halo data and global indices
+    ua_jax = jdlpack.from_dlpack(ua_cp)
+    comin.print_info(f"ua_jax shape: {ua_jax.shape}, device: {ua_jax.device}") # ua_jax shape: (25600,),
 
 
 
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
-def foo():
-    if cpu_rank != 0:  # proc0_shift=1, Use first 1 ranks for training
-        procid = os.getenv("SLURM_PROCID", "?")
-        localid = os.getenv("SLURM_LOCALID", "?")
-        dev = xp.cuda.runtime.getDevice()
-        comin.print_info(f"rank={procid} local_rank={localid} gpu={dev}")
-        total_gpus = jax.local_device_count()
-        comin.print_info(f"Total local GPUs visible to JAX: {total_gpus}")
-        comin.print_info(f"JAX devices: {jax.devices()}")
+# @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
+# def foo():
+#     if cpu_rank != 0:  # proc0_shift=1, Use first 1 ranks for training
+#         procid = os.getenv("SLURM_PROCID", "?")
+#         localid = os.getenv("SLURM_LOCALID", "?")
+#         dev = xp.cuda.runtime.getDevice()
+#         comin.print_info(f"rank={procid} local_rank={localid} gpu={dev}")
+#         total_gpus = jax.local_device_count()
+#         comin.print_info(f"Total local GPUs visible to JAX: {total_gpus}")
+#         comin.print_info(f"JAX devices: {jax.devices()}")
 
-    domain_xp = xp.asarray(domain.cells.decomp_domain)
-    nc = domain.cells.ncells
-    mask = domain_xp.ravel(order="F")[:nc] == 0
-    local_prognostic_cells = int(xp.count_nonzero(mask).item())
-    rank_role = "IO" if local_prognostic_cells == 0 else "COMPUTE"
-    print(
-        f"[rank={cpu_rank}] role={rank_role} local_prognostic_cells={local_prognostic_cells}",
-        file=sys.stderr,
-    )
+#     domain_xp = xp.asarray(domain.cells.decomp_domain)
+#     nc = domain.cells.ncells
+#     mask = domain_xp.ravel(order="F")[:nc] == 0
+#     local_prognostic_cells = int(xp.count_nonzero(mask).item())
+#     rank_role = "IO" if local_prognostic_cells == 0 else "COMPUTE"
+#     print(
+#         f"[rank={cpu_rank}] role={rank_role} local_prognostic_cells={local_prognostic_cells}",
+#         file=sys.stderr,
+#     )
