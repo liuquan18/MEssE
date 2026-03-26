@@ -42,36 +42,55 @@ cpu_rank = comm.Get_rank()
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    global ta
+    global ta, ua
     ta = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", 1), comin.COMIN_FLAG_READ
     )
+
+    ua = comin.var_get(
+        [comin.EP_ATM_NUDGING_BEFORE],
+        ("u", 1),
+        comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
+    )
+
+
+# utility to extract non-halo data and global indices
+def no_halo_data(data_array):
+    """Extract non-halo data and global indices using xp (CuPy/NumPy)."""
+    nc = domain.cells.ncells
+    global_idx = xp.asarray(domain.cells.glb_index, dtype=xp.int64) - 1
+
+    # Convert input to xp array and flatten in Fortran order like ICON fields.
+    data_xp = xp.asarray(data_array).ravel(order="F")[:nc]
+    decomp_xp = xp.asarray(domain.cells.decomp_domain).ravel(order="F")[:nc]
+
+    # Mask for interior cells (where domain == 0)
+    halo_mask = decomp_xp == 0
+
+    return data_xp[halo_mask], global_idx[:nc][halo_mask]
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def joo():
     # ComIn variable -> CuPy array on GPU
-    if cpu_rank != 0:    # proc0_shift=1, Use first 1 ranks for training
+    if cpu_rank != 0:  # proc0_shift=1, Use first 1 ranks for training
         comin.print_info(f"{ta.__cuda_array_interface__=}")
         ta_cp = xp.asarray(ta)  # xp is cupy in your NVIDIA path
+        ta_cp, _ = no_halo_data(ta_cp)  # Extract non-halo data and global indices
         comin.print_info(f"CuPy device: {ta_cp.device}, ptr: {ta_cp.data.ptr}")
-
         # CuPy -> JAX (GPU) via DLPack
         ta_jax = jdlpack.from_dlpack(ta_cp)
         comin.print_info(f"JAX device: {ta_jax.device}")
 
-        # Simple JAX compute on GPU
-        tas_jax = ta_jax[:, -1, :, 0, 0]
-        mean_tas = jnp.mean(tas_jax)
+        ua_cp = xp.asarray(ua)
+        ua_cp, _ = no_halo_data(ua_cp)  # Extract non-halo data and global indices
+        ua_jax = jdlpack.from_dlpack(ua_cp)
 
-        # Force execution so you really test runtime/device path
-        mean_tas.block_until_ready()
-        comin.print_info(f"JAX mean surface temp = {float(mean_tas)}")
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def foo():
-    if cpu_rank != 0:    # proc0_shift=1, Use first 1 ranks for training
+    if cpu_rank != 0:  # proc0_shift=1, Use first 1 ranks for training
         procid = os.getenv("SLURM_PROCID", "?")
         localid = os.getenv("SLURM_LOCALID", "?")
         dev = xp.cuda.runtime.getDevice()
