@@ -34,49 +34,15 @@ else:
 
 domain = comin.descrdata_get_domain(1)
 
-comin.var_request_add(("device_to_host", 1), True)
-comin.var_request_add(("host_to_device", 1), True)
 
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    global ta, device_to_host1, device_to_host2, host_to_device1, host_to_device2
+    global ta
     ta = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE], ("temp", 1), comin.COMIN_FLAG_READ
     )
-    device_to_host1 = comin.var_get(
-        [comin.EP_ATM_NUDGING_BEFORE],
-        ("device_to_host", 1),
-        comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
-    )
-    host_to_device1 = comin.var_get(
-        [comin.EP_ATM_NUDGING_BEFORE],
-        ("host_to_device", 1),
-        comin.COMIN_FLAG_WRITE,
-    )
-    device_to_host2 = comin.var_get(
-        [comin.EP_ATM_NUDGING_AFTER], ("device_to_host", 1), comin.COMIN_FLAG_READ
-    )
-    host_to_device2 = comin.var_get(
-        [comin.EP_ATM_NUDGING_AFTER],
-        ("host_to_device", 1),
-        comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
-    )
 
-
-# @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
-# def foo():
-#     comin.print_info(f"{ta.__cuda_array_interface__=}")
-#     ta_arr = np.asarray(ta)
-#     if hasattr(ta_arr, "__cuda_array_interface__"):
-#         comin.print_info(f"{ta_arr.__cuda_array_interface__=}")
-#     comin.print_info(f"{type(ta_arr)=}")
-#     if hasattr(ta_arr, "device"):
-#         comin.print_info(f"{ta_arr.device=}")
-#     comin.print_info(f"{ta_arr.base}")
-#     comin.print_info("Computing mean surface temperture (on this process)")
-#     tas = ta_arr[:, -1, :, 0, 0]
-#     comin.print_info(f"{tas.mean()=}")
 
 
 
