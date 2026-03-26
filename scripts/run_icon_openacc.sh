@@ -41,5 +41,12 @@ sed -i "s|^#SBATCH --account=.*|#SBATCH --account=${LEVANTE_ACCOUNT}|" "$ICON_RU
 sed -i "s|^[[:space:]]*plugin_list(1)%plugin_library[[:space:]]*=.*|  plugin_list(1)%plugin_library = \"${PYTHON_ADAPTER_LIB}\"|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%options[[:space:]]*=.*|  plugin_list(1)%options        = \"${COMIN_PLUGIN_SCRIPT}\"|" "$ICON_RUN_SCRIPT"
 
+
+# clean the experiment directory to avoid issues with previous runs
+ICON_EXP_DIR="${ICON_BUILD_DIR}/experiments/"
+echo "Cleaning experiment directory: ${ICON_EXP_DIR}"
+rm -rf "${ICON_EXP_DIR}/*"
+
+
 echo "Submitting: $ICON_RUN_SCRIPT"
 sbatch "$ICON_RUN_SCRIPT"
