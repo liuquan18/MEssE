@@ -70,7 +70,7 @@ $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disa
 make -j $(nproc)
 popd
 
-./make_runscripts --all
+../make_runscripts --all
 
 echo "Setup complete."
 echo "The python environment is here: $PY_ENV_DIR"
