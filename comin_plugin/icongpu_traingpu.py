@@ -37,7 +37,8 @@ else:
 domain = comin.descrdata_get_domain(1)
 # %%
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
-cpu_rank = comm.Get_rank()
+rank = comm.Get_rank()
+world_size = comm.Get_size()
 
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
@@ -69,29 +70,35 @@ def no_halo_data(data_array):
 
     return data_xp[halo_mask], global_idx[:nc][halo_mask]
 
+# function data build
+def jax_data_2d(arr_cp: xp.ndarray, level: int=0):
+    arr_cp = arr_cp[:, level, :, :, :]
+    arr_cp, _ = no_halo_data(arr_cp)
+
+    # to jax array on GPU
+    arr_jax = jdlpack.from_dlpack(arr_cp)
+    return arr_jax
+
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def joo():
     # ComIn variable -> CuPy array on GPU
     comin.print_info(f"{ta.__cuda_array_interface__=}")
     ta_cp = xp.asarray(ta)  # xp is cupy in your NVIDIA path
-    ta_cp, _ = no_halo_data(ta_cp)  # Extract non-halo data and global indices
     comin.print_info(f"CuPy device: {ta_cp.device}, ptr: {ta_cp.data.ptr}") #0:  INFO(cuda_test): ta.__cuda_array_interface__={'shape': (8000, 30, 4, 1, 1), 'typestr': '<f8', 'data': (23455338594304, False), 'version': 3, 'strides': (8, 64000, 1920000, 7680000, 7680000)}
-
-    # CuPy -> JAX (GPU) via DLPack
     ta_jax = jdlpack.from_dlpack(ta_cp)
-    comin.print_info(f"JAX device: {ta_jax.device}")
+    comin.print_info(f"ta_jax device: {ta_jax.device_buffer.device()}, shape: {ta_jax.shape}")  # ta_jax device: gpu:0
+
 
     ua_cp = xp.asarray(ua)
-    ua_cp, _ = no_halo_data(ua_cp)  # Extract non-halo data and global indices
-    ua_jax = jdlpack.from_dlpack(ua_cp)
-    comin.print_info(f"ua_jax shape: {ua_jax.shape}, device: {ua_jax.device}") # ua_jax shape: (25600,),
-
+    comin.print_info(f"ua_cp shape: {ua_cp.shape}, device: {ua_cp.device}") # ua_cp shape: (25600, 30, 4, 1, 1), device: gpu
+    ua_jax = jax_data_2d(ua_cp)  # Convert to JAX array on GPU
+    comin.print_info(f"ua_jax device: {ua_jax.device_buffer.device()}, shape: {ua_jax.shape}")  # ua_jax device: gpu:0
 
 
 # @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 # def foo():
-#     if cpu_rank != 0:  # proc0_shift=1, Use first 1 ranks for training
+#     if rank != 0:  # proc0_shift=1, Use first 1 ranks for training
 #         procid = os.getenv("SLURM_PROCID", "?")
 #         localid = os.getenv("SLURM_LOCALID", "?")
 #         dev = xp.cuda.runtime.getDevice()
