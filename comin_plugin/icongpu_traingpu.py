@@ -2,7 +2,9 @@ import comin
 import os
 import jax
 from jax import dlpack as jdlpack
+import numpy as np
 import sys
+from jax.sharding import NamedSharding, PartitionSpec as P
 
 from mpi4py import MPI
 
@@ -12,7 +14,7 @@ world_size = comm.Get_size()
 
 # Explicitly define number of IO ranks for this setup (matches runscript).
 NUM_IO_PROCS = 1
-COMPUTE_WORLD_SIZE = max(world_size - NUM_IO_PROCS, 0)
+COMPUTE_WORLD_SIZE = world_size - NUM_IO_PROCS
 IS_IO_RANK = rank >= COMPUTE_WORLD_SIZE
 
 
@@ -39,7 +41,7 @@ def _get_local_rank():
 JAX_READY = False
 JAX_INIT_MSG = "JAX distributed not initialized"
 LOCAL_DEVICE_ID = None
-CHECK_PRINTED = False
+GLOBAL_BATCH_SIZE = 1024
 
 
 glob = comin.descrdata_get_global()
@@ -138,31 +140,6 @@ def sec_ctor():
     )
 
 
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
-def jax_distributed_check():
-    global CHECK_PRINTED
-    if CHECK_PRINTED:
-        return
-
-    # Check only compute ranks; IO ranks are expected to skip JAX.
-    compute_local = 0 if IS_IO_RANK else 1
-    compute_total = comm.allreduce(compute_local, op=MPI.SUM)
-    compute_ok_local = 1 if (compute_local == 1 and JAX_READY) else 0
-    compute_ok = comm.allreduce(compute_ok_local, op=MPI.SUM)
-
-    if rank == 0:
-        if compute_ok == compute_total:
-            comin.print_info(
-                f"JAX_DISTRIBUTED_CHECK: PASS ({compute_ok}/{compute_total} compute ranks initialized, io_ranks={NUM_IO_PROCS})"
-            )
-        else:
-            comin.print_info(
-                f"JAX_DISTRIBUTED_CHECK: FAIL ({compute_ok}/{compute_total} compute ranks initialized, io_ranks={NUM_IO_PROCS})"
-            )
-
-    CHECK_PRINTED = True
-
-
 # utility to extract non-halo data and global indices
 def no_halo_data(data_array):
     """Extract non-halo data and global indices using xp (CuPy/NumPy)."""
@@ -184,9 +161,43 @@ def jax_data_2d(arr_cp: xp.ndarray, level: int = 0):
     arr_cp = arr_cp[:, level, :, :, :]
     arr_cp, _ = no_halo_data(arr_cp)
 
-    # to jax array on GPU
+    # Local JAX array from the ComIn field data.
     arr_jax = jdlpack.from_dlpack(arr_cp)
-    return arr_jax
+    if arr_jax.ndim == 1:
+        arr_jax = arr_jax[:, None]
+
+    process_count = jax.process_count()
+    device_count = jax.device_count()
+
+    if GLOBAL_BATCH_SIZE % process_count != 0:
+        raise ValueError(
+            f"GLOBAL_BATCH_SIZE={GLOBAL_BATCH_SIZE} must be divisible by process_count={process_count}"
+        )
+    if GLOBAL_BATCH_SIZE % device_count != 0:
+        raise ValueError(
+            f"GLOBAL_BATCH_SIZE={GLOBAL_BATCH_SIZE} must be divisible by device_count={device_count}"
+        )
+
+    per_process_batch_size = GLOBAL_BATCH_SIZE // process_count
+    per_device_batch_size = GLOBAL_BATCH_SIZE // device_count
+
+    if arr_jax.shape[0] < per_process_batch_size:
+        raise ValueError(
+            f"Not enough local samples: have {arr_jax.shape[0]}, need {per_process_batch_size}"
+        )
+
+    # Use local field data as process-local batch and build a global sharded array.
+    process_batch = np.asarray(arr_jax[:per_process_batch_size])
+    mesh = jax.make_mesh((device_count,), ("batch",))
+    sharding = NamedSharding(mesh, P("batch"))
+    global_batch = jax.make_array_from_process_local_data(sharding, process_batch)
+
+    # Basic sanity checks for data parallel sharding.
+    assert global_batch.shape[0] == GLOBAL_BATCH_SIZE
+    assert process_batch.shape[0] == per_process_batch_size
+    assert global_batch.addressable_shards[0].data.shape[0] == per_device_batch_size
+
+    return global_batch
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
