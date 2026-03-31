@@ -37,6 +37,7 @@ else:
 
     DEVICE_SYNC_FLAG = 0
 
+
 domain = comin.descrdata_get_domain(1)
 
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
@@ -83,6 +84,27 @@ def no_halo_data(data_array):
 
     return data_xp[halo_mask], global_idx[:nc][halo_mask]
 
+def sample_data(arr, level = 0, sample_size = 256):
+    arr_cp = xp.asarray(arr)
+    comin.print_info(f"[rank={rank}] CuPy device: {arr_cp.device}, shape: {arr_cp.shape}")
+    arr_level = arr_cp[:, level, ...] 
+    arr_no_halo, _ = no_halo_data(arr_level)
+
+    arr_samples = arr_no_halo.reshape(-1, sample_size)
+    return arr_samples
+
+
+def global_jax_array(arr:xp.ndarray, sharding) -> jax.Array:
+    local_data = jdlpack.from_dlpack(arr)  # JAX array on CUDA:0
+    comin.print_info(
+        f"[rank={rank}] local_data shape: {local_data.shape}, dtype: {local_data.dtype}"
+    )
+
+    # Each compute rank contributes its local shard; JAX assembles the global array.
+    array_global = jax.make_array_from_process_local_data(sharding, local_data)
+
+    return array_global
+
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def joo():
@@ -91,48 +113,24 @@ def joo():
     # With local_device_ids=[], jax.local_devices() returns [] without CUDA errors.
     if rank >= io_rank:
         _ = jax.local_devices()  # participates in CPU topology rendezvous
-        print(f"[rank={rank}] IO-only rank, skipping GPU work.", file=sys.stderr)
+        # print(f"[rank={rank}] IO-only rank, skipping GPU work.", file=sys.stderr)
         return
-
+    
     # Mesh over the 4 compute GPUs (JAX processes 0-3, each with 1 GPU).
     mesh = jax.make_mesh((num_calculate_processes,), ("gpu",))
     sharding = NamedSharding(mesh, P("gpu"))
 
-    comin.print_info(f"{ta.__cuda_array_interface__=}")
-    ta_cp = xp.asarray(ta)
-    comin.print_info(f"[rank={rank}] CuPy device: {ta_cp.device}, shape: {ta_cp.shape}")
-    ta_no_halo, _ = no_halo_data(ta_cp)
+    # build x data from ta
+    ta_samples = sample_data(ta)
+    comin.print_info(f"x data from {ta_samples.__cuda_array_interface__=}")
+    ta_global = global_jax_array(ta_samples, sharding)
+    comin.print_info(f"x: ta_global: shape={ta_global.shape}, dtype={ta_global.dtype}, sharding={ta_global.sharding}")
 
-    local_data = jdlpack.from_dlpack(ta_no_halo)  # JAX array on CUDA:0
-    comin.print_info(
-        f"[rank={rank}] local_data shape: {local_data.shape}, dtype: {local_data.dtype}"
-    )
-
-    # Each compute rank contributes its local shard; JAX assembles the global array.
-    array_global = jax.make_array_from_process_local_data(sharding, local_data)
-    comin.print_info(
-        f"[rank={rank}] array_global shape: {array_global.shape}, "
-        f"addressable shards: {len(array_global.addressable_shards)}"
-    )
+    # build y data from ua
+    ua_samples = sample_data(ua)
+    comin.print_info(f"y data from {ua_samples.__cuda_array_interface__=}")
+    ua_global = global_jax_array(ua_samples, sharding)
+    comin.print_info(f"y: ua_global: shape={ua_global.shape}, dtype={ua_global.dtype}, sharding={ua_global.sharding}")
 
 
-# @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
-# def foo():
-#     if rank != 0:  # proc0_shift=1, Use first 1 ranks for training
-#         procid = os.getenv("SLURM_PROCID", "?")
-#         localid = os.getenv("SLURM_LOCALID", "?")
-#         dev = xp.cuda.runtime.getDevice()
-#         comin.print_info(f"rank={procid} local_rank={localid} gpu={dev}")
-#         total_gpus = jax.local_device_count()
-#         comin.print_info(f"Total local GPUs visible to JAX: {total_gpus}")
-#         comin.print_info(f"JAX devices: {jax.devices()}")
 
-#     domain_xp = xp.asarray(domain.cells.decomp_domain)
-#     nc = domain.cells.ncells
-#     mask = domain_xp.ravel(order="F")[:nc] == 0
-#     local_prognostic_cells = int(xp.count_nonzero(mask).item())
-#     rank_role = "IO" if local_prognostic_cells == 0 else "COMPUTE"
-#     print(
-#         f"[rank={cpu_rank}] role={rank_role} local_prognostic_cells={local_prognostic_cells}",
-#         file=sys.stderr,
-#     )
