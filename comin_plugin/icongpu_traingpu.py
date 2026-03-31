@@ -1,10 +1,14 @@
 import comin
 import os
 import jax
+import jax.numpy as jnp
 from jax import dlpack as jdlpack
 import numpy as np
 import sys
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+import flax.linen as nn
+import optax
+from flax.training import train_state as flax_train_state
 
 
 from mpi4py import MPI
@@ -53,6 +57,43 @@ io_rank = world_size - 1  # last rank is IO-only, has no GPU
 # The IO rank (last rank) has no GPU, so local_device_ids=[].
 local_device_ids = [0] if rank < io_rank else []
 jax.distributed.initialize(local_device_ids=local_device_ids)
+
+
+# ---------------------------------------------------------------------------
+# Simple MLP: input (batch, 256) -> output (batch, 256)
+# ---------------------------------------------------------------------------
+class MLP(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(512)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        return x
+
+
+_train_state = None  # lazily initialised on first callback
+
+
+def _init_train_state(mesh):
+    model = MLP()
+    replicated = NamedSharding(mesh, P())  # params replicated on all GPUs
+    rng = jax.random.PRNGKey(0)
+    params = jax.jit(model.init, out_shardings=replicated)(rng, jnp.ones((1, 256)))
+    tx = optax.adam(1e-3)
+    return flax_train_state.TrainState.create(
+        apply_fn=model.apply, params=params, tx=tx
+    )
+
+
+@jax.jit
+def _train_step(state, x, y):
+    def loss_fn(params):
+        pred = state.apply_fn(params, x)
+        return jnp.mean((pred - y) ** 2)
+
+    loss, grads = jax.value_and_grad(loss_fn)(state.params)
+    state = state.apply_gradients(grads=grads)
+    return state, loss
 
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
@@ -131,6 +172,15 @@ def joo():
     comin.print_info(f"y data from {ua_samples.__cuda_array_interface__=}")
     ua_global = global_jax_array(ua_samples, sharding)
     comin.print_info(f"y: ua_global: shape={ua_global.shape}, dtype={ua_global.dtype}, sharding={ua_global.sharding}")
+
+    # --- training step ---
+    global _train_state
+    if _train_state is None:
+        _train_state = _init_train_state(mesh)
+        comin.print_info(f"[rank={rank}] MLP initialised")
+
+    _train_state, loss = _train_step(_train_state, ta_global, ua_global)
+    comin.print_info(f"[rank={rank}] train loss: {loss:.6f}")
 
 
 
