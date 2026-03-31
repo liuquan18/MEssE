@@ -32,12 +32,13 @@ PY_ENV_DIR=$BASE_DIR/py_env
 mkdir -p $SRC_DIR $BUILD_DIR $PY_ENV_DIR
 
 # python module on levante
-PY_BIN="/sw/spack-levante/miniforge3-24.11.3-0-Linux-x86_64-2zhbdz/bin/python"
+PY_BIN="/sw/spack-levante/miniforge3-24.11.3-2-Linux-x86_64-rf4err/bin/python"
 $PY_BIN -m venv $PY_ENV_DIR
 source $PY_ENV_DIR/bin/activate
 
 pip install --upgrade pip
-pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib mpi4py netcdf4 xarray torch cartopy
+pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax
+pip install --upgrade "jax[cuda13]"
 
 # clone the repositories
 ICON_DIR_NAME=icon-model
@@ -64,10 +65,12 @@ git_checkout_or_update git@gitlab.dkrz.de:icon/icon-model.git release-2025.10-pu
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
 mkdir -p $ICON_BUILD_DIR
 pushd $ICON_BUILD_DIR
-$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.intel-2021.5.0 ICON_BUNDLED_CFLAGS='-fPIC -O2' -q --enable-comin --enable-mixed-precision --enable-openmp --enable-bundled-python='mtime','yac','comin'
+$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disable-jsbach --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
+
 make -j $(nproc)
 popd
 
+../make_runscripts --all
 
 echo "Setup complete."
 echo "The python environment is here: $PY_ENV_DIR"
