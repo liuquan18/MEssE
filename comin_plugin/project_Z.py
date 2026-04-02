@@ -250,7 +250,6 @@ def training():
         comin.print_info(f"[rank={rank}] MLP initialised")
 
     # cache MLP output with PRE-update params → becomes y for the NEXT step
-    # (must be done before _train_step so y and pred use different params)
     _ua_pred_jax = _train_state.apply_fn(_train_state.params, ua_global)
     comin.print_info(
         f"[rank={rank}] ua_pred_jax cached (pre-update), shape={_ua_pred_jax.shape}"
