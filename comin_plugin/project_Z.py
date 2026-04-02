@@ -172,7 +172,7 @@ def no_halo_data(data_array):
     return data_cells[halo_mask_1d], global_idx[:nc][halo_mask_1d]
 
 
-# temporal sample strategy:
+# temporal sample strategy: (n_interior, nlev) -> (batch, sample_size, nlev)
 def sample_data(arr, sample_size=256):
     arr_cp = xp.asarray(arr)
     comin.print_info(
