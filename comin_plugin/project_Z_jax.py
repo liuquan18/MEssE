@@ -1,5 +1,6 @@
 import comin
 import os
+import socket
 import jax
 import jax.numpy as jnp
 from jax import dlpack as jdlpack
@@ -52,11 +53,31 @@ num_io_processes = 1
 num_calculate_processes = world_size - num_io_processes
 io_rank = world_size - 1  # last rank is IO-only, has no GPU
 
-# jax distributed initialization
+# ---------------------------------------------------------------------------
+# JAX distributed initialization for compute ranks only.
 # Each compute rank owns exactly one GPU: CUDA:0 (its SLURM-assigned device).
-# The IO rank (last rank) has no GPU, so local_device_ids=[].
-local_device_ids = [0] if rank < io_rank else []
-jax.distributed.initialize(local_device_ids=local_device_ids)
+# The IO rank (last rank) has no GPU and is excluded from the JAX group.
+# ---------------------------------------------------------------------------
+compute_rank = None  # None for the IO rank
+
+if rank < io_rank:
+    compute_comm = comm.Split(color=0, key=rank)
+    compute_rank = compute_comm.Get_rank()
+
+    # All compute ranks agree on coordinator address (hostname of compute rank 0).
+    if compute_rank == 0:
+        coordinator_host = socket.gethostname()
+    else:
+        coordinator_host = None
+    coordinator_host = compute_comm.bcast(coordinator_host, root=0)
+
+    coordinator_address = f"{coordinator_host}:29600"
+    jax.distributed.initialize(
+        coordinator_address=coordinator_address,
+        num_processes=num_calculate_processes,
+        process_id=compute_rank,
+        local_device_ids=[0],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +230,8 @@ def global_jax_array(arr: xp.ndarray, sharding) -> jax.Array:
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    # IO rank has no GPU. It must still call a JAX op to trigger the distributed
-    # CPU topology exchange (lazy init) that all 5 processes must participate in.
-    # With local_device_ids=[], jax.local_devices() returns [] without CUDA errors.
+    # IO rank is not part of the JAX distributed group; skip all JAX work.
     if rank >= io_rank:
-        _ = jax.local_devices()  # participates in CPU topology rendezvous
-        # print(f"[rank={rank}] IO-only rank, skipping GPU work.", file=sys.stderr)
         return
 
     # Mesh over the 4 compute GPUs (JAX processes 0-3, each with 1 GPU).
