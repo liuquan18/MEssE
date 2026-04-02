@@ -60,14 +60,17 @@ jax.distributed.initialize(local_device_ids=local_device_ids)
 
 
 # ---------------------------------------------------------------------------
-# Simple MLP: input (batch, 256) -> output (batch, 256)
+# Simple MLP: input (batch, 256, 30) -> output (batch, 256, 30)
+# 256 = spatial cells per sample, 30 = levels as channels
+# Dense is applied independently over the last (channel) dimension.
 # ---------------------------------------------------------------------------
 class MLP(nn.Module):
     @nn.compact
     def __call__(self, x):
-        x = nn.Dense(512)(x)
+        # x: (batch, 256, 30)
+        x = nn.Dense(512)(x)  # -> (batch, 256, 512)
         x = nn.relu(x)
-        x = nn.Dense(256)(x)
+        x = nn.Dense(30)(x)  # -> (batch, 256, 30)
         return x
 
 
@@ -78,7 +81,7 @@ def _init_train_state(mesh):
     model = MLP()
     replicated = NamedSharding(mesh, P())  # params replicated on all GPUs
     rng = jax.random.PRNGKey(0)
-    params = jax.jit(model.init, out_shardings=replicated)(rng, jnp.ones((1, 256)))
+    params = jax.jit(model.init, out_shardings=replicated)(rng, jnp.ones((1, 256, 30)))
     tx = optax.adam(1e-3)
     return flax_train_state.TrainState.create(
         apply_fn=model.apply, params=params, tx=tx
@@ -101,7 +104,7 @@ def _train_step(state, x, y):
 
 
 # ---------------------------------------------------------------------------
-# constructor callback: setup variables and data extraction utilities
+# data constructor: setup variables and data extraction utilities
 # ---------------------------------------------------------------------------
 
 # primary constructor callback to register new variables
@@ -128,6 +131,7 @@ def sec_ctor():
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
 
+    # this is to save the prediction to icon, but writing a JAX sharded array back to the ICON buffer (with halo re-insertion) is non-trivial,
     # ua_pred = comin.var_get(
     #     [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
     #     ("ua_pred", 1),
@@ -137,29 +141,52 @@ def sec_ctor():
 
 # utility to extract non-halo data and global indices
 def no_halo_data(data_array):
-    """Extract non-halo data and global indices using xp (CuPy/NumPy)."""
+    """Extract non-halo data preserving the level dimension.
+
+    Input shape : (nproma, nlev, nblk) or (nproma, nlev, nblk, 1, 1, ...)
+    Returns     : data   (n_interior_cells, nlev)
+                  global_idx (n_interior_cells,)
+    """
     nc = domain.cells.ncells
     global_idx = xp.asarray(domain.cells.glb_index, dtype=xp.int64) - 1
 
-    # Convert input to xp array and flatten in Fortran order like ICON fields.
-    data_xp = xp.asarray(data_array).ravel(order="F")[:nc]
-    decomp_xp = xp.asarray(domain.cells.decomp_domain).ravel(order="F")[:nc]
+    data_xp = xp.asarray(data_array)
+    # squeeze trailing singleton dims: e.g. (nproma, nlev, nblk, 1, 1) → (nproma, nlev, nblk)
+    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
+        data_xp = data_xp[..., 0]
 
-    # Mask for interior cells (where domain == 0)
-    halo_mask = decomp_xp == 0
+    # halo mask derived from decomp_domain (nproma, nblk)
+    decomp_xp = xp.asarray(domain.cells.decomp_domain)  # (nproma, nblk)
+    halo_mask_1d = decomp_xp.ravel(order="F")[:nc] == 0  # (nc,) True = interior
 
-    return data_xp[halo_mask], global_idx[:nc][halo_mask]
+    if data_xp.ndim == 2:
+        # 2-D field (nproma, nblk) – no level dim
+        data_cells = data_xp.ravel(order="F")[:nc]
+        return data_cells[halo_mask_1d], global_idx[:nc][halo_mask_1d]
+
+    # 3-D field (nproma, nlev, nblk): keep level dimension
+    nlev = data_xp.shape[1]
+    # transpose to (nproma, nblk, nlev), then F-reshape → (nc, nlev)
+    # F-order reshape varies dim-0 (nproma) fastest, matching decomp_domain cell ordering
+    data_cells = data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
+    return data_cells[halo_mask_1d], global_idx[:nc][halo_mask_1d]
 
 
-def sample_data(arr, level=0, sample_size=256):
+# temporal sample strategy:
+def sample_data(arr, sample_size=256):
     arr_cp = xp.asarray(arr)
     comin.print_info(
         f"[rank={rank}] CuPy device: {arr_cp.device}, shape: {arr_cp.shape}"
     )
-    arr_level = arr_cp[:, level, ...]
-    arr_no_halo, _ = no_halo_data(arr_level)
-
-    arr_samples = arr_no_halo.reshape(-1, sample_size)
+    # no_halo_data returns (n_interior_cells, nlev)
+    arr_no_halo, _ = no_halo_data(arr_cp)
+    comin.print_info(f"[rank={rank}] no_halo_data output shape: {arr_no_halo.shape}")
+    # arr_no_halo: (n_interior, nlev) -> (batch, sample_size, nlev)
+    nlev = arr_no_halo.shape[1]
+    n_batch = arr_no_halo.shape[0] // sample_size
+    arr_samples = arr_no_halo[: n_batch * sample_size].reshape(
+        n_batch, sample_size, nlev
+    )
     return arr_samples
 
 
