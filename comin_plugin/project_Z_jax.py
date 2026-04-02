@@ -107,17 +107,17 @@ def _train_step(state, x, y):
 # data constructor: setup variables and data extraction utilities
 # ---------------------------------------------------------------------------
 
-# primary constructor callback to register new variables
-var_descriptor = ("ua_pred", 1)
-comin.var_request_add(
-    var_descriptor, lmodexclusive=True
-)  # request variable from icon, with write
-comin.metadata_set(
-    var_descriptor,
-    zaxis_id=comin.COMIN_ZAXIS_3D,
-    long_name="Predicted zonal wind from MLP",
-    units="m/s",
-)
+# primary constructor callback to register new variables (only if ua_pred is to be written)
+# var_descriptor = ("ua_pred", 1)
+# comin.var_request_add(
+#     var_descriptor, lmodexclusive=True
+# )  # request variable from icon, with write
+# comin.metadata_set(
+#     var_descriptor,
+#     zaxis_id=comin.COMIN_ZAXIS_3D,
+#     long_name="Predicted zonal wind from MLP",
+#     units="m/s",
+# )
 
 
 # second constructor callback to get access to variables created by icon
