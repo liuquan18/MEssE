@@ -106,7 +106,7 @@ def sec_ctor():
     ua = comin.var_get(
         [comin.EP_ATM_NUDGING_BEFORE],
         ("u", 1),
-        comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
+        comin.COMIN_FLAG_READ,
     )
 
 
@@ -125,17 +125,20 @@ def no_halo_data(data_array):
 
     return data_xp[halo_mask], global_idx[:nc][halo_mask]
 
-def sample_data(arr, level = 0, sample_size = 256):
+
+def sample_data(arr, level=0, sample_size=256):
     arr_cp = xp.asarray(arr)
-    comin.print_info(f"[rank={rank}] CuPy device: {arr_cp.device}, shape: {arr_cp.shape}")
-    arr_level = arr_cp[:, level, ...] 
+    comin.print_info(
+        f"[rank={rank}] CuPy device: {arr_cp.device}, shape: {arr_cp.shape}"
+    )
+    arr_level = arr_cp[:, level, ...]
     arr_no_halo, _ = no_halo_data(arr_level)
 
     arr_samples = arr_no_halo.reshape(-1, sample_size)
     return arr_samples
 
 
-def global_jax_array(arr:xp.ndarray, sharding) -> jax.Array:
+def global_jax_array(arr: xp.ndarray, sharding) -> jax.Array:
     local_data = jdlpack.from_dlpack(arr)  # JAX array on CUDA:0
     comin.print_info(
         f"[rank={rank}] local_data shape: {local_data.shape}, dtype: {local_data.dtype}"
@@ -156,7 +159,7 @@ def joo():
         _ = jax.local_devices()  # participates in CPU topology rendezvous
         # print(f"[rank={rank}] IO-only rank, skipping GPU work.", file=sys.stderr)
         return
-    
+
     # Mesh over the 4 compute GPUs (JAX processes 0-3, each with 1 GPU).
     mesh = jax.make_mesh((num_calculate_processes,), ("gpu",))
     sharding = NamedSharding(mesh, P("gpu"))
@@ -165,13 +168,17 @@ def joo():
     ta_samples = sample_data(ta)
     comin.print_info(f"x data from {ta_samples.__cuda_array_interface__=}")
     ta_global = global_jax_array(ta_samples, sharding)
-    comin.print_info(f"x: ta_global: shape={ta_global.shape}, dtype={ta_global.dtype}, sharding={ta_global.sharding}")
+    comin.print_info(
+        f"x: ta_global: shape={ta_global.shape}, dtype={ta_global.dtype}, sharding={ta_global.sharding}"
+    )
 
     # build y data from ua
     ua_samples = sample_data(ua)
     comin.print_info(f"y data from {ua_samples.__cuda_array_interface__=}")
     ua_global = global_jax_array(ua_samples, sharding)
-    comin.print_info(f"y: ua_global: shape={ua_global.shape}, dtype={ua_global.dtype}, sharding={ua_global.sharding}")
+    comin.print_info(
+        f"y: ua_global: shape={ua_global.shape}, dtype={ua_global.dtype}, sharding={ua_global.sharding}"
+    )
 
     # --- training step ---
     global _train_state
@@ -181,6 +188,3 @@ def joo():
 
     _train_state, loss = _train_step(_train_state, ta_global, ua_global)
     comin.print_info(f"[rank={rank}] train loss: {loss:.6f}")
-
-
-
