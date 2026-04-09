@@ -78,6 +78,11 @@ if rank < io_rank:
         process_id=compute_rank,
         local_device_ids=[0],
     )
+else:
+    # IO rank must participate in comm.Split (MPI collective) even though it
+    # does not join the JAX distributed group (jax.distributed.initialize is
+    # TCP-based, not an MPI collective, so the IO rank can safely skip it).
+    _ = comm.Split(color=1, key=0)
 
 
 # ---------------------------------------------------------------------------
