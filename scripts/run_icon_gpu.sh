@@ -2,17 +2,24 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-if [[ $# -ne 3 ]]; then
-    echo "Usage: $0 <ICON_BUILD_DIR> <COMIN_PLUGIN_SCRIPT> <LEVANTE_ACCOUNT>" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+    echo "Usage: $0 <ICON_BUILD_DIR> <COMIN_PLUGIN_SCRIPT> <LEVANTE_ACCOUNT> [NUM_NODES]" >&2
     echo "  ICON_BUILD_DIR:       Path to ICON build directory" >&2
     echo "  COMIN_PLUGIN_SCRIPT:  Path to the ComIn plugin Python script" >&2
     echo "  LEVANTE_ACCOUNT:      Levante account for sbatch submission" >&2
+    echo "  NUM_NODES:            Optional number of nodes (default: 1)" >&2
     exit 1
 fi
 
 ICON_BUILD_DIR="$1"
 COMIN_PLUGIN_SCRIPT="$2"
 LEVANTE_ACCOUNT="$3"
+NUM_NODES="${4:-1}"
+
+if ! [[ "$NUM_NODES" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: NUM_NODES must be a positive integer, got: $NUM_NODES" >&2
+    exit 1
+fi
 
 if [[ ! -d "$ICON_BUILD_DIR" ]]; then
     echo "Error: ICON_BUILD_DIR does not exist: $ICON_BUILD_DIR" >&2
@@ -38,6 +45,7 @@ fi
 
 # Minimal updates to the existing runscript before submission.
 sed -i "s|^#SBATCH --account=.*|#SBATCH --account=${LEVANTE_ACCOUNT}|" "$ICON_RUN_SCRIPT"
+sed -i "s|^#SBATCH --nodes=.*|#SBATCH --nodes=${NUM_NODES}|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%plugin_library[[:space:]]*=.*|  plugin_list(1)%plugin_library = \"${PYTHON_ADAPTER_LIB}\"|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%options[[:space:]]*=.*|  plugin_list(1)%options        = \"${COMIN_PLUGIN_SCRIPT}\"|" "$ICON_RUN_SCRIPT"
 
