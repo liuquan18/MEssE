@@ -4,9 +4,8 @@ import socket
 import jax
 import jax.numpy as jnp
 from jax import dlpack as jdlpack
-import numpy as np
 import sys
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import NamedSharding, PartitionSpec as P
 import flax.linen as nn
 import optax
 from flax.training import train_state as flax_train_state
@@ -49,18 +48,27 @@ comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 rank = comm.Get_rank()
 world_size = comm.Get_size()
 
-num_io_processes = 1
-num_calculate_processes = world_size - num_io_processes
-io_rank = world_size - 1  # last rank is IO-only, has no GPU
+# ICON can launch more MPI tasks per node than physical GPUs (e.g. 5 tasks vs 4 GPUs).
+# We use the SLURM local rank to identify which tasks are GPU-bearing.
+local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
+gpus_per_node = int(os.environ.get("SLURM_GPUS_ON_NODE", "4"))
+has_gpu = local_rank >= 0 and local_rank < gpus_per_node
+
+# Count how many MPI ranks are GPU-bearing globally.
+num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
+num_no_gpu_processes = world_size - num_calculate_processes
+
+comin.print_info(
+    f"[rank={rank}] local_rank={local_rank}, gpus_per_node={gpus_per_node}, "
+    f"has_gpu={has_gpu}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+)
 
 # ---------------------------------------------------------------------------
-# JAX distributed initialization for compute ranks only.
-# Each compute rank owns exactly one GPU: CUDA:0 (its SLURM-assigned device).
-# The IO rank (last rank) has no GPU and is excluded from the JAX group.
+# JAX distributed initialization for GPU-bearing ranks only.
 # ---------------------------------------------------------------------------
 compute_rank = None  # None for the IO rank
 
-if rank < io_rank:
+if has_gpu:
     compute_comm = comm.Split(color=0, key=rank)
     compute_rank = compute_comm.Get_rank()
 
@@ -79,10 +87,9 @@ if rank < io_rank:
         local_device_ids=[0],
     )
 else:
-    # IO rank must participate in comm.Split (MPI collective) even though it
-    # does not join the JAX distributed group (jax.distributed.initialize is
-    # TCP-based, not an MPI collective, so the IO rank can safely skip it).
-    _ = comm.Split(color=1, key=0)
+    # Non-GPU ranks must participate in comm.Split (MPI collective), but do not
+    # join JAX distributed initialization.
+    _ = comm.Split(color=1, key=rank)
 
 
 # ---------------------------------------------------------------------------
@@ -235,11 +242,11 @@ def global_jax_array(arr: xp.ndarray, sharding) -> jax.Array:
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    # IO rank is not part of the JAX distributed group; skip all JAX work.
-    if rank >= io_rank:
+    # Non-GPU ranks are excluded from the JAX distributed group.
+    if not has_gpu:
         return
 
-    # Mesh over the 4 compute GPUs (JAX processes 0-3, each with 1 GPU).
+    # Mesh over all GPU-bearing JAX processes, one visible GPU per process.
     mesh = jax.make_mesh((num_calculate_processes,), ("gpu",))
     sharding = NamedSharding(mesh, P("gpu"))
 
