@@ -8,12 +8,13 @@ import torch.optim as optim
 import torch.distributed as dist
 import torch.utils.dlpack as tdlpack
 from torch.nn.parallel import DistributedDataParallel as DDP
-import numpy as np
 import sys
 
 from mpi4py import MPI
 
-
+#----------------------------------------------------------------------------
+# GPU check
+#----------------------------------------------------------------------------
 glob = comin.descrdata_get_global()
 if glob.has_device:
     comin.print_info(f"{glob.device_name=}")
@@ -45,22 +46,25 @@ else:
 domain = comin.descrdata_get_domain(1)
 
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
-rank = comm.Get_rank()
+rank = comm.Get_rank() # global MPI rank
 world_size = comm.Get_size()
 
-num_io_processes = 1
-num_calculate_processes = world_size - num_io_processes
-io_rank = world_size - 1  # last rank is IO-only, has no GPU
+#----------------------------------------------------------------------------
+# Pytorch distributed initialization 
+# num_io_processes = 1, this will lauch 5 processors for each node, with the last one no GPU
+#----------------------------------------------------------------------------
+local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
+gpus_per_node = int(os.environ.get("SLURM_GPUS_ON_NODE", "4"))
+has_gpu = local_rank >= 0 and local_rank < gpus_per_node #[0, 1, 2, 3] are GPU-bearing; [4] is IO-only with no GPU]
 
-# ---------------------------------------------------------------------------
-# PyTorch distributed initialization (NCCL) for compute ranks only.
-# Each compute rank owns exactly one GPU: CUDA:0 (its SLURM-assigned device).
-# The IO rank (last rank) has no GPU and is excluded from the NCCL group.
-# ---------------------------------------------------------------------------
+# Count how many MPI ranks are GPU-bearing globally.
+num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
+num_no_gpu_processes = world_size - num_calculate_processes
+
 compute_rank = None  # None for the IO rank
 
-if rank < io_rank:
-    # Split off a communicator that contains only compute ranks.
+if has_gpu:
+    # Split off a communicator that contains only GPU-bearing ranks.
     compute_comm = comm.Split(color=0, key=rank)
     compute_rank = compute_comm.Get_rank()
 
@@ -74,6 +78,8 @@ if rank < io_rank:
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
 
+    # For GPU-bearing ranks, run_wrapper sets a single CUDA_VISIBLE_DEVICES entry.
+    # Therefore the process-local CUDA index is always 0.
     torch.cuda.set_device(0)
     dist.init_process_group(
         backend="nccl",
@@ -85,9 +91,9 @@ if rank < io_rank:
         f"compute_rank={compute_rank}/{num_calculate_processes}"
     )
 else:
-    # IO rank: split into its own communicator but does not join the NCCL group.
+    # Non-GPU ranks: split into a non-NCCL communicator.
     _ = comm.Split(color=1, key=rank)
-    comin.print_info(f"[rank={rank}] IO-only rank, skipping PyTorch distributed init.")
+
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +239,8 @@ def to_torch_tensor(arr) -> torch.Tensor:
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    # IO rank has no GPU and is not part of the NCCL group — skip immediately.
-    if rank >= io_rank:
+    # Non-GPU ranks are excluded from the NCCL group — skip immediately.
+    if not has_gpu:
         return
 
     # build x data from ua
