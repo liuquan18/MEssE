@@ -1,6 +1,12 @@
 import comin
+import dataclasses
 import os
 import socket
+
+# Prevent JAX from pre-allocating ~90% of GPU memory, which would leave
+# almost nothing for ICON's OpenACC allocations.
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
 import jax
 import jax.numpy as jnp
 from jax import dlpack as jdlpack
@@ -56,11 +62,11 @@ has_gpu = local_rank >= 0 and local_rank < gpus_per_node
 
 # Count how many MPI ranks are GPU-bearing globally.
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
-num_no_gpu_processes = world_size - num_calculate_processes
 
-comin.print_info(
+print(
     f"[rank={rank}] local_rank={local_rank}, gpus_per_node={gpus_per_node}, "
-    f"has_gpu={has_gpu}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+    f"has_gpu={has_gpu}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
+    file=sys.stderr,
 )
 
 # ---------------------------------------------------------------------------
@@ -93,36 +99,41 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Simple MLP: input (batch, 256, 30) -> output (batch, 256, 30)
-# 256 = spatial cells per sample, 30 = levels as channels
+# Simple MLP: input (batch, 256, 31) -> output (batch, 256, 30)
+# 256 = spatial cells per sample, 30 = levels as channels, plus 1 horizon channel.
 # Dense is applied independently over the last (channel) dimension.
 # ---------------------------------------------------------------------------
+MAX_FORECAST_HORIZON = 10
+
+_train_state = None  # lazily initialised on first training step
+_mesh = None
+_sample_sharding = None
+_current_step = 0
+_pending_example = None  # ForecastExample | None — the single in-flight forecast
+_horizon_rng_key = jax.random.PRNGKey(0)
+
+
 class MLP(nn.Module):
     @nn.compact
     def __call__(self, x):
-        # x: (batch, 256, 30)
+        # x: (batch, 256, 31)
         x = nn.Dense(512)(x)  # -> (batch, 256, 512)
         x = nn.relu(x)
         x = nn.Dense(30)(x)  # -> (batch, 256, 30)
         return x
 
 
-_train_state = None  # lazily initialised on first callback
-
-
 def _init_train_state(mesh):
     model = MLP()
     replicated = NamedSharding(mesh, P())  # params replicated on all GPUs
     rng = jax.random.PRNGKey(0)
-    params = jax.jit(model.init, out_shardings=replicated)(rng, jnp.ones((1, 256, 30)))
+    params = jax.jit(model.init, out_shardings=replicated)(
+        rng, jnp.ones((1, 256, 31), dtype=jnp.float32)
+    )
     tx = optax.adam(1e-3)
     return flax_train_state.TrainState.create(
         apply_fn=model.apply, params=params, tx=tx
     )
-
-
-_train_state = None  # lazily initialised on first callback
-_ua_pred_jax = None  # MLP output from previous step; None on first call
 
 
 @jax.jit
@@ -134,6 +145,82 @@ def _train_step(state, x, y):
     loss, grads = jax.value_and_grad(loss_fn)(state.params)
     state = state.apply_gradients(grads=grads)
     return state, loss
+
+
+# ---------------------------------------------------------------------------
+# Online training design
+# ---------------------------------------------------------------------------
+# Only ONE prediction is in flight at a time.  The training loop has three
+# states:
+#
+#   BOOTSTRAP (step 0, _pending_example is None)
+#       Sample ua, encode it with a random horizon n, store as
+#       _pending_example with due_step = 0 + n.  No training yet.
+#
+#   WAITING (steps 1 … n-1, due_step ≠ current_step)
+#       Return immediately — ICON runs with zero GPU overhead.
+#
+#   DUE (step n, due_step == current_step)
+#       Sample ua as ground truth.  Train on
+#       (pending.encoded_input → ua_current).  Then immediately
+#       enqueue the next prediction.
+#
+# Example with n=3:
+#   step 0  → BOOTSTRAP: enqueue, due_step=3
+#   step 1  → WAITING
+#   step 2  → WAITING
+#   step 3  → DUE: train, enqueue next (e.g. due_step=3+5=8)
+#   …
+
+
+@dataclasses.dataclass
+class ForecastExample:
+    """A single in-flight forecast linking a past ua snapshot to a future step.
+
+    Attributes
+    ----------
+    encoded_input : array, shape (batch, 256, nlev+1)
+        ua snapshot at creation time with a normalised horizon channel
+        appended (value = horizon / MAX_FORECAST_HORIZON).
+    horizon : int
+        Number of ICON steps between the input snapshot and the target.
+    due_step : int
+        Absolute step at which the matching ground-truth ua is available
+        (= creation_step + horizon).
+    """
+
+    encoded_input: object  # xp ndarray on device
+    horizon: int
+    due_step: int
+
+
+def _get_mesh_and_sharding():
+    global _mesh, _sample_sharding
+
+    if _mesh is None:
+        _mesh = jax.make_mesh((num_calculate_processes,), ("gpu",))
+        _sample_sharding = NamedSharding(_mesh, P("gpu"))
+
+    return _mesh, _sample_sharding
+
+
+def _sample_horizon() -> int:
+    """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON]."""
+    global _horizon_rng_key
+    _horizon_rng_key, subkey = jax.random.split(_horizon_rng_key)
+    # jax.random.randint upper bound is exclusive, so use MAX_FORECAST_HORIZON + 1
+    # to include MAX_FORECAST_HORIZON itself in the range.
+    return int(
+        jax.random.randint(subkey, shape=(), minval=1, maxval=MAX_FORECAST_HORIZON + 1)
+    )
+
+
+def _encode_horizon_channel(arr, horizon):
+    horizon_value = xp.float32(horizon / MAX_FORECAST_HORIZON)
+    horizon_channel = xp.full(arr.shape[:-1] + (1,), horizon_value, dtype=xp.float32)
+    return xp.concatenate(
+        (arr.astype(xp.float32, copy=False), horizon_channel), axis=-1
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +312,7 @@ def sample_data(arr, sample_size=256):
 
 def global_jax_array(arr: xp.ndarray, sharding) -> jax.Array:
     local_data = jdlpack.from_dlpack(arr)  # JAX array on CUDA:0
-    comin.print_info(
-        f"[rank={rank}] local_data shape: {local_data.shape}, dtype: {local_data.dtype}"
-    )
+    local_data = local_data.astype(jnp.float32)
 
     # Each compute rank contributes its local shard; JAX assembles the global array.
     array_global = jax.make_array_from_process_local_data(sharding, local_data)
@@ -242,47 +327,64 @@ def global_jax_array(arr: xp.ndarray, sharding) -> jax.Array:
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    # Non-GPU ranks are excluded from the JAX distributed group.
+    """Online training callback, called by ICON at every time step.
+
+    WAITING   – a prediction is in flight but not yet due; return immediately
+                so ICON runs with zero GPU overhead on intermediate steps.
+    BOOTSTRAP – only in first call, no prediction exists yet; sample ua and enqueue.
+    DUE       – pending prediction has reached its target step; sample ua as
+                ground truth, train on (encoded_input → ua_current), then
+                enqueue the next prediction.
+    """
     if not has_gpu:
         return
 
-    # Mesh over all GPU-bearing JAX processes, one visible GPU per process.
-    mesh = jax.make_mesh((num_calculate_processes,), ("gpu",))
-    sharding = NamedSharding(mesh, P("gpu"))
+    global _current_step, _pending_example, _train_state
 
-    # build x data from ua
-    ua_samples = sample_data(ua)
-    comin.print_info(f"x data from {ua_samples.__cuda_array_interface__=}")
-    ua_global = global_jax_array(ua_samples, sharding)
+    current_step = _current_step
+    _current_step += 1
+
+    # ---- WAITING: not our turn yet — skip all GPU work ---------------------
+    if _pending_example is not None and _pending_example.due_step != current_step:
+        comin.print_info(
+            f"[rank={rank}] step={current_step}, waiting "
+            f"(due at step={_pending_example.due_step}, horizon={_pending_example.horizon})"
+        )
+        return
+
+    # ---- BOOTSTRAP / DUE: sample ua_current --------------------------------
+    # sample_data returns a freshly allocated array (fancy-index output).
+    ua_current = sample_data(ua).astype(xp.float32)
     comin.print_info(
-        f"x: ua_global: shape={ua_global.shape}, dtype={ua_global.dtype}, sharding={ua_global.sharding}"
+        f"[rank={rank}] step={current_step}, ua_current shape={ua_current.shape}"
     )
 
-    # build y data: use ua (x) as stand-in on the very first call;
-    # from the second call onward, use the cached MLP output from the previous step.
-    global _ua_pred_jax
-    if _ua_pred_jax is None:
-        ua_pred_global = ua_global
+    mesh, sharding = _get_mesh_and_sharding()
+
+    # ---- DUE: train on (pending encoded input → ua_current as target) ------
+    if _pending_example is not None:
+        if _train_state is None:
+            _train_state = _init_train_state(mesh)
+            comin.print_info(f"[rank={rank}] MLP initialised")
+
+        x_global = global_jax_array(_pending_example.encoded_input, sharding)
+        y_global = global_jax_array(ua_current, sharding)
+        _train_state, loss = _train_step(_train_state, x_global, y_global)
         comin.print_info(
-            f"[rank={rank}] First call: initialising ua_pred_global from ua_global"
-        )
-    else:
-        ua_pred_global = _ua_pred_jax
-        comin.print_info(
-            f"[rank={rank}] Using cached ua_pred_jax as y, shape={ua_pred_global.shape}"
+            f"[rank={rank}] step={current_step}, "
+            f"trained horizon={_pending_example.horizon}, loss={loss:.6f}"
         )
 
-    # --- training step ---
-    global _train_state
-    if _train_state is None:
-        _train_state = _init_train_state(mesh)
-        comin.print_info(f"[rank={rank}] MLP initialised")
-
-    # cache MLP output with PRE-update params → becomes y for the NEXT step
-    _ua_pred_jax = _train_state.apply_fn(_train_state.params, ua_global)
-    comin.print_info(
-        f"[rank={rank}] ua_pred_jax cached (pre-update), shape={_ua_pred_jax.shape}"
+    # ---- ENQUEUE: store ua_current as the next pending prediction ----------
+    # _encode_horizon_channel creates a new array via xp.concatenate, so it
+    # is safe to hold across ICON steps without an extra copy.
+    horizon = _sample_horizon()
+    _pending_example = ForecastExample(
+        encoded_input=_encode_horizon_channel(ua_current, horizon),
+        horizon=horizon,
+        due_step=current_step + horizon,
     )
-
-    _train_state, loss = _train_step(_train_state, ua_global, ua_pred_global)
-    comin.print_info(f"[rank={rank}] train loss: {loss:.6f}")
+    comin.print_info(
+        f"[rank={rank}] step={current_step}, "
+        f"enqueued horizon={horizon}, due_step={_pending_example.due_step}"
+    )
