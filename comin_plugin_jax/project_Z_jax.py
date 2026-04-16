@@ -370,6 +370,7 @@ def training():
             _train_state = _init_train_state(mesh)
             comin.print_info(f"[rank={rank}] MLP initialised")
 
+
     # ---- TRAINING: train on (previous model prediction -> encode(ua_current, h)) --
     else:
         x_global = (
