@@ -247,7 +247,6 @@ def global_jax_array(arr: xp.ndarray, sharding) -> jax.Array:
     return array_global
 
 
-
 @dataclasses.dataclass
 class ForecastExample:
     """A single in-flight forecast linking a past ua snapshot to a future step.
@@ -313,17 +312,68 @@ def _encode_horizon_channel(arr: jax.Array, horizon: int) -> jax.Array:
 # ---------------------------------------------------------------------------
 
 
+def process_step(
+    mode,
+    predicting=False,
+    _pending_example=None,
+    _train_state=None,
+    ua_current=None,
+    current_step=0,
+    mesh=None,
+):
+    """Utility to run the training callback logic for a single step, with options to enable/disable stages."""
+
+    if mode == "waiting":
+        comin.print_info(
+            f"[rank={rank}] step={current_step}, waiting "
+            f"(due at step={_pending_example.due_step}, horizon={_pending_example.horizon})"
+        )
+        return _pending_example, _train_state
+
+    if mode == "initial" and _pending_example is None:
+        _train_state = _init_train_state(mesh)
+        comin.print_info(f"[rank={rank}] MLP initialised")
+
+    if mode == "training" and _pending_example is not None:
+        x_global = (
+            _pending_example.previous_pred
+        )  # prediction from previous step (y_t) (31ch)
+        y_global = _encode_horizon_channel(
+            ua_current, _pending_example.horizon
+        )  # current ua as ground truth (x_{t+h}) (31ch)
+        _train_state, loss = train_step(_train_state, x_global, y_global)
+        comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
+
+    if predicting:
+        horizon = _sample_horizon()
+        x_enc = _encode_horizon_channel(ua_current, horizon)  # 31ch input
+        ua_predict = predict_step(_train_state, x_enc)  # 31ch prediction
+
+        _pending_example = ForecastExample(
+            previous_pred=ua_predict,
+            horizon=horizon,
+            due_step=current_step + horizon,
+        )
+        comin.print_info(
+            f"enqueued horizon={horizon}, due_step={_pending_example.due_step}"
+        )
+
+    return _pending_example, _train_state
+
+
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online training callback, called by ICON at every time step.
 
-    Four stages, depending on the time step:
+    Three modes, depending on the time step:
     WAITING         – Between t and t+h,a prediction is in flight but not yet due;
                     return immediately with zero GPU overhead.
     INITIALIZING    – At step 0, no prediction is in flight; initialise the model
                     later a prediction is made using the initialized parameters.
     TRAINING        – When the current step matches the due step (t+h),
                     train on the pair (previous_pred → current ua)
+
+    The PREDICTION stage runs at both step 0 (after INITIALIZING) and at due steps (after TRAINING), to predict the next ua snapshot for future training.
     PREDICTION      – After training (or initialisation at step 0), predict a new
                     ua snapshot to be used as the "previous_pred" for a future step,
 
@@ -342,62 +392,46 @@ def training():
 
     current_step = _current_step
     _current_step += 1
+    mesh, sharding = _get_mesh_and_sharding()
 
-
-    # ---- WAITING: between t and t+h ---------------------
+    # ---- between step t and t+h, waiting ---------------------
     if _pending_example is not None and _pending_example.due_step != current_step:
-        comin.print_info(
-            f"[rank={rank}] step={current_step}, waiting "
-            f"(due at step={_pending_example.due_step}, horizon={_pending_example.horizon})"
+        _, _ = process_step(
+            mode="waiting",
+            predicting=False,
+            _pending_example=_pending_example,
+            _train_state=_train_state,
+            current_step=current_step,
         )
         return
 
     # ---- data preparation --------
     # only prepare data when needed
-    mesh, sharding = _get_mesh_and_sharding()
     # from ICON to cupy
     ua_current_xp = sample_data(ua).astype(xp.float32)
     comin.print_info(
-        f"[rank={rank}] step={current_step}, ua_current shape={ua_current_xp.shape}"
+        f"[rank={rank}] step={current_step}, collected ua_current_xp  {ua_current_xp.__cuda_array_interface__=}"
     )
     # from cupy to jax sharded array across GPUs
     ua_current = global_jax_array(ua_current_xp, sharding)
 
-
-    # ---- INITIALIZING: step 0, (no training) --
-    if _pending_example is None:
-        if _train_state is None:
-            _train_state = _init_train_state(mesh)
-            comin.print_info(f"[rank={rank}] MLP initialised")
-
-
-    # ---- TRAINING: at step t+h, train on (previous model prediction -> encode(ua_current, h)) --
-    else:
-        x_global = (
-            _pending_example.previous_pred
-        )  # prediction from previous step (y_t) (31ch)
-        y_global = _encode_horizon_channel(
-            ua_current, _pending_example.horizon
-        )  # current ua as ground truth (x_{t+h}) (31ch)
-        _train_state, loss = train_step(_train_state, x_global, y_global)
-        comin.print_info(
-            f"[rank={rank}] step={current_step}, "
-            f"trained horizon={_pending_example.horizon}, loss={loss:.6f}"
+    # ---- step0: initializing and predicting --
+    if current_step == 0 and _pending_example is None:  # only initializing and predict
+        _pending_example, _train_state = process_step(
+            mode="initial",
+            predicting=True,
+            ua_current=ua_current,
+            current_step=current_step,
+            mesh=mesh,
         )
 
-
-    # ---- PREDICTION: predict y_t = f(x_t) and store it -----------
-    # y_t means the prediction made "at" model step t, and made "for" model step t+h.
-    horizon = _sample_horizon()
-    x_enc = _encode_horizon_channel(ua_current, horizon)  # 31ch input
-    ua_predict = predict_step(_train_state, x_enc)  # 31ch prediction
-
-    _pending_example = ForecastExample(
-        previous_pred=ua_predict,
-        horizon=horizon,
-        due_step=current_step + horizon,
-    )
-    comin.print_info(
-        f"[rank={rank}] step={current_step}, "
-        f"enqueued horizon={horizon}, due_step={_pending_example.due_step}"
-    )
+    # ---- due step (t+h): training (previous model prediction -> encode(ua_current, h)) and predicting (y_t = f(x_t)) --
+    else:
+        _pending_example, _train_state = process_step(
+            mode="training",
+            predicting=True,
+            _pending_example=_pending_example,
+            _train_state=_train_state,
+            ua_current=ua_current,
+            current_step=current_step,
+        )
