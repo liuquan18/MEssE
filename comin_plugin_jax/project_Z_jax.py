@@ -371,7 +371,7 @@ def training():
             comin.print_info(f"[rank={rank}] MLP initialised")
 
 
-    # ---- TRAINING: train on (previous model prediction -> encode(ua_current, h)) --
+    # ---- TRAINING: at step t+h, train on (previous model prediction -> encode(ua_current, h)) --
     else:
         x_global = (
             _pending_example.previous_pred
