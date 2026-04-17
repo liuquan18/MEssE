@@ -1,4 +1,5 @@
 import comin
+import dataclasses
 import os
 import socket
 import torch
@@ -12,9 +13,9 @@ import sys
 
 from mpi4py import MPI
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # GPU check
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 glob = comin.descrdata_get_global()
 if glob.has_device:
     comin.print_info(f"{glob.device_name=}")
@@ -46,16 +47,18 @@ else:
 domain = comin.descrdata_get_domain(1)
 
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
-rank = comm.Get_rank() # global MPI rank
+rank = comm.Get_rank()  # global MPI rank
 world_size = comm.Get_size()
 
-#----------------------------------------------------------------------------
-# Pytorch distributed initialization 
+# ----------------------------------------------------------------------------
+# Pytorch distributed initialization
 # num_io_processes = 1, this will lauch 5 processors for each node, with the last one no GPU
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
 gpus_per_node = int(os.environ.get("SLURM_GPUS_ON_NODE", "4"))
-has_gpu = local_rank >= 0 and local_rank < gpus_per_node #[0, 1, 2, 3] are GPU-bearing; [4] is IO-only with no GPU]
+has_gpu = (
+    local_rank >= 0 and local_rank < gpus_per_node
+)  # [0, 1, 2, 3] are GPU-bearing; [4] is IO-only with no GPU]
 
 # Count how many MPI ranks are GPU-bearing globally.
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
@@ -95,20 +98,21 @@ else:
     _ = comm.Split(color=1, key=rank)
 
 
+MAX_FORECAST_HORIZON = 10
+
 
 # ---------------------------------------------------------------------------
-# Simple MLP: input (batch, 256, 30) -> output (batch, 256, 30)
-# 256 = spatial cells per sample, 30 = levels as channels
-# Linear is applied independently over the last (channel) dimension.
+# Simple MLP: input (batch, 256, 31) -> output (batch, 256, 31)
+# 30 levels as channels + 1 horizon channel, Linear applied over last dim.
 # ---------------------------------------------------------------------------
 class MLP(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(30, 512)  # -> (batch, 256, 512)
-        self.fc2 = nn.Linear(512, 30)  # -> (batch, 256, 30)
+        self.fc1 = nn.Linear(31, 512)  # -> (batch, 256, 512)
+        self.fc2 = nn.Linear(512, 31)  # -> (batch, 256, 31)
 
     def forward(self, x):
-        # x: (batch, 256, 30)
+        # x: (batch, 256, 31)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x
@@ -116,7 +120,29 @@ class MLP(nn.Module):
 
 _model = None  # lazily initialised on first callback (DDP-wrapped MLP)
 _optimizer = None  # lazily initialised on first callback
-_ua_pred_torch = None  # MLP output from previous step; None on first call
+_current_step = 0
+_pending_example = None  # ForecastExample | None — the single in-flight forecast
+
+
+@dataclasses.dataclass
+class ForecastExample:
+    """A single in-flight forecast linking a past ua snapshot to a future step.
+
+    Attributes
+    ----------
+    previous_pred : torch.Tensor, shape (batch, 256, nlev+1)
+        Model prediction y_t = f_θ(encode(x_t, h)) at creation time, with a
+        normalised horizon channel appended (value = horizon / MAX_FORECAST_HORIZON).
+    horizon : int
+        Number of ICON steps between the input snapshot and the target.
+    due_step : int
+        Absolute step at which the matching ground-truth ua is available
+        (= creation_step + horizon).
+    """
+
+    previous_pred: torch.Tensor  # torch tensor on CUDA
+    horizon: int
+    due_step: int
 
 
 def _init_model_and_optimizer():
@@ -133,6 +159,30 @@ def _train_step(model, optimizer, x, y):
     loss.backward()
     optimizer.step()
     return loss.item()
+
+
+def _sample_horizon() -> int:
+    """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON]."""
+    return int(torch.randint(1, MAX_FORECAST_HORIZON + 1, (1,)).item())
+
+
+def _encode_horizon_channel(arr: torch.Tensor, horizon: int) -> torch.Tensor:
+    """Append a normalised horizon channel to a PyTorch tensor.
+
+    Parameters
+    ----------
+    arr : torch.Tensor, shape (..., nlev)
+    horizon : int in [0, MAX_FORECAST_HORIZON]
+
+    Returns
+    -------
+    torch.Tensor, shape (..., nlev+1)
+    """
+    horizon_value = horizon / MAX_FORECAST_HORIZON
+    horizon_channel = torch.full(
+        arr.shape[:-1] + (1,), horizon_value, dtype=torch.float32, device=arr.device
+    )
+    return torch.cat((arr, horizon_channel), dim=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +282,56 @@ def to_torch_tensor(arr) -> torch.Tensor:
     return tensor.float()  # ensure float32 for the MLP
 
 
+def process_step(
+    mode,
+    predicting=False,
+    _pending_example=None,
+    _model=None,
+    _optimizer=None,
+    ua_current=None,
+    current_step=0,
+):
+    """Utility to run the training callback logic for a single step, with options to enable/disable stages."""
+
+    if mode == "waiting":
+        comin.print_info(
+            f"[rank={rank}] step={current_step}, waiting "
+            f"(due at step={_pending_example.due_step}, horizon={_pending_example.horizon})"
+        )
+        return _pending_example, _model, _optimizer
+
+    if mode == "initial" and _pending_example is None:
+        _model, _optimizer = _init_model_and_optimizer()
+        comin.print_info(f"[rank={rank}] MLP initialised")
+
+    if mode == "training" and _pending_example is not None:
+        x_local = (
+            _pending_example.previous_pred
+        )  # prediction from previous step (y_t) (31ch)
+        y_local = _encode_horizon_channel(
+            ua_current, _pending_example.horizon
+        )  # current ua as ground truth (x_{t+h}) (31ch)
+        loss = _train_step(_model, _optimizer, x_local, y_local)
+        comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
+
+    if predicting:
+        horizon = _sample_horizon()
+        x_enc = _encode_horizon_channel(ua_current, horizon)  # 31ch input
+        with torch.no_grad():
+            ua_predict = _model(x_enc)  # 31ch prediction
+
+        _pending_example = ForecastExample(
+            previous_pred=ua_predict,
+            horizon=horizon,
+            due_step=current_step + horizon,
+        )
+        comin.print_info(
+            f"enqueued horizon={horizon}, due_step={_pending_example.due_step}"
+        )
+
+    return _pending_example, _model, _optimizer
+
+
 # ---------------------------------------------------------------------------
 # training callbacks
 # ---------------------------------------------------------------------------
@@ -239,42 +339,62 @@ def to_torch_tensor(arr) -> torch.Tensor:
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    # Non-GPU ranks are excluded from the NCCL group — skip immediately.
+    """Online training callback, called by ICON at every time step.
+
+    Three modes, depending on the time step:
+    WAITING         – Between t and t+h, a prediction is in flight but not yet due;
+                    return immediately with zero GPU overhead.
+    INITIALIZING    – At step 0, no prediction is in flight; initialise the model
+                    later a prediction is made using the initialized parameters.
+    TRAINING        – When the current step matches the due step (t+h),
+                    train on the pair (previous_pred → encode(ua_current, h))
+
+    The PREDICTION stage runs at both step 0 (after INITIALIZING) and at due steps (after TRAINING).
+    PREDICTION      – After training (or initialisation at step 0), predict a new
+                    ua snapshot to be used as the "previous_pred" for a future step.
+    """
     if not has_gpu:
         return
 
-    # build x data from ua
+    global _current_step, _pending_example, _model, _optimizer
+
+    current_step = _current_step
+    _current_step += 1
+
+    # ---- between step t and t+h, waiting ---------------------
+    if _pending_example is not None and _pending_example.due_step != current_step:
+        _, _, _ = process_step(
+            mode="waiting",
+            predicting=False,
+            _pending_example=_pending_example,
+            current_step=current_step,
+        )
+        return
+
+    # ---- data preparation --------
+    # only prepare data when needed
     ua_samples = sample_data(ua)
     comin.print_info(f"x data from {ua_samples.__cuda_array_interface__=}")
     ua_local = to_torch_tensor(ua_samples)
     comin.print_info(f"x: ua_local: shape={ua_local.shape}, dtype={ua_local.dtype}")
 
-    # build y data: use ua (x) as stand-in on the very first call;
-    # from the second call onward, use the cached MLP output from the previous step.
-    global _ua_pred_torch
-    if _ua_pred_torch is None:
-        ua_pred_local = ua_local
-        comin.print_info(
-            f"[rank={rank}] First call: initialising ua_pred_local from ua_local"
+    # ---- step0: initializing and predicting --
+    if current_step == 0 and _pending_example is None:
+        _pending_example, _model, _optimizer = process_step(
+            mode="initial",
+            predicting=True,
+            ua_current=ua_local,
+            current_step=current_step,
         )
+
+    # ---- due step (t+h): training (previous model prediction -> encode(ua_current, h)) and predicting --
     else:
-        ua_pred_local = _ua_pred_torch
-        comin.print_info(
-            f"[rank={rank}] Using cached ua_pred_torch as y, shape={ua_pred_local.shape}"
+        _pending_example, _model, _optimizer = process_step(
+            mode="training",
+            predicting=True,
+            _pending_example=_pending_example,
+            _model=_model,
+            _optimizer=_optimizer,
+            ua_current=ua_local,
+            current_step=current_step,
         )
-
-    # --- training step ---
-    global _model, _optimizer
-    if _model is None:
-        _model, _optimizer = _init_model_and_optimizer()
-        comin.print_info(f"[rank={rank}] MLP initialised")
-
-    # cache MLP output with PRE-update params → becomes y for the NEXT step
-    with torch.no_grad():
-        _ua_pred_torch = _model(ua_local)
-    comin.print_info(
-        f"[rank={rank}] ua_pred_torch cached (pre-update), shape={_ua_pred_torch.shape}"
-    )
-
-    loss = _train_step(_model, _optimizer, ua_local, ua_pred_local)
-    comin.print_info(f"[rank={rank}] train loss: {loss:.6f}")
