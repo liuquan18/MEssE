@@ -1,3 +1,6 @@
+# the namelist variable "comin_process_id" should be added
+
+
 import comin
 import dataclasses
 import os
@@ -62,7 +65,7 @@ def simple_python_constructor():
     comin_process_id = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         ("comin_process_id", jg),
-        flag=comin.COMIN_FLAG_WRITE,
+        comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
     )
 
 
@@ -74,3 +77,58 @@ def simple_python_callbackfct():
     if DEVICE_SYNC_FLAG != 0:
         rank_value += 100
     comin_process_id_np[:] = rank_value
+
+'''
+# %%
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy
+import cartopy.feature as cfeature
+import numpy as np
+
+# %%
+ds_ll = xr.open_dataset(
+    "/work/mh0033/m300883/Project_week_global/MEssE/build_gpu/messe_env/build_dir/icon-model/experiments/atm_tracer_Hadley_comin_portability/native_ml_20080901T000000Z.nc"
+)
+# %%
+
+plotvar = "comin_process_id"
+# %matplotlib widget
+
+cx = ds_ll["clon"][:]
+cy = ds_ll["clat"][:]
+
+data = ds_ll[plotvar].isel(time=0).values
+unique_vals = np.unique(data[~np.isnan(data)]).astype(int)
+n = len(unique_vals)
+
+cmap = plt.cm.get_cmap("tab20", n)
+bounds = np.arange(n + 1) - 0.5
+norm = plt.matplotlib.colors.BoundaryNorm(bounds, ncolors=n)
+# remap data values to indices 0..n-1
+val_to_idx = {v: i for i, v in enumerate(unique_vals)}
+data_idx = np.vectorize(val_to_idx.get)(data.astype(int))
+
+fig, axs = plt.subplots(
+    1, 1, figsize=(10, 5), subplot_kw={"projection": ccrs.PlateCarree()}
+)
+axs.add_feature(cartopy.feature.BORDERS, edgecolor="k", zorder=101)
+axs.coastlines(zorder=101)
+sc = axs.scatter(
+    cx,
+    cy,
+    c=data_idx,
+    transform=ccrs.PlateCarree(),
+    cmap=cmap,
+    norm=norm,
+    s=10,
+    zorder=1,
+)
+cbar = plt.colorbar(sc, ax=axs, orientation="horizontal", pad=0.05)
+cbar.set_ticks(np.arange(n))
+cbar.set_ticklabels([str(v) for v in unique_vals])
+cbar.set_label("MPI rank (GPU ranks = rank + 100)")
+
+
+'''
