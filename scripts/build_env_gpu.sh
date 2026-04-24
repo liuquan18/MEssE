@@ -40,6 +40,11 @@ pip install --upgrade pip
 pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax
 pip install --upgrade "jax[cuda13]"
 
+# install earth2grid
+pip install torch setuptools
+pip install --no-build-isolation https://github.com/NVlabs/earth2grid/archive/main.tar.gz
+
+
 # clone the repositories
 ICON_DIR_NAME=icon-model
 
