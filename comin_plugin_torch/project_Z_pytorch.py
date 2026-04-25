@@ -214,13 +214,21 @@ def _encode_horizon_channel(arr: torch.Tensor, horizon: int) -> torch.Tensor:
 # second constructor callback to get access to variables created by icon
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    global ua  # , ua_pred
+    global ua, ts # , ua_pred
 
     ua = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         ("u", 1),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
+
+
+    ts = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
+        ("ts", 1),
+        comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
+    )
+
 
     # this is to save the prediction to icon, but writing a PyTorch tensor back to the
     # ICON buffer (with halo re-insertion) is non-trivial,
@@ -383,7 +391,9 @@ def training():
     # ---- data preparation --------
     # only prepare data when needed
     ua_samples = sample_data(ua)
+    ts_samples = sample_data(ts)
     comin.print_info(f"x data from {ua_samples.__cuda_array_interface__=}")
+    comin.print_info(f"x ts data from {ts_samples.__cuda_array_interface__=}")
     ua_local = to_torch_tensor(ua_samples)
     comin.print_info(f"x: ua_local: shape={ua_local.shape}, dtype={ua_local.dtype}")
 
