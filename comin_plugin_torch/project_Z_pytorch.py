@@ -102,17 +102,17 @@ MAX_FORECAST_HORIZON = 10
 
 
 # ---------------------------------------------------------------------------
-# Simple MLP: input (batch, 256, 31) -> output (batch, 256, 31)
+# Simple MLP: input (batch, 256, 91) -> output (batch, 256, 91)
 # 30 levels as channels + 1 horizon channel, Linear applied over last dim.
 # ---------------------------------------------------------------------------
 class MLP(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(31, 512)  # -> (batch, 256, 512)
-        self.fc2 = nn.Linear(512, 31)  # -> (batch, 256, 31)
+        self.fc1 = nn.Linear(91, 512)  # -> (batch, 256, 512)
+        self.fc2 = nn.Linear(512, 91)  # -> (batch, 256, 91)
 
     def forward(self, x):
-        # x: (batch, 256, 31)
+        # x: (batch, 256, 91)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
         return x
@@ -316,18 +316,18 @@ def process_step(
     if mode == "training" and _pending_example is not None:
         x_local = (
             _pending_example.previous_pred
-        )  # prediction from previous step (y_t) (31ch)
+        )  # prediction from previous step (y_t) (91ch)
         y_local = _encode_horizon_channel(
             ua_current, _pending_example.horizon
-        )  # current ua as ground truth (x_{t+h}) (31ch)
+        )  # current ua as ground truth (x_{t+h}) (91ch)
         loss = _train_step(_model, _optimizer, x_local, y_local)
         comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
 
     if predicting:
         horizon = _sample_horizon()
-        x_enc = _encode_horizon_channel(ua_current, horizon)  # 31ch input
+        x_enc = _encode_horizon_channel(ua_current, horizon)  # 91ch input
         with torch.no_grad():
-            ua_predict = _model(x_enc)  # 31ch prediction
+            ua_predict = _model(x_enc)  # 91ch prediction
 
         _pending_example = ForecastExample(
             previous_pred=ua_predict,
