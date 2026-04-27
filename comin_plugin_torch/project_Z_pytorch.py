@@ -175,8 +175,17 @@ def _train_step(model, optimizer, x, y):
 
 
 def _sample_horizon() -> int:
-    """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON]."""
-    return int(torch.randint(1, MAX_FORECAST_HORIZON + 1, (1,)).item())
+    """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON].
+
+    The horizon is sampled on compute rank 0 and broadcast to all other
+    compute ranks so that every GPU rank uses the same due_step — required
+    for DDP ALLREDUCE to complete without deadlock.
+    """
+    horizon_t = torch.zeros(1, dtype=torch.int64, device="cuda")
+    if compute_rank == 0:
+        horizon_t[0] = torch.randint(1, MAX_FORECAST_HORIZON + 1, (1,)).item()
+    dist.broadcast(horizon_t, src=0)
+    return int(horizon_t.item())
 
 
 def _encode_horizon_channel(arr: torch.Tensor, horizon: int) -> torch.Tensor:
