@@ -329,39 +329,6 @@ def sec_ctor():
         _init_hpx_regridding()
 
 
-# utility to extract non-halo data and global indices
-def no_halo_data(data_array):
-    """Extract non-halo data preserving the level dimension.
-
-    Input shape : (nproma, nlev, nblk) or (nproma, nlev, nblk, 1, 1, ...)
-    Returns     : data   (n_interior_cells, nlev)
-                  global_idx (n_interior_cells,)
-    """
-    nc = domain.cells.ncells
-    global_idx = xp.asarray(domain.cells.glb_index, dtype=xp.int64) - 1
-
-    data_xp = xp.asarray(data_array)
-    # squeeze trailing singleton dims: e.g. (nproma, nlev, nblk, 1, 1) → (nproma, nlev, nblk)
-    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
-        data_xp = data_xp[..., 0]
-
-    # halo mask derived from decomp_domain (nproma, nblk)
-    decomp_xp = xp.asarray(domain.cells.decomp_domain)  # (nproma, nblk)
-    halo_mask_1d = decomp_xp.ravel(order="F")[:nc] == 0  # (nc,) True = interior
-
-    if data_xp.ndim == 2:
-        # 2-D field (nproma, nblk) – no level dim
-        data_cells = data_xp.ravel(order="F")[:nc]
-        return data_cells[halo_mask_1d], global_idx[:nc][halo_mask_1d]
-
-    # 3-D field (nproma, nlev, nblk): keep level dimension
-    nlev = data_xp.shape[1]
-    # transpose to (nproma, nblk, nlev), then F-reshape → (nc, nlev)
-    # F-order reshape varies dim-0 (nproma) fastest, matching decomp_domain cell ordering
-    data_cells = data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
-    return data_cells[halo_mask_1d], global_idx[:nc][halo_mask_1d]
-
-
 def all_local_data(data_array):
     """Extract all local cells (interior + halo) preserving the level dimension.
 
