@@ -105,7 +105,7 @@ else:
     _ = comm.Split(color=1, key=rank)
 
 
-MAX_FORECAST_HORIZON = 10
+MAX_FORECAST_HORIZON = 30 # 120s*30 = 1 hour
 
 
 # Model is lazily initialised on first callback.
@@ -555,8 +555,7 @@ def process_step(
         comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
 
     if predicting:
-        # horizon = _sample_horizon()
-        horizon = 30  # keep fixed horizon in the first field-space integration pass
+        horizon = _sample_horizon()
         cal_pred = _calendar_embedding(
             model_input.day_of_year, model_input.second_of_day
         )
