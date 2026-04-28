@@ -553,7 +553,8 @@ def process_step(
         comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
 
     if predicting:
-        horizon = _sample_horizon()
+        # horizon = _sample_horizon()
+        horizon = 30 # use a fixed horizon as an example
         # x = cat(ua@t, cal@t) — (nlev+4C) input
         cal_pred = _calendar_embedding(
             model_input.day_of_year, model_input.second_of_day
