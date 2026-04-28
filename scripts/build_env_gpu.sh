@@ -40,7 +40,7 @@ pip install --upgrade pip
 pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray cartopy cupy-cuda12x flax mpi4py
 pip install --upgrade "jax[cuda13]"
 
-# Install earth2grid with its CUDA extension into a fresh Python venv.
+# Install earth2grid with its CUDA extension
 #
 # Proven working combination on Levante:
 #   - torch 2.4.0+cu121
