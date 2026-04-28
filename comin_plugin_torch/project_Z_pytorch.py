@@ -7,13 +7,14 @@ import socket
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import torch.distributed as dist
 import torch.utils.dlpack as tdlpack
 from torch.nn.parallel import DistributedDataParallel as DDP
 import sys
 import cftime
+
+from field_space_attention_wrapper import FieldSpaceAttentionWrapper
 
 from mpi4py import MPI
 import earth2grid.healpix as e2g_healpix
@@ -107,26 +108,8 @@ else:
 MAX_FORECAST_HORIZON = 10
 
 
-# ---------------------------------------------------------------------------
-# FaceCNN: operates on HEALPix faces treated as 2D images.
-# Each HEALPix face in NEST ordering is a contiguous nside×nside spatial grid.
-# Input/output: (faces_per_rank, n_channels, nside, nside)
-# ---------------------------------------------------------------------------
-class FaceCNN(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
-
-    def forward(self, x):
-        # x: (faces_per_rank, in_channels, nside, nside)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        return self.conv3(x)
-
-
-_model = None  # lazily initialised on first callback (DDP-wrapped FaceCNN)
+# Model is lazily initialised on first callback.
+_model = None
 _optimizer = None  # lazily initialised on first callback
 _current_step = 0
 _pending_example = None  # ForecastExample | None — the single in-flight forecast
@@ -138,6 +121,7 @@ HPX_LEVEL = 6
 _hpx_regridder = None  # Regridder: (nc, nlev) -> (n_owned, nlev)
 _n_owned_pixels = 0  # total owned pixels = _faces_per_rank * nside²
 _faces_per_rank = 0  # number of HEALPix faces owned by this compute rank
+_first_face = 0  # first global HEALPix face id owned by this rank
 
 # ---------------------------------------------------------------------------
 # Calendar embedding globals
@@ -154,8 +138,8 @@ class ForecastExample:
 
     Attributes
     ----------
-    previous_pred : torch.Tensor, shape (faces_per_rank, nlev+4C, nside, nside)
-        Model output at creation time = cat(ua_t, cal_t); used directly as x at training time.
+    previous_pred : torch.Tensor, shape (faces_per_rank, nlev, nside, nside)
+        Predicted ua tensor at creation time; used as x at training time.
     horizon : int
         Number of ICON steps between the input snapshot and the target.
     due_step : int
@@ -163,9 +147,7 @@ class ForecastExample:
         (= creation_step + horizon).
     """
 
-    previous_pred: (
-        torch.Tensor
-    )  # shape (faces_per_rank, nlev+4C, nside, nside) on CUDA — cat(ua, cal) at prediction time t
+    previous_pred: torch.Tensor  # shape (faces_per_rank, nlev, nside, nside) on CUDA
     horizon: int
     due_step: int
     day_of_year: float  # days since 1 Jan at prediction time t
@@ -288,17 +270,37 @@ class CalendarEmbedding(nn.Module):
         return torch.cat([a, b], dim=1)  # (faces, 4C, nside, nside)
 
 
-def _init_model_and_optimizer(in_channels: int, out_channels: int):
-    model = FaceCNN(in_channels=in_channels, out_channels=out_channels).cuda()
+def _init_model_and_optimizer(nlev: int, calendar_channels: int):
+    model = FieldSpaceAttentionWrapper(
+        nlev=nlev,
+        calendar_channels=calendar_channels,
+        hpx_level=HPX_LEVEL,
+        first_face=_first_face,
+        faces_per_rank=_faces_per_rank,
+    ).cuda()
     ddp_model = DDP(model, device_ids=[0])
     optimizer = optim.Adam(ddp_model.parameters(), lr=1e-3)
     return ddp_model, optimizer
 
 
-def _train_step(model, optimizer, x, y):
+def _train_step(
+    model,
+    optimizer,
+    x_ua: torch.Tensor,
+    x_calendar: torch.Tensor,
+    y_ua: torch.Tensor,
+):
+    if x_ua.shape != y_ua.shape:
+        raise ValueError(f"x_ua shape {x_ua.shape} must match y_ua shape {y_ua.shape}")
+    if x_ua.shape[0] != x_calendar.shape[0] or x_ua.shape[-2:] != x_calendar.shape[-2:]:
+        raise ValueError(
+            "x_calendar must match x_ua in faces/spatial dims, got "
+            f"x_ua={x_ua.shape}, x_calendar={x_calendar.shape}"
+        )
+
     optimizer.zero_grad()
-    pred = model(x)
-    loss = torch.mean((pred - y) ** 2)
+    pred = model(x_ua, x_calendar)
+    loss = torch.mean((pred - y_ua) ** 2)
     loss.backward()
     optimizer.step()
     return loss.item()
@@ -351,7 +353,7 @@ def _init_hpx_regridding():
 
     Requires: 12 % n_compute == 0  (valid GPU counts: 1, 2, 3, 4, 6, 12)
     """
-    global _hpx_regridder, _n_owned_pixels, _faces_per_rank
+    global _hpx_regridder, _n_owned_pixels, _faces_per_rank, _first_face
 
     nc = domain.cells.ncells
     n_compute = compute_comm.Get_size()
@@ -375,6 +377,7 @@ def _init_hpx_regridding():
     )
     _n_owned_pixels = len(owned_pixel_ids)
     _faces_per_rank = faces_per_rank
+    _first_face = first_face
 
     comin.print_info(
         f"[rank={rank}/cr={compute_rank}] HPX init: faces {first_face}–{last_face-1}, "
@@ -529,41 +532,41 @@ def process_step(
         return _pending_example, _model, _optimizer
 
     if mode == "initial" and _pending_example is None:
-        # Symmetric design: model maps (ua+cal) → (ua+cal), in_channels = out_channels = nlev+4C
+        # Model predicts ua while receiving calendar as a separate input branch.
         nlev = model_input.ua_hp.shape[1]
-        in_channels = out_channels = nlev + 4 * CALENDAR_EMBED_CHANNELS
+        cal_channels = 4 * CALENDAR_EMBED_CHANNELS
         _model, _optimizer = _init_model_and_optimizer(
-            in_channels=in_channels, out_channels=out_channels
+            nlev=nlev,
+            calendar_channels=cal_channels,
         )
         comin.print_info(
-            f"[rank={rank}] FaceCNN initialised, in_channels={in_channels}, out_channels={out_channels}"
+            f"[rank={rank}] Field-space model initialised, nlev={nlev}, "
+            f"calendar_channels={cal_channels}, first_face={_first_face}"
         )
 
     if mode == "training" and _pending_example is not None:
-        # x = previous model output (nlev+4C) = cat(ua@t, cal@t) stored from prediction step
-        x_local = _pending_example.previous_pred  # (faces, nlev+4C, nside, nside)
-        # y = cat(ua@t+h, cal@t+h) — symmetric target
-        cal_y = _calendar_embedding(
-            model_input.day_of_year, model_input.second_of_day
-        )  # (faces, 4C, nside, nside)
-        y_local = torch.cat(
-            [model_input.ua_hp, cal_y], dim=1
-        )  # (faces, nlev+4C, nside, nside)
-        loss = _train_step(_model, _optimizer, x_local, y_local)
+        x_ua = _pending_example.previous_pred
+        x_cal = _calendar_embedding(
+            _pending_example.day_of_year,
+            _pending_example.second_of_day,
+        )
+        y_ua = model_input.ua_hp
+        loss = _train_step(_model, _optimizer, x_ua, x_cal, y_ua)
         comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
 
     if predicting:
         # horizon = _sample_horizon()
-        horizon = 30 # use a fixed horizon as an example
-        # x = cat(ua@t, cal@t) — (nlev+4C) input
+        horizon = 30  # keep fixed horizon in the first field-space integration pass
         cal_pred = _calendar_embedding(
             model_input.day_of_year, model_input.second_of_day
-        )  # (faces, 4C, nside, nside)
-        x_enc = torch.cat(
-            [model_input.ua_hp, cal_pred], dim=1
-        )  # (faces, nlev+4C, nside, nside)
+        )
         with torch.no_grad():
-            ua_predict = _model(x_enc)  # (faces, nlev+4C, nside, nside) — stores ua+cal
+            ua_predict = _model(model_input.ua_hp, cal_pred)
+
+        if ua_predict.shape != model_input.ua_hp.shape:
+            raise RuntimeError(
+                f"prediction shape {ua_predict.shape} does not match ua shape {model_input.ua_hp.shape}"
+            )
 
         _pending_example = ForecastExample(
             previous_pred=ua_predict,
