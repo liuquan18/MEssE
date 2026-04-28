@@ -428,13 +428,21 @@ def _init_hpx_regridding():
 # second constructor callback to get access to variables created by icon
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    global ua  # , ua_pred
+    global ua, ts # , ua_pred
 
     ua = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         ("u", 1),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
+
+
+    ts = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
+        ("ts", 1),
+        comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
+    )
+
 
     # this is to save the prediction to icon, but writing a PyTorch tensor back to the
     # ICON buffer (with halo re-insertion) is non-trivial,

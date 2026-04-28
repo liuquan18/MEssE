@@ -70,7 +70,7 @@ git_checkout_or_update git@gitlab.dkrz.de:icon/icon-model.git release-2025.10-pu
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
 mkdir -p $ICON_BUILD_DIR
 pushd $ICON_BUILD_DIR
-$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disable-jsbach --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
+$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
 
 make -j $(nproc)
 popd
