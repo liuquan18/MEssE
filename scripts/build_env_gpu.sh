@@ -37,12 +37,8 @@ $PY_BIN -m venv $PY_ENV_DIR
 source $PY_ENV_DIR/bin/activate
 
 pip install --upgrade pip
-pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax
+pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax healpy scipy
 pip install --upgrade "jax[cuda13]"
-
-# install earth2grid
-pip install torch setuptools
-pip install --no-build-isolation https://github.com/NVlabs/earth2grid/archive/main.tar.gz
 
 
 # clone the repositories
@@ -64,7 +60,7 @@ git_checkout_or_update() {
     fi
 }
 
-git_checkout_or_update git@gitlab.dkrz.de:icon/icon-model.git release-2025.10-public $SRC_DIR/$ICON_DIR_NAME
+git_checkout_or_update https://gitlab.dkrz.de/icon/icon-model.git release-2025.10-public $SRC_DIR/$ICON_DIR_NAME
 
 # out-of-source builds for icon
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
@@ -73,9 +69,10 @@ pushd $ICON_BUILD_DIR
 $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
 
 make -j $(nproc)
+./make_runscripts --all
+
 popd
 
-../make_runscripts --all
 
 echo "Setup complete."
 echo "The python environment is here: $PY_ENV_DIR"
