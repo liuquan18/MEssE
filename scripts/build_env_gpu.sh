@@ -37,11 +37,33 @@ $PY_BIN -m venv $PY_ENV_DIR
 source $PY_ENV_DIR/bin/activate
 
 pip install --upgrade pip
-pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax
+pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray cartopy cupy-cuda12x flax mpi4py
 pip install --upgrade "jax[cuda13]"
 
-# install earth2grid
-pip install torch setuptools
+# Install earth2grid with its CUDA extension into a fresh Python venv.
+#
+# Proven working combination on Levante:
+#   - torch 2.4.0+cu121
+#   - CUDA 12.2 toolkit (spack): /sw/spack-levante/cuda-12.2.0-2ttufp
+#   - GCC 12.3 (spack, C++20 + max supported by CUDA 12.2): /sw/spack-levante/gcc-12.3.0-ab6j4u
+#   - TORCH_CUDA_ARCH_LIST=8.0 (A100 GPU)
+
+pip install --upgrade pip setuptools wheel
+
+# PyTorch 2.4.0 built with CUDA 12.1 — required for earth2grid CUDA extension ABI
+pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+
+pip install cartopy cupy-cuda12x flax
+
+# Build earth2grid CUDA extension
+# GCC 12.3: supports C++20, and is the maximum GCC version allowed by CUDA 12.2
+# CUDA 12.2: compatible with torch 2.4.0+cu121 at extension build time
+export CUDA_HOME=/sw/spack-levante/cuda-12.2.0-2ttufp
+export PATH="$CUDA_HOME/bin:$PATH"
+export CC=/sw/spack-levante/gcc-12.3.0-ab6j4u/bin/gcc
+export CXX=/sw/spack-levante/gcc-12.3.0-ab6j4u/bin/g++
+export TORCH_CUDA_ARCH_LIST="8.0"
+
 pip install --no-build-isolation https://github.com/NVlabs/earth2grid/archive/main.tar.gz
 
 
