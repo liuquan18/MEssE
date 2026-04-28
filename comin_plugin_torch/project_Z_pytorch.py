@@ -1,5 +1,7 @@
 import comin
 import dataclasses
+import datetime
+import math
 import os
 import socket
 import numpy as np
@@ -11,6 +13,7 @@ import torch.distributed as dist
 import torch.utils.dlpack as tdlpack
 from torch.nn.parallel import DistributedDataParallel as DDP
 import sys
+import cftime
 
 from mpi4py import MPI
 import earth2grid.healpix as e2g_healpix
@@ -110,14 +113,14 @@ MAX_FORECAST_HORIZON = 10
 # Input/output: (faces_per_rank, n_channels, nside, nside)
 # ---------------------------------------------------------------------------
 class FaceCNN(nn.Module):
-    def __init__(self, n_channels: int):
+    def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
-        self.conv1 = nn.Conv2d(n_channels, 64, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, n_channels, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        # x: (faces_per_rank, n_channels, nside, nside)
+        # x: (faces_per_rank, in_channels, nside, nside)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         return self.conv3(x)
@@ -136,6 +139,14 @@ _hpx_regridder = None  # Regridder: (nc, nlev) -> (n_owned, nlev)
 _n_owned_pixels = 0  # total owned pixels = _faces_per_rank * nside²
 _faces_per_rank = 0  # number of HEALPix faces owned by this compute rank
 
+# ---------------------------------------------------------------------------
+# Calendar embedding globals
+# ---------------------------------------------------------------------------
+CALENDAR_EMBED_CHANNELS = 4  # FrequencyEmbedding channels per signal → 4*C total
+_calendar_embedding = (
+    None  # CalendarEmbedding | None — initialised in _init_hpx_regridding
+)
+
 
 @dataclasses.dataclass
 class ForecastExample:
@@ -143,9 +154,8 @@ class ForecastExample:
 
     Attributes
     ----------
-    previous_pred : torch.Tensor, shape (batch, 256, nlev+1)
-        Model prediction y_t = f_θ(encode(x_t, h)) at creation time, with a
-        normalised horizon channel appended (value = horizon / MAX_FORECAST_HORIZON).
+    previous_pred : torch.Tensor, shape (faces_per_rank, nlev+4C, nside, nside)
+        Model output at creation time = cat(ua_t, cal_t); used directly as x at training time.
     horizon : int
         Number of ICON steps between the input snapshot and the target.
     due_step : int
@@ -153,13 +163,133 @@ class ForecastExample:
         (= creation_step + horizon).
     """
 
-    previous_pred: torch.Tensor  # shape (faces_per_rank, nlev+1, nside, nside) on CUDA
+    previous_pred: (
+        torch.Tensor
+    )  # shape (faces_per_rank, nlev+4C, nside, nside) on CUDA — cat(ua, cal) at prediction time t
     horizon: int
     due_step: int
+    day_of_year: float  # days since 1 Jan at prediction time t
+    second_of_day: float  # seconds since midnight UTC at prediction time t
 
 
-def _init_model_and_optimizer(n_channels: int):
-    model = FaceCNN(n_channels=n_channels).cuda()
+@dataclasses.dataclass
+class ModelInput:
+    """A single model input snapshot capturing wind data and calendar context.
+
+    Attributes
+    ----------
+    ua_hp : torch.Tensor, shape (faces_per_rank, nlev, nside, nside)
+        HEALPix-regridded zonal wind on CUDA, output of to_hpx_faces().
+    day_of_year : float
+        Days elapsed since 1 January of the current year (0 – ~365.25).
+    second_of_day : float
+        Seconds elapsed since midnight UTC (0 – 86400).
+    """
+
+    ua_hp: torch.Tensor  # shape (faces_per_rank, nlev, nside, nside) on CUDA
+    day_of_year: float
+    second_of_day: float
+
+
+# ---------------------------------------------------------------------------
+# Calendar helpers (cBottle-style)
+# ---------------------------------------------------------------------------
+
+
+def _second_of_day(time) -> float:
+    """Returns the seconds elapsed since the start of the day."""
+    begin_of_day = time.replace(hour=0, minute=0, second=0)
+    return (time - begin_of_day).total_seconds()
+
+
+def _get_calendar_inputs(time: cftime.DatetimeGregorian):
+    """Calculate second_of_day and day_of_year from a cftime datetime.
+
+    Mirrors the logic in cbottle/datasets/dataset_3d.py.
+
+    Returns
+    -------
+    day_of_year : float  — days since 1 Jan of current year (0 – ~365.25)
+    second_of_day : float — seconds since midnight UTC (0 – 86400)
+    """
+    day_start = time.replace(hour=0, minute=0, second=0)
+    year_start = day_start.replace(month=1, day=1)
+    sec_of_day = (time - day_start).total_seconds()
+    day_of_yr = (time - year_start).total_seconds() / 86400.0
+    return day_of_yr, sec_of_day
+
+
+def _parse_icon_datetime(iso_str: str) -> cftime.DatetimeGregorian:
+    """Parse the ISO 8601 string returned by comin.current_get_datetime().
+
+    ICON returns strings like ``2020-01-20T00:00:00.000``.
+    """
+    # Strip sub-second precision and trailing Z if present, then parse.
+    clean = iso_str.split(".")[0].rstrip("Z")
+    dt = datetime.datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S")
+    return cftime.DatetimeGregorian(
+        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+    )
+
+
+# ---------------------------------------------------------------------------
+# Calendar embedding modules (cBottle-style)
+# ---------------------------------------------------------------------------
+
+
+class FrequencyEmbedding(nn.Module):
+    """Periodic embedding for inputs normalised to [0, 1].
+
+    Applies sin/cos at integer frequencies 1 … num_channels, producing
+    2 * num_channels output channels.
+    """
+
+    def __init__(self, num_channels: int):
+        super().__init__()
+        self.register_buffer("freqs", torch.arange(1, num_channels + 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (faces, 1, H, W)  →  out: (faces, 2*num_channels, H, W)
+        freqs = self.freqs.view(1, -1, 1, 1)  # (1, C, 1, 1)
+        x_scaled = x * (2 * math.pi * freqs)  # (faces, C, H, W)  — broadcasts on dim 1
+        return torch.cat([x_scaled.cos(), x_scaled.sin()], dim=1)  # (faces, 2C, H, W)
+
+
+class CalendarEmbedding(nn.Module):
+    """Embed time-of-day and day-of-year using longitude-corrected local solar time.
+
+    Mirrors CalendarEmbedding in cbottle.
+
+    Parameters
+    ----------
+    lon : torch.Tensor, shape (faces_per_rank, nside, nside)
+        Longitude in degrees for each owned HEALPix pixel.
+    embed_channels : int
+        Number of frequency channels per temporal signal.
+        Output has 4 * embed_channels channels total.
+    """
+
+    def __init__(self, lon: torch.Tensor, embed_channels: int):
+        super().__init__()
+        self.register_buffer("lon", lon)  # (faces, nside, nside)
+        self.embed_second = FrequencyEmbedding(embed_channels)
+        self.embed_day = FrequencyEmbedding(embed_channels)
+
+    def forward(self, day_of_year: float, second_of_day: float) -> torch.Tensor:
+        # self.lon: (faces, nside, nside)
+        # Convert UTC second_of_day → local solar time using longitude.
+        local_time = (
+            second_of_day + self.lon * 86400.0 / 360.0
+        ) % 86400.0  # (faces, nside, nside)
+        local_time = local_time.unsqueeze(1)  # (faces, 1, nside, nside)
+        doy = torch.full_like(local_time, day_of_year)  # (faces, 1, nside, nside)
+        a = self.embed_second(local_time / 86400.0)  # (faces, 2C, nside, nside)
+        b = self.embed_day((doy / 365.25) % 1.0)  # (faces, 2C, nside, nside)
+        return torch.cat([a, b], dim=1)  # (faces, 4C, nside, nside)
+
+
+def _init_model_and_optimizer(in_channels: int, out_channels: int):
+    model = FaceCNN(in_channels=in_channels, out_channels=out_channels).cuda()
     ddp_model = DDP(model, device_ids=[0])
     optimizer = optim.Adam(ddp_model.parameters(), lr=1e-3)
     return ddp_model, optimizer
@@ -186,28 +316,6 @@ def _sample_horizon() -> int:
         horizon_t[0] = torch.randint(1, MAX_FORECAST_HORIZON + 1, (1,)).item()
     dist.broadcast(horizon_t, src=0)
     return int(horizon_t.item())
-
-
-def _encode_horizon_channel(arr: torch.Tensor, horizon: int) -> torch.Tensor:
-    """Append a normalised horizon channel along the channel dimension (dim=1).
-
-    Parameters
-    ----------
-    arr : torch.Tensor, shape (faces, nlev, H, W)
-    horizon : int in [0, MAX_FORECAST_HORIZON]
-
-    Returns
-    -------
-    torch.Tensor, shape (faces, nlev+1, H, W)
-    """
-    horizon_value = horizon / MAX_FORECAST_HORIZON
-    horizon_channel = torch.full(
-        (arr.shape[0], 1, arr.shape[2], arr.shape[3]),
-        horizon_value,
-        dtype=torch.float32,
-        device=arr.device,
-    )
-    return torch.cat((arr, horizon_channel), dim=1)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +413,17 @@ def _init_hpx_regridding():
         f"[rank={rank}] HPX regridder ready: {nc} src cells → {_n_owned_pixels} owned pixels"
     )
 
+    # --- calendar embedding (no learnable params; uses owned pixel longitudes) ---
+    global _calendar_embedding
+    lon_faces = owned_lon.float().cuda().view(faces_per_rank, nside, nside)
+    _calendar_embedding = CalendarEmbedding(
+        lon=lon_faces, embed_channels=CALENDAR_EMBED_CHANNELS
+    ).cuda()
+    comin.print_info(
+        f"[rank={rank}] CalendarEmbedding ready: "
+        f"{4 * CALENDAR_EMBED_CHANNELS} channels, lon shape={lon_faces.shape}"
+    )
+
 
 # second constructor callback to get access to variables created by icon
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
@@ -390,10 +509,17 @@ def process_step(
     _pending_example=None,
     _model=None,
     _optimizer=None,
-    ua_current=None,
+    model_input=None,
     current_step=0,
 ):
-    """Utility to run the training callback logic for a single step, with options to enable/disable stages."""
+    """Utility to run the training callback logic for a single step, with options to enable/disable stages.
+
+    Parameters
+    ----------
+    model_input : ModelInput | None
+        Current-step ua snapshot with calendar context.  Required in all modes
+        except "waiting".
+    """
 
     if mode == "waiting":
         comin.print_info(
@@ -403,34 +529,47 @@ def process_step(
         return _pending_example, _model, _optimizer
 
     if mode == "initial" and _pending_example is None:
-        # ua_current: (faces, nlev, nside, nside); model input needs nlev+1 channels
+        # Symmetric design: model maps (ua+cal) → (ua+cal), in_channels = out_channels = nlev+4C
+        nlev = model_input.ua_hp.shape[1]
+        in_channels = out_channels = nlev + 4 * CALENDAR_EMBED_CHANNELS
         _model, _optimizer = _init_model_and_optimizer(
-            n_channels=ua_current.shape[1] + 1
+            in_channels=in_channels, out_channels=out_channels
         )
         comin.print_info(
-            f"[rank={rank}] FaceCNN initialised, n_channels={ua_current.shape[1] + 1}"
+            f"[rank={rank}] FaceCNN initialised, in_channels={in_channels}, out_channels={out_channels}"
         )
 
     if mode == "training" and _pending_example is not None:
-        x_local = _pending_example.previous_pred  # (faces, nlev+1, nside, nside)
-        y_local = _encode_horizon_channel(
-            ua_current, _pending_example.horizon
-        )  # (faces, nlev+1, nside, nside)
+        # x = previous model output (nlev+4C) = cat(ua@t, cal@t) stored from prediction step
+        x_local = _pending_example.previous_pred  # (faces, nlev+4C, nside, nside)
+        # y = cat(ua@t+h, cal@t+h) — symmetric target
+        cal_y = _calendar_embedding(
+            model_input.day_of_year, model_input.second_of_day
+        )  # (faces, 4C, nside, nside)
+        y_local = torch.cat(
+            [model_input.ua_hp, cal_y], dim=1
+        )  # (faces, nlev+4C, nside, nside)
         loss = _train_step(_model, _optimizer, x_local, y_local)
         comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
 
     if predicting:
         horizon = _sample_horizon()
-        x_enc = _encode_horizon_channel(
-            ua_current, horizon
-        )  # (faces, nlev+1, nside, nside)
+        # x = cat(ua@t, cal@t) — (nlev+4C) input
+        cal_pred = _calendar_embedding(
+            model_input.day_of_year, model_input.second_of_day
+        )  # (faces, 4C, nside, nside)
+        x_enc = torch.cat(
+            [model_input.ua_hp, cal_pred], dim=1
+        )  # (faces, nlev+4C, nside, nside)
         with torch.no_grad():
-            ua_predict = _model(x_enc)  # (faces, nlev+1, nside, nside)
+            ua_predict = _model(x_enc)  # (faces, nlev+4C, nside, nside) — stores ua+cal
 
         _pending_example = ForecastExample(
             previous_pred=ua_predict,
             horizon=horizon,
             due_step=current_step + horizon,
+            day_of_year=model_input.day_of_year,
+            second_of_day=model_input.second_of_day,
         )
         comin.print_info(
             f"enqueued horizon={horizon}, due_step={_pending_example.due_step}"
@@ -492,12 +631,25 @@ def training():
     ua_local = to_hpx_faces(ua_hpx)  # (faces_per_rank, nlev, nside, nside)
     comin.print_info(f"[rank={rank}] HPX faces: shape={ua_local.shape}")
 
+    # ---- build ModelInput (ua + calendar context) ----
+    _icon_time = _parse_icon_datetime(comin.current_get_datetime())
+    _day_of_yr, _sec_of_day = _get_calendar_inputs(_icon_time)
+    model_input = ModelInput(
+        ua_hp=ua_local,
+        day_of_year=_day_of_yr,
+        second_of_day=_sec_of_day,
+    )
+    comin.print_info(
+        f"[rank={rank}] ModelInput: day_of_year={model_input.day_of_year:.3f}, "
+        f"second_of_day={model_input.second_of_day:.1f}"
+    )
+
     # ---- step0: initializing and predicting --
     if current_step == 0 and _pending_example is None:
         _pending_example, _model, _optimizer = process_step(
             mode="initial",
             predicting=True,
-            ua_current=ua_local,
+            model_input=model_input,
             current_step=current_step,
         )
 
@@ -509,6 +661,6 @@ def training():
             _pending_example=_pending_example,
             _model=_model,
             _optimizer=_optimizer,
-            ua_current=ua_local,
+            model_input=model_input,
             current_step=current_step,
         )
