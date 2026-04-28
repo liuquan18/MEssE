@@ -95,9 +95,6 @@ pushd $ICON_BUILD_DIR
 $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disable-jsbach --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
 
 make -j $(nproc)
-popd
-
-pushd $ICON_BUILD_DIR
 ./make_runscripts --all
 popd
 
