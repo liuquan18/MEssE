@@ -10,9 +10,19 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 def _ensure_fieldspacenn_on_path() -> None:
-    """Make the sibling FieldSpaceNN checkout importable when it is not installed."""
-    src_root = Path(__file__).resolve().parents[2]
-    fieldspacenn_root = src_root / "FieldSpaceNN"
+    """Make the sibling FieldSpaceNN checkout importable when it is not installed.
+
+    Override the auto-detected path by setting the ``FIELDSPACENN_ROOT`` environment
+    variable to the absolute path of the FieldSpaceNN checkout directory.
+    """
+    env_root = os.environ.get("FIELDSPACENN_ROOT", "")
+    if env_root:
+        fieldspacenn_root = Path(env_root).resolve()
+    else:
+        # Default: the FieldSpaceNN checkout is a sibling of the MEssE repo,
+        # i.e. two levels above this file's directory.
+        src_root = Path(__file__).resolve().parents[2]
+        fieldspacenn_root = src_root / "FieldSpaceNN"
     if fieldspacenn_root.exists():
         path = str(fieldspacenn_root)
         if path not in sys.path:
@@ -96,7 +106,9 @@ class OnlineFieldSpaceNNTrainer:
             use_ddp = dist.is_available() and dist.is_initialized()
         ddp_enabled = bool(cfg.ddp.enabled) and bool(use_ddp)
         wrap_single = bool(cfg.ddp.get("wrap_single_process", False))
-        world_size = dist.get_world_size() if ddp_enabled and dist.is_initialized() else 1
+        world_size = (
+            dist.get_world_size() if ddp_enabled and dist.is_initialized() else 1
+        )
         if ddp_enabled and (world_size > 1 or wrap_single):
             self.forward_model = DDP(
                 self.model,
@@ -120,14 +132,18 @@ class OnlineFieldSpaceNNTrainer:
         )
         self._shape_logged = False
 
-    def _load_sampling_configs(self, sampling_zooms: Mapping[Any, Any]) -> Dict[int, Dict[str, Any]]:
+    def _load_sampling_configs(
+        self, sampling_zooms: Mapping[Any, Any]
+    ) -> Dict[int, Dict[str, Any]]:
         out = {}
         for zoom_key, conf in sampling_zooms.items():
             zoom = int(zoom_key)
             out[zoom] = {
                 "n_past_ts": int(conf.get("n_past_ts", 0)),
                 "n_future_ts": int(conf.get("n_future_ts", 0)),
-                "zoom_patch_sample": int(conf.get("zoom_patch_sample", self.patch_zoom)),
+                "zoom_patch_sample": int(
+                    conf.get("zoom_patch_sample", self.patch_zoom)
+                ),
                 "mask_n_last_ts": int(conf.get("mask_n_last_ts", 0)),
             }
         return out
@@ -145,7 +161,7 @@ class OnlineFieldSpaceNNTrainer:
     def _faces_to_max_zoom_tensor(self, ua_faces: torch.Tensor) -> torch.Tensor:
         # Input: (faces, nlev, nside, nside)
         faces, nlev, nside, _ = ua_faces.shape
-        expected_nside = 2 ** self.hpx_level
+        expected_nside = 2**self.hpx_level
         if int(nside) != expected_nside:
             raise ValueError(
                 "Unexpected HEALPix nside: got {}, expected {}".format(
@@ -198,9 +214,7 @@ class OnlineFieldSpaceNNTrainer:
             ).contiguous()
 
         sample_configs = self._sample_configs_with_patch_index()
-        x_zooms = self.encode_zooms(
-            x_zooms, sample_configs, self._patch_index_zooms()
-        )
+        x_zooms = self.encode_zooms(x_zooms, sample_configs, self._patch_index_zooms())
         x_zooms = {
             zoom: tensor.detach().contiguous() for zoom, tensor in x_zooms.items()
         }
@@ -215,7 +229,9 @@ class OnlineFieldSpaceNNTrainer:
                 "z{}={}".format(zoom, tuple(x_zooms[zoom].shape))
                 for zoom in sorted(x_zooms)
             )
-            self.log_fn("[rank={}] FieldSpaceNN input shapes: {}".format(self.rank, shapes))
+            self.log_fn(
+                "[rank={}] FieldSpaceNN input shapes: {}".format(self.rank, shapes)
+            )
             self._shape_logged = True
 
         return FieldSpaceNNSnapshot(
@@ -248,7 +264,9 @@ class OnlineFieldSpaceNNTrainer:
             emb=target.emb_group,
         )
         if not torch.is_tensor(loss):
-            raise RuntimeError("FieldSpaceNN loss config did not produce a tensor loss.")
+            raise RuntimeError(
+                "FieldSpaceNN loss config did not produce a tensor loss."
+            )
 
         loss.backward()
         self.optimizer.step()

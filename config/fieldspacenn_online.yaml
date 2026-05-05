@@ -4,7 +4,7 @@ online:
   patch_zoom: 0
   forecast_horizon_steps: 30
   variable:
-    icon_name: u
+    icon_name: v
     domain_id: 1
 
 ddp:
@@ -68,13 +68,13 @@ model:
     "0":
       _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: true
-      q_zooms: [3]
-      kv_zooms: [3]
+      q_zooms: [3, 5, 6]
+      kv_zooms: [3, 5, 6]
       token_zoom: 3
       att_dim: 32
       token_len_depth: 1
       token_len_time: 1
-      token_overlap_space: true
+      token_overlap_space: false
       token_overlap_time: false
       token_overlap_depth: false
       token_overlap_mlp_time: false
@@ -102,7 +102,7 @@ model:
       att_dim: 32
       token_len_depth: 1
       token_len_time: 1
-      token_overlap_space: true
+      token_overlap_space: false
       token_overlap_time: false
       token_overlap_depth: false
       token_overlap_mlp_time: false

@@ -14,11 +14,20 @@ from mpi4py import MPI
 import earth2grid.healpix as e2g_healpix
 from earth2grid._regrid import KNNS2Interpolator
 
-_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+try:
+    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    # __file__ may be undefined when COMIN loads the plugin via exec().
+    # Fall back to the directory provided by the environment or cwd.
+    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-from fieldspacenn_online import FieldSpaceNNSnapshot, OnlineFieldSpaceNNTrainer, load_online_config
+from fieldspacenn_online import (
+    FieldSpaceNNSnapshot,
+    OnlineFieldSpaceNNTrainer,
+    load_online_config,
+)
 
 
 _ONLINE_CFG = load_online_config()
@@ -154,13 +163,13 @@ def _init_hpx_regridding():
         )
         return
 
-    nside = 2 ** HPX_LEVEL
+    nside = 2**HPX_LEVEL
     faces_per_rank = 12 // n_compute
     first_face = compute_rank * faces_per_rank
     last_face = first_face + faces_per_rank
 
     owned_pixel_ids = np.arange(
-        first_face * nside ** 2, last_face * nside ** 2, dtype=np.int64
+        first_face * nside**2, last_face * nside**2, dtype=np.int64
     )
     _n_owned_pixels = len(owned_pixel_ids)
     _faces_per_rank = faces_per_rank
@@ -238,13 +247,11 @@ def regrid_to_healpix(data_array) -> Optional[torch.Tensor]:
 
 def to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
     """Reshape (n_owned, nlev) to (faces_per_rank, nlev, nside, nside)."""
-    nside = 2 ** HPX_LEVEL
+    nside = 2**HPX_LEVEL
     n_owned, nlev = owned_vals.shape
     faces = n_owned // (nside * nside)
     return (
-        owned_vals.reshape(faces, nside, nside, nlev)
-        .permute(0, 3, 1, 2)
-        .contiguous()
+        owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
     )
 
 
@@ -277,7 +284,9 @@ def _get_online_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
     return _online_trainer
 
 
-def _enqueue_snapshot(snapshot: FieldSpaceNNSnapshot, current_step: int) -> ForecastExample:
+def _enqueue_snapshot(
+    snapshot: FieldSpaceNNSnapshot, current_step: int
+) -> ForecastExample:
     horizon = int(_online_trainer.forecast_horizon_steps)
     example = ForecastExample(
         source_snapshot=snapshot,
@@ -292,7 +301,9 @@ def _enqueue_snapshot(snapshot: FieldSpaceNNSnapshot, current_step: int) -> Fore
     return example
 
 
-def process_step(mode: str, snapshot: Optional[FieldSpaceNNSnapshot], current_step: int):
+def process_step(
+    mode: str, snapshot: Optional[FieldSpaceNNSnapshot], current_step: int
+):
     """Run the online FieldSpaceNN state machine for one COMIN callback."""
     global _pending_example
 
@@ -311,10 +322,6 @@ def process_step(mode: str, snapshot: Optional[FieldSpaceNNSnapshot], current_st
         return
 
     if mode == "training":
-        if _pending_example is None:
-            _pending_example = _enqueue_snapshot(snapshot, current_step)
-            return
-
         result = _online_trainer.train_step(_pending_example.source_snapshot, snapshot)
         comin.print_info(
             f"[rank={rank}] trained FieldSpaceNN step={current_step}, "
@@ -355,11 +362,14 @@ def training():
     ua_local = to_hpx_faces(ua_hpx)
     comin.print_info(f"[rank={rank}] HPX faces: shape={ua_local.shape}")
 
-    trainer = _get_online_trainer(nlev=ua_local.shape[1])
     unix_seconds = _icon_time_unix_seconds()
-    snapshot = trainer.prepare_snapshot(ua_local, unix_seconds=unix_seconds)
 
     if _pending_example is None:
+        # First effective timestep: initialize the model once with random weights.
+        trainer = _get_online_trainer(nlev=ua_local.shape[1])
+        snapshot = trainer.prepare_snapshot(ua_local, unix_seconds=unix_seconds)
         process_step(mode="initial", snapshot=snapshot, current_step=current_step)
     else:
+        # Subsequent training steps: reuse the already-initialized model.
+        snapshot = _online_trainer.prepare_snapshot(ua_local, unix_seconds=unix_seconds)
         process_step(mode="training", snapshot=snapshot, current_step=current_step)
