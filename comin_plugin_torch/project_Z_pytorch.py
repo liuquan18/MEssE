@@ -34,6 +34,7 @@ _ONLINE_CFG = load_online_config()
 DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
 ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
 HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
+MAX_FORECAST_HORIZON = 30 # 30*120s = 1hour
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -282,12 +283,25 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
     return _state.trainer
 
 
+def _sample_horizon() -> int:
+    """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON].
+
+    The horizon is sampled on compute rank 0 and broadcast to all other
+    compute ranks so that every GPU rank uses the same due_step — required
+    for DDP ALLREDUCE to complete without deadlock.
+    """
+    horizon_t = torch.zeros(1, dtype=torch.int64, device="cuda")
+    if compute_rank == 0:
+        horizon_t[0] = torch.randint(1, MAX_FORECAST_HORIZON + 1, (1,)).item()
+    dist.broadcast(horizon_t, src=0)
+    return int(horizon_t.item())
+
+
 def _enqueue_snapshot(
     snapshot: FieldSpaceNNSnapshot,
     current_step: int,
-    trainer: OnlineFieldSpaceNNTrainer,
 ) -> ForecastExample:
-    horizon = trainer.forecast_horizon_steps
+    horizon = _sample_horizon()
     due_step = current_step + horizon
     comin.print_info(
         f"[rank={rank}] enqueued snapshot at step={current_step}, due={due_step}"
@@ -346,7 +360,7 @@ def training():
 
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step, trainer)
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step)
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
         result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
@@ -354,4 +368,4 @@ def training():
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
             f"horizon={_state.pending_example.horizon}"
         )
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step, trainer)
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step)
