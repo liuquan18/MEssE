@@ -9,11 +9,20 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.distributed as dist
-import torch.utils.dlpack as tdlpack
 
 from mpi4py import MPI
-import earth2grid.healpix as e2g_healpix
-from earth2grid._regrid import KNNS2Interpolator
+
+from yac import (
+    YAC,
+    HealpixGrid,
+    UnstructuredGrid,
+    Location,
+    Field,
+    TimeUnit,
+    InterpolationStack,
+    NNNReductionType,
+    Reduction
+)
 
 try:
     _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +73,6 @@ else:
 
     DEVICE_SYNC_FLAG = 0
 
-domain = comin.descrdata_get_domain(DOMAIN_ID)
 
 # ----------------------------------------------------------------------------
 # MPI setup
@@ -75,7 +83,6 @@ world_size = comm.Get_size()
 
 # ----------------------------------------------------------------------------
 # PyTorch distributed initialization.
-# The run wrapper gives GPU-bearing ranks exactly one CUDA_VISIBLE_DEVICES entry.
 # Non-GPU ranks never enter NCCL or the online FieldSpaceNN trainer.
 # ----------------------------------------------------------------------------
 _cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
@@ -111,6 +118,56 @@ else:
     _ = comm.Split(color=1, key=rank)
 
 
+
+# ----------------------------------------------------------------------------
+# comin / yac setup
+# ----------------------------------------------------------------------------
+glob = comin.descrdata_get_global()
+domain = comin.descrdata_get_domain(DOMAIN_ID)
+
+assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
+ 
+yac = YAC.from_id(glob.yac_instance_id)
+source_comp = yac.predef_comp("icon_r2b4_source")
+
+connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (np.asarray(domain.cells.vertex_idx) - 1)
+
+icon_grid = UnstructuredGrid(
+    "icon_grid",
+    np.ones(domain.cells.ncells, dtype=np.int32) * 3,
+    np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]),
+    np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]),
+    np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells]
+)
+
+icon_cell_centers = icon_grid.def_points(
+    Location.CELL,
+    np.ravel(domain.cells.clon)[: domain.cells.ncells],
+    np.ravel(domain.cells.clat)[: domain.cells.ncells]
+)
+
+
+target_comp = yac.predef_comp("healpix_target")
+# Define the HEALPix grid globally
+hp_grid = HealpixGrid("hp_level6_grid", HPX_LEVEL)
+
+# For parallel target: we distribute the 49152 HEALPix cells across GPU compute ranks only
+total_hp_cells = 12 * 4**HPX_LEVEL
+if has_gpu:
+    cells_per_rank = total_hp_cells // num_calculate_processes
+    start_idx = compute_rank * cells_per_rank
+    # Last GPU rank takes the remainder
+    end_idx = (compute_rank + 1) * cells_per_rank if compute_rank != num_calculate_processes - 1 else total_hp_cells
+else:
+    start_idx = 0
+    end_idx = 0
+
+# Each GPU rank defines a 'point set' covering only its local portion of the HEALPix grid.
+# Non-GPU (IO) ranks define an empty point set to satisfy YAC coupling setup.
+hp_points = hp_grid.def_points(Location.CELL, cell_indices=np.arange(start_idx, end_idx, dtype=np.uint64))
+
+
+
 # ----------------------------------------------------------------------------
 # Plugin state — all mutable runtime state lives here instead of as globals.
 # ----------------------------------------------------------------------------
@@ -119,25 +176,38 @@ class _State:
         "current_step",
         "pending_example",
         "trainer",
-        "regridder",
-        "n_owned_pixels",
-        "faces_per_rank",
-        "owned_face_ids",
         "icon_var",
+        "hp_field_src",
+        "hp_field_tgt",
+        "step_len",
+        "var_nlev",
+        "owned_face_ids",
     )
 
     def __init__(self) -> None:
         self.current_step: int = 0
         self.pending_example: Optional["ForecastExample"] = None
         self.trainer: Optional[OnlineFieldSpaceNNTrainer] = None
-        self.regridder = None  # KNNS2Interpolator, set after init
-        self.n_owned_pixels: int = 0
-        self.faces_per_rank: int = 0
-        self.owned_face_ids: Optional[torch.Tensor] = None
         self.icon_var = None  # COMIN variable handle, set in sec_ctor
+        self.hp_field_src: Optional[Field] = None  # YAC field on the ICON grid
+        self.hp_field_tgt: Optional[Field] = None  # YAC field on the HEALPix grid
+        self.step_len: Optional[float] = None  # Time
+        self.var_nlev: Optional[int] = None  # Number of vertical levels in the ICON variable
+        self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
 
 
 _state = _State()
+
+if has_gpu:
+    _nside = 2**HPX_LEVEL
+    _pixels_per_face = _nside * _nside
+    _state.owned_face_ids = torch.arange(
+        start_idx // _pixels_per_face,
+        end_idx // _pixels_per_face,
+        dtype=torch.long,
+    )
+else:
+    _state.owned_face_ids = torch.tensor([], dtype=torch.long)
 
 
 @dataclass
@@ -167,58 +237,6 @@ def _icon_time_unix_seconds() -> float:
 # HEALPix regridding
 # ----------------------------------------------------------------------------
 
-def _init_hpx_regridding(compute_comm: MPI.Comm, compute_rank: int) -> None:
-    """Build the per-rank ICON-to-owned-HEALPix nearest-neighbour regridder."""
-    n_compute = compute_comm.Get_size()
-    if 12 % n_compute != 0:
-        comin.print_info(
-            f"[rank={rank}] WARNING: n_compute={n_compute} does not evenly divide "
-            "12 HEALPix faces; regridding disabled."
-        )
-        return
-
-    nside = 2**HPX_LEVEL
-    faces_per_rank = 12 // n_compute
-    first_face = compute_rank * faces_per_rank
-
-    owned_pixel_ids = np.arange(
-        first_face * nside**2,
-        (first_face + faces_per_rank) * nside**2,
-        dtype=np.int64,
-    )
-
-    grid = e2g_healpix.Grid(level=HPX_LEVEL, pixel_order=e2g_healpix.PixelOrder.NEST)
-    owned_lon, owned_lat = grid.pix2ang(torch.tensor(owned_pixel_ids, dtype=torch.long))
-
-    nc = domain.cells.ncells
-    cell_lon = np.rad2deg(
-        np.asarray(domain.cells.clon, dtype=np.float64).ravel(order="F")[:nc]
-    )
-    cell_lat = np.rad2deg(
-        np.asarray(domain.cells.clat, dtype=np.float64).ravel(order="F")[:nc]
-    )
-
-    regridder = KNNS2Interpolator(
-        src_lon=torch.tensor(cell_lon, dtype=torch.float32),
-        src_lat=torch.tensor(cell_lat, dtype=torch.float32),
-        dest_lon=owned_lon.float(),
-        dest_lat=owned_lat.float(),
-        k=1,
-    ).cuda()
-
-    _state.n_owned_pixels = len(owned_pixel_ids)
-    _state.faces_per_rank = faces_per_rank
-    _state.owned_face_ids = torch.arange(
-        first_face, first_face + faces_per_rank, device="cuda", dtype=torch.long
-    )
-    _state.regridder = regridder
-
-    comin.print_info(
-        f"[rank={rank}/cr={compute_rank}] HPX: faces {first_face}–"
-        f"{first_face + faces_per_rank - 1}, {_state.n_owned_pixels} pixels, "
-        f"{nc} src cells"
-    )
-
 
 def _extract_icon_cells(data_array) -> xp.ndarray:
     """Return per-level data for this rank's owned ICON cells (halos excluded)."""
@@ -231,16 +249,6 @@ def _extract_icon_cells(data_array) -> xp.ndarray:
         return data_xp.ravel(order="F")[:nc]
     nlev = data_xp.shape[1]
     return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
-
-
-@torch.no_grad()
-def _regrid_to_healpix(data_array) -> Optional[torch.Tensor]:
-    """Regrid ICON cells to this rank's owned HEALPix pixels."""
-    if _state.regridder is None or _state.n_owned_pixels == 0:
-        return None
-    cells = _extract_icon_cells(data_array)
-    cells_t = tdlpack.from_dlpack(cells).float()
-    return _state.regridder(cells_t.T).T.contiguous()
 
 
 def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
@@ -325,13 +333,41 @@ def sec_ctor():
         (ICON_VARIABLE_NAME, DOMAIN_ID),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
-    if has_gpu:
-        _init_hpx_regridding(compute_comm, compute_rank)
 
+
+@comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
+def setup_coupling():
+    step_len_seconds = str(int(comin.descrdata_get_timesteplength(1)))
+    _state.step_len = step_len_seconds
+    # Derive nlev from the variable's memory layout: COMIN uses (nproma, nlev, nblk)
+    # for 3-D fields and (nproma, nblk) for surface fields.
+    _icon_arr = xp.asarray(_state.icon_var)
+    while _icon_arr.ndim > 3 and _icon_arr.shape[-1] == 1:
+        _icon_arr = _icon_arr[..., 0]
+    _state.var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
+    comin.print_info(f"[rank={rank}] timestep length: {_state.step_len} seconds")
+
+    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, _state.var_nlev, _state.step_len, TimeUnit.SECOND)
+    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, _state.var_nlev, _state.step_len, TimeUnit.SECOND)
+
+    interp = InterpolationStack()
+    interp.add_nnn(NNNReductionType.AVG, n=1)
+
+    yac.def_couple(
+        "icon_r2b4_source", "icon_grid", "var_remap",
+        "healpix_target", "hp_level6_grid", "var_target",
+        _state.step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
+    )
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online FieldSpaceNN training callback called by ICON at each time step."""
+    # YAC put/get must be called on every MPI rank to avoid coupling deadlocks.
+    # source: ICON native grid → target: HEALPix grid
+    icon_cells = _extract_icon_cells(_state.icon_var)  # (ncells,) or (ncells, nlev)
+    _state.hp_field_src.put(icon_cells, inplace=True)
+    var_hpx, info = _state.hp_field_tgt.get()
+
     if not has_gpu:
         return
 
@@ -346,16 +382,20 @@ def training():
         )
         return
 
-    ua_hpx = _regrid_to_healpix(_state.icon_var)
-    if ua_hpx is None:
+    if var_hpx is None or len(var_hpx) == 0:
         comin.print_info(
             f"[rank={rank}] HPX regrid not ready, skipping step {current_step}"
         )
         return
 
-    ua_faces = _to_hpx_faces(ua_hpx)
+    # Convert numpy/cupy array from YAC to a float32 GPU tensor of shape (n_pixels, nlev).
+    var_hpx_t = torch.as_tensor(xp.asarray(var_hpx), device="cuda").float()
+    if var_hpx_t.ndim == 1:
+        var_hpx_t = var_hpx_t.unsqueeze(-1)
+
+    ua_faces = _to_hpx_faces(var_hpx_t)
     unix_seconds = _icon_time_unix_seconds()
-    trainer = _get_trainer(nlev=ua_faces.shape[1])
+    trainer = _get_trainer(nlev=_state.var_nlev)
     snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
 
     if _state.pending_example is None:
