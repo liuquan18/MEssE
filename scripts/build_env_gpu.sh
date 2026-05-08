@@ -37,7 +37,7 @@ $PY_BIN -m venv $PY_ENV_DIR
 source $PY_ENV_DIR/bin/activate
 
 pip install --upgrade pip
-pip install setuptools wheel pumpy pandas cython pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax healpy scipy
+pip install setuptools wheel pumpy pandas cython numpy pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax healpy scipy
 pip install --upgrade "jax[cuda13]"
 
 
@@ -71,6 +71,70 @@ $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --disa
 make -j $(nproc)
 ./make_runscripts --all
 
+popd
+
+
+# ===== Build YAC Python bindings =====
+# ICON bundles YAC and YAXT in externals/ — reuse the same source.
+YAC_SRC_DIR=$SRC_DIR/$ICON_DIR_NAME/externals/yac
+YAXT_SRC_DIR=$SRC_DIR/$ICON_DIR_NAME/externals/yaxt
+YAXT_BUILD_DIR=$BUILD_DIR/yaxt_python
+YAXT_INST_DIR=$BASE_DIR/yaxt_inst
+YAC_PY_BUILD_DIR=$BUILD_DIR/yac_python
+
+# Use the exact same MPI and library paths as the ICON GPU build (nvhpc-24.7)
+# so that the YAC Python bindings share the same MPI ABI as ICON at runtime.
+NVHPC_ROOT=/sw/spack-levante/nvhpc-24.7-py26uc/Linux_x86_64/24.7
+YAC_MPI_ROOT=${NVHPC_ROOT}/comm_libs/12.5/openmpi4/openmpi-4.1.5
+YAC_CC=${YAC_MPI_ROOT}/bin/mpicc
+YAC_FC=${YAC_MPI_ROOT}/bin/mpifort
+FYAML_ROOT=/sw/spack-levante/libfyaml-0.7.12-fvbhgo
+NETCDF_ROOT=/sw/spack-levante/netcdf-c-main-rpye7o
+
+# mpi4py must be built from source linking nvhpc's libmpi.so (same ABI as ICON/YAC).
+MPICC_WRAP_DIR=$(mktemp -d)
+OMPI_COMPILE=$(${YAC_CC} --showme:compile)
+OMPI_LINK=$(${YAC_CC} --showme:link)
+cat > ${MPICC_WRAP_DIR}/mpicc << EOF
+#!/bin/bash
+exec gcc ${OMPI_COMPILE} ${OMPI_LINK} "\$@"
+EOF
+chmod +x ${MPICC_WRAP_DIR}/mpicc
+MPICC=${MPICC_WRAP_DIR}/mpicc pip install --no-binary :all: --no-cache-dir mpi4py
+rm -rf ${MPICC_WRAP_DIR}
+
+
+# Build YAXT (YAC depends on it)
+mkdir -p $YAXT_BUILD_DIR
+pushd $YAXT_BUILD_DIR
+test -f $YAXT_SRC_DIR/configure || (cd $YAXT_SRC_DIR && ./autogen.sh)
+$YAXT_SRC_DIR/configure \
+    CC=${YAC_CC} \
+    FC=${YAC_FC} \
+    --disable-mpi-checks \
+    --disable-silent-rules \
+    --prefix=$YAXT_INST_DIR
+make -j $(nproc)
+make install
+popd
+
+# Build YAC with Python bindings, install into the venv
+# --prefix=$PY_ENV_DIR places yac.so in venv site-packages → import yac works
+mkdir -p $YAC_PY_BUILD_DIR
+pushd $YAC_PY_BUILD_DIR
+test -f $YAC_SRC_DIR/configure || (cd $YAC_SRC_DIR && ./autogen.sh)
+$YAC_SRC_DIR/configure \
+    CC=${YAC_CC} \
+    FC=${YAC_FC} \
+    --disable-mpi-checks \
+    --disable-silent-rules \
+    --enable-python-bindings \
+    --with-fyaml-root=$FYAML_ROOT \
+    --with-netcdf-root=$NETCDF_ROOT \
+    --with-yaxt-root=$YAXT_INST_DIR \
+    --prefix=$PY_ENV_DIR
+make -j $(nproc)
+make install
 popd
 
 
