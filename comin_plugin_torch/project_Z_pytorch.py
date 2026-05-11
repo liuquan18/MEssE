@@ -12,9 +12,9 @@ import torch.distributed as dist
 
 from mpi4py import MPI
 
+import healpy
 from yac import (
     YAC,
-    HealpixGrid,
     UnstructuredGrid,
     Location,
     Field,
@@ -43,7 +43,7 @@ _ONLINE_CFG = load_online_config()
 DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
 ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
 HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
-MAX_FORECAST_HORIZON = 30 # 30*120s = 1hour
+MAX_FORECAST_HORIZON =  30 # 40s per step * 30 steps = 20 mins
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -110,6 +110,8 @@ if has_gpu:
         rank=compute_rank,
         world_size=num_calculate_processes,
     )
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
     comin.print_info(
         f"[rank={rank}] PyTorch distributed initialised: "
         f"compute_rank={compute_rank}/{num_calculate_processes}"
@@ -120,7 +122,7 @@ else:
 
 
 # ----------------------------------------------------------------------------
-# comin / yac setup
+# yac setup (HEALPix interpolation)
 # ----------------------------------------------------------------------------
 glob = comin.descrdata_get_global()
 domain = comin.descrdata_get_domain(DOMAIN_ID)
@@ -146,12 +148,9 @@ icon_cell_centers = icon_grid.def_points(
     np.ravel(domain.cells.clat)[: domain.cells.ncells]
 )
 
-
 target_comp = yac.predef_comp("healpix_target")
-# Define the HEALPix grid globally
-hp_grid = HealpixGrid("hp_level6_grid", HPX_LEVEL)
 
-# For parallel target: we distribute the 49152 HEALPix cells across GPU compute ranks only
+# For parallel target: distribute HEALPix cells across GPU compute ranks only
 total_hp_cells = 12 * 4**HPX_LEVEL
 if has_gpu:
     cells_per_rank = total_hp_cells // num_calculate_processes
@@ -162,10 +161,84 @@ else:
     start_idx = 0
     end_idx = 0
 
-# Each GPU rank defines a 'point set' covering only its local portion of the HEALPix grid.
-# Non-GPU (IO) ranks define an empty point set to satisfy YAC coupling setup.
-hp_points = hp_grid.def_points(Location.CELL, cell_indices=np.arange(start_idx, end_idx, dtype=np.uint64))
+# Build HEALPix target grid with healpy 
+nside = 2**HPX_LEVEL
+local_hp_indices = np.arange(start_idx, end_idx)
 
+
+def _xyz2lonlat(xyz):
+    xyz = np.array(xyz)
+    lat = np.arcsin(xyz[..., 2])
+    lon = np.arctan2(xyz[..., 1], xyz[..., 0])
+    return lon, lat
+
+
+def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
+    if cell_idx is None:
+        ncells = healpy.pixelfunc.nside2npix(nside)
+        cell_idx = np.arange(ncells)
+
+    centers_xyz = np.stack(
+        healpy.pixelfunc.pix2vec(nside, cell_idx, nest=nest),
+        axis=-1,
+    )
+    clon, clat = _xyz2lonlat(centers_xyz)
+
+    boundaries_xyz = (
+        healpy.boundaries(nside, cell_idx, nest=nest)
+        .transpose(0, 2, 1)
+        .reshape(-1, 3)
+    )
+    verts_xyz, quads = np.unique(boundaries_xyz, return_inverse=True, axis=0)
+    vlon, vlat = _xyz2lonlat(verts_xyz)
+    vertex_of_cell = quads.reshape(-1, 4)
+
+    grid = UnstructuredGrid(
+        name,
+        np.full(len(cell_idx), 4, dtype=np.int32),
+        vlon,
+        vlat,
+        vertex_of_cell.flatten(),
+    )
+    points = grid.def_points(Location.CELL, clon, clat)
+    return grid, points
+
+
+if len(local_hp_indices) > 0:
+    hp_grid, hp_points = _make_healpix_grid(
+        "hp_level6_grid", nside, cell_idx=local_hp_indices
+    )
+else:
+    # IO / non-compute rank: empty partition to satisfy YAC coupling setup
+    hp_grid = UnstructuredGrid(
+        "hp_level6_grid",
+        np.zeros(0, dtype=np.int32),
+        np.zeros(0),
+        np.zeros(0),
+        np.zeros(0, dtype=np.int32),
+    )
+    hp_points = hp_grid.def_points(Location.CELL, np.zeros(0), np.zeros(0))
+
+
+def _extract_icon_cells(data_array) -> xp.ndarray:
+    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
+    nc = domain.cells.ncells
+    data_xp = xp.asarray(data_array)
+    # Drop trailing singleton dimensions added by COMIN
+    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
+        data_xp = data_xp[..., 0]
+    if data_xp.ndim == 2:
+        return data_xp.ravel(order="F")[:nc]
+    nlev = data_xp.shape[1]
+    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
+
+
+def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
+    """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
+    nside = 2**HPX_LEVEL
+    n_owned, nlev = owned_vals.shape
+    faces = n_owned // (nside * nside)
+    return owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
 
 
 # ----------------------------------------------------------------------------
@@ -176,12 +249,13 @@ class _State:
         "current_step",
         "pending_example",
         "trainer",
-        "icon_var",
+        "icon_var", 
+        "hp_var", 
         "hp_field_src",
         "hp_field_tgt",
-        "step_len",
         "var_nlev",
         "owned_face_ids",
+        "horizon",
     )
 
     def __init__(self) -> None:
@@ -189,11 +263,12 @@ class _State:
         self.pending_example: Optional["ForecastExample"] = None
         self.trainer: Optional[OnlineFieldSpaceNNTrainer] = None
         self.icon_var = None  # COMIN variable handle, set in sec_ctor
+        self.hp_var = None  # Regridded variable on the HEALPix grid, set in training callback
         self.hp_field_src: Optional[Field] = None  # YAC field on the ICON grid
         self.hp_field_tgt: Optional[Field] = None  # YAC field on the HEALPix grid
-        self.step_len: Optional[float] = None  # Time
         self.var_nlev: Optional[int] = None  # Number of vertical levels in the ICON variable
         self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
+        self.horizon: Optional[int] = None  # steps to skip for forecasting, yac timestep length is derived from ICON timestep length and this horizon
 
 
 _state = _State()
@@ -234,32 +309,6 @@ def _icon_time_unix_seconds() -> float:
 
 
 # ----------------------------------------------------------------------------
-# HEALPix regridding
-# ----------------------------------------------------------------------------
-
-
-def _extract_icon_cells(data_array) -> xp.ndarray:
-    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
-    nc = domain.cells.ncells
-    data_xp = xp.asarray(data_array)
-    # Drop trailing singleton dimensions added by COMIN
-    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
-        data_xp = data_xp[..., 0]
-    if data_xp.ndim == 2:
-        return data_xp.ravel(order="F")[:nc]
-    nlev = data_xp.shape[1]
-    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
-
-
-def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
-    """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
-    nside = 2**HPX_LEVEL
-    n_owned, nlev = owned_vals.shape
-    faces = n_owned // (nside * nside)
-    return owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
-
-
-# ----------------------------------------------------------------------------
 # Trainer lifecycle
 # ----------------------------------------------------------------------------
 
@@ -286,7 +335,6 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
     comin.print_info(
         f"[rank={rank}] FieldSpaceNN trainer initialized: "
         f"zooms={_state.trainer.in_zooms}, "
-        f"horizon={_state.trainer.forecast_horizon_steps}"
     )
     return _state.trainer
 
@@ -308,8 +356,8 @@ def _sample_horizon() -> int:
 def _enqueue_snapshot(
     snapshot: FieldSpaceNNSnapshot,
     current_step: int,
+    horizon: Optional[int] = None,
 ) -> ForecastExample:
-    horizon = _sample_horizon()
     due_step = current_step + horizon
     comin.print_info(
         f"[rank={rank}] enqueued snapshot at step={current_step}, due={due_step}"
@@ -337,18 +385,22 @@ def sec_ctor():
 
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
 def setup_coupling():
+
     step_len_seconds = str(int(comin.descrdata_get_timesteplength(1)))
-    _state.step_len = step_len_seconds
+    step_len = step_len_seconds
+
     # Derive nlev from the variable's memory layout: COMIN uses (nproma, nlev, nblk)
     # for 3-D fields and (nproma, nblk) for surface fields.
+
     _icon_arr = xp.asarray(_state.icon_var)
     while _icon_arr.ndim > 3 and _icon_arr.shape[-1] == 1:
         _icon_arr = _icon_arr[..., 0]
     _state.var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
-    comin.print_info(f"[rank={rank}] timestep length: {_state.step_len} seconds")
 
-    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, _state.var_nlev, _state.step_len, TimeUnit.SECOND)
-    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, _state.var_nlev, _state.step_len, TimeUnit.SECOND)
+    comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
+
+    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, _state.var_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, _state.var_nlev, step_len, TimeUnit.SECOND)
 
     interp = InterpolationStack()
     interp.add_nnn(NNNReductionType.AVG, n=1)
@@ -356,17 +408,15 @@ def setup_coupling():
     yac.def_couple(
         "icon_r2b4_source", "icon_grid", "var_remap",
         "healpix_target", "hp_level6_grid", "var_target",
-        _state.step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
+        step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
     )
+
+
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online FieldSpaceNN training callback called by ICON at each time step."""
-    # YAC put/get must be called on every MPI rank to avoid coupling deadlocks.
-    # source: ICON native grid → target: HEALPix grid
-    icon_cells = _extract_icon_cells(_state.icon_var)  # (ncells,) or (ncells, nlev)
-    _state.hp_field_src.put(icon_cells, inplace=True)
-    var_hpx, info = _state.hp_field_tgt.get()
+
 
     if not has_gpu:
         return
@@ -374,33 +424,43 @@ def training():
     current_step = _state.current_step
     _state.current_step += 1
 
-    # Not yet due — wait for the target snapshot
+    # Mode: Waiting; between t and t+horizon
     if _state.pending_example is not None and current_step < _state.pending_example.due_step:
         comin.print_info(
             f"[rank={rank}] step={current_step} waiting "
+            f" horizon={_state.pending_example.horizon}"
             f"(due={_state.pending_example.due_step})"
         )
         return
 
-    if var_hpx is None or len(var_hpx) == 0:
-        comin.print_info(
-            f"[rank={rank}] HPX regrid not ready, skipping step {current_step}"
-        )
-        return
+
+    icon_cells = _extract_icon_cells(_state.icon_var)  # (ncells,) or (ncells, nlev)
+
+    # interpolation from native ICON grid to HEALPix using YAC
+    # currently YAC only supports numpy arrays, wait for update to support cupy arrays
+    icon_cells_np = icon_cells.get() if hasattr(icon_cells, 'get') else icon_cells
+    _state.hp_field_src.put(icon_cells_np)
+    var_hpx, info = _state.hp_field_tgt.get()
 
     # Convert numpy/cupy array from YAC to a float32 GPU tensor of shape (n_pixels, nlev).
     var_hpx_t = torch.as_tensor(xp.asarray(var_hpx), device="cuda").float()
     if var_hpx_t.ndim == 1:
         var_hpx_t = var_hpx_t.unsqueeze(-1)
+    elif var_hpx_t.ndim == 2:
+        # YAC returns (nlev, ncells); _to_hpx_faces expects (ncells, nlev)
+        var_hpx_t = var_hpx_t.T
+
 
     ua_faces = _to_hpx_faces(var_hpx_t)
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev)
     snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
 
+    _state.horizon = _sample_horizon() #  steps
+
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step)
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=_state.horizon)
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
         result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
@@ -408,4 +468,4 @@ def training():
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
             f"horizon={_state.pending_example.horizon}"
         )
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step)
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=_state.horizon)
