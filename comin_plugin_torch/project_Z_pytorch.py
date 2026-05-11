@@ -1,32 +1,58 @@
 import comin
-import dataclasses
 import datetime
-import math
 import os
 import socket
+import sys
+from dataclasses import dataclass
+from typing import Optional
+
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import torch.distributed as dist
-import torch.utils.dlpack as tdlpack
-from torch.nn.parallel import DistributedDataParallel as DDP
-import sys
-import cftime
 
 from mpi4py import MPI
-import earth2grid.healpix as e2g_healpix
-from earth2grid._regrid import KNNS2Interpolator
+
+import healpy
+from yac import (
+    YAC,
+    UnstructuredGrid,
+    Location,
+    Field,
+    TimeUnit,
+    InterpolationStack,
+    NNNReductionType,
+    Reduction
+)
+
+try:
+    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    # __file__ may be undefined when COMIN loads the plugin via exec().
+    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
+if _PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _PLUGIN_DIR)
+
+from fieldspacenn_online import (
+    FieldSpaceNNSnapshot,
+    OnlineFieldSpaceNNTrainer,
+    load_online_config,
+)
+
+
+_ONLINE_CFG = load_online_config()
+DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
+ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
+HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
+MAX_FORECAST_HORIZON = int(_ONLINE_CFG.online.forecast_horizon_maxsteps)
 
 # ----------------------------------------------------------------------------
-# GPU check
+# GPU / array backend selection
 # ----------------------------------------------------------------------------
 glob = comin.descrdata_get_global()
 if glob.has_device:
-    comin.print_info(f"{glob.device_name=}")
-    comin.print_info(f"{glob.device_vendor=}")
-    comin.print_info(f"{glob.device_driver=}")
+    comin.print_info(f"glob.device_name={glob.device_name}")
+    comin.print_info(f"glob.device_vendor={glob.device_vendor}")
+    comin.print_info(f"glob.device_driver={glob.device_driver}")
 
 if glob.has_device and "NVIDIA" in glob.device_vendor.upper():
     try:
@@ -37,271 +63,272 @@ if glob.has_device and "NVIDIA" in glob.device_vendor.upper():
     except ImportError as e:
         comin.print_info("Cannot import cupy, falling back to numpy")
         comin.print_info(e)
-        import sys
-
         comin.print_info(sys.path)
         import numpy as xp
 
         DEVICE_SYNC_FLAG = 0
 else:
-    comin.print_info("No NVIDIA device found falling back to numpy")
+    comin.print_info("No NVIDIA device found, falling back to numpy")
     import numpy as xp
 
     DEVICE_SYNC_FLAG = 0
 
 
-domain = comin.descrdata_get_domain(1)
-
+# ----------------------------------------------------------------------------
+# MPI setup
+# ----------------------------------------------------------------------------
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
-rank = comm.Get_rank()  # global MPI rank
+rank = comm.Get_rank()
 world_size = comm.Get_size()
 
 # ----------------------------------------------------------------------------
-# Pytorch distributed initialization
-# Detect GPU-bearing ranks via CUDA_VISIBLE_DEVICES: the run_wrapper (levante.sh)
-# sets CUDA_VISIBLE_DEVICES to a single GPU index (e.g. "0", "1") for compute ranks
-# and leaves it unset (or as all GPUs) for IO ranks.  Using SLURM_LOCALID < GPUS_ON_NODE
-# is NOT reliable because the IO rank also has a valid local rank within the GPU count.
+# PyTorch distributed initialization.
+# Non-GPU ranks never enter NCCL or the online FieldSpaceNN trainer.
 # ----------------------------------------------------------------------------
 _cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-has_gpu = _cuda_vis.isdigit()  # True only when wrapper set exactly one GPU index
+# A single digit means exactly one GPU was assigned to this rank.
+has_gpu = _cuda_vis.isdigit()
 
-# Count how many MPI ranks are GPU-bearing globally.
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
-num_no_gpu_processes = world_size - num_calculate_processes
 
-compute_rank = None  # None for the IO rank
+compute_rank: Optional[int] = None
+compute_comm: Optional[MPI.Comm] = None
 
 if has_gpu:
-    # Split off a communicator that contains only GPU-bearing ranks.
     compute_comm = comm.Split(color=0, key=rank)
     compute_rank = compute_comm.Get_rank()
 
-    # All compute ranks agree on MASTER_ADDR (hostname of compute rank 0).
-    if compute_rank == 0:
-        master_addr = socket.gethostname()
-    else:
-        master_addr = None
+    master_addr = socket.gethostname() if compute_rank == 0 else None
     master_addr = compute_comm.bcast(master_addr, root=0)
 
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
 
-    # For GPU-bearing ranks, run_wrapper sets a single CUDA_VISIBLE_DEVICES entry.
-    # Therefore the process-local CUDA index is always 0.
     torch.cuda.set_device(0)
     dist.init_process_group(
         backend="nccl",
         rank=compute_rank,
         world_size=num_calculate_processes,
     )
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
     comin.print_info(
         f"[rank={rank}] PyTorch distributed initialised: "
         f"compute_rank={compute_rank}/{num_calculate_processes}"
     )
 else:
-    # Non-GPU ranks: split into a non-NCCL communicator.
     _ = comm.Split(color=1, key=rank)
 
 
-MAX_FORECAST_HORIZON = 10
 
+# ----------------------------------------------------------------------------
+# yac setup (HEALPix interpolation)
+# ----------------------------------------------------------------------------
+domain = comin.descrdata_get_domain(DOMAIN_ID)
 
-# ---------------------------------------------------------------------------
-# FaceCNN: operates on HEALPix faces treated as 2D images.
-# Each HEALPix face in NEST ordering is a contiguous nside×nside spatial grid.
-# Input/output: (faces_per_rank, n_channels, nside, nside)
-# ---------------------------------------------------------------------------
-class FaceCNN(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
+assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
+yac = YAC.from_id(glob.yac_instance_id)
+source_comp = yac.predef_comp("icon_r2b4_source")
 
-    def forward(self, x):
-        # x: (faces_per_rank, in_channels, nside, nside)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        return self.conv3(x)
+connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (np.asarray(domain.cells.vertex_idx) - 1)
 
-
-_model = None  # lazily initialised on first callback (DDP-wrapped FaceCNN)
-_optimizer = None  # lazily initialised on first callback
-_current_step = 0
-_pending_example = None  # ForecastExample | None — the single in-flight forecast
-
-# ---------------------------------------------------------------------------
-# HEALPix regridding globals (initialised once in sec_ctor for GPU ranks)
-# ---------------------------------------------------------------------------
-HPX_LEVEL = 6
-_hpx_regridder = None  # Regridder: (nc, nlev) -> (n_owned, nlev)
-_n_owned_pixels = 0  # total owned pixels = _faces_per_rank * nside²
-_faces_per_rank = 0  # number of HEALPix faces owned by this compute rank
-
-# ---------------------------------------------------------------------------
-# Calendar embedding globals
-# ---------------------------------------------------------------------------
-CALENDAR_EMBED_CHANNELS = 4  # FrequencyEmbedding channels per signal → 4*C total
-_calendar_embedding = (
-    None  # CalendarEmbedding | None — initialised in _init_hpx_regridding
+icon_grid = UnstructuredGrid(
+    "icon_grid",
+    np.ones(domain.cells.ncells, dtype=np.int32) * 3,
+    np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]),
+    np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]),
+    np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells]
 )
 
+icon_cell_centers = icon_grid.def_points(
+    Location.CELL,
+    np.ravel(domain.cells.clon)[: domain.cells.ncells],
+    np.ravel(domain.cells.clat)[: domain.cells.ncells]
+)
 
-@dataclasses.dataclass
-class ForecastExample:
-    """A single in-flight forecast linking a past ua snapshot to a future step.
+target_comp = yac.predef_comp("healpix_target")
 
-    Attributes
-    ----------
-    previous_pred : torch.Tensor, shape (faces_per_rank, nlev+4C, nside, nside)
-        Model output at creation time = cat(ua_t, cal_t); used directly as x at training time.
-    horizon : int
-        Number of ICON steps between the input snapshot and the target.
-    due_step : int
-        Absolute step at which the matching ground-truth ua is available
-        (= creation_step + horizon).
-    """
+# For parallel target: distribute HEALPix cells across GPU compute ranks only
+total_hp_cells = 12 * 4**HPX_LEVEL
+if has_gpu:
+    cells_per_rank = total_hp_cells // num_calculate_processes
+    start_idx = compute_rank * cells_per_rank
+    # Last GPU rank takes the remainder
+    end_idx = (compute_rank + 1) * cells_per_rank if compute_rank != num_calculate_processes - 1 else total_hp_cells
+else:
+    start_idx = 0
+    end_idx = 0
 
-    previous_pred: (
-        torch.Tensor
-    )  # shape (faces_per_rank, nlev+4C, nside, nside) on CUDA — cat(ua, cal) at prediction time t
-    horizon: int
-    due_step: int
-    day_of_year: float  # days since 1 Jan at prediction time t
-    second_of_day: float  # seconds since midnight UTC at prediction time t
-
-
-@dataclasses.dataclass
-class ModelInput:
-    """A single model input snapshot capturing wind data and calendar context.
-
-    Attributes
-    ----------
-    ua_hp : torch.Tensor, shape (faces_per_rank, nlev, nside, nside)
-        HEALPix-regridded zonal wind on CUDA, output of to_hpx_faces().
-    day_of_year : float
-        Days elapsed since 1 January of the current year (0 – ~365.25).
-    second_of_day : float
-        Seconds elapsed since midnight UTC (0 – 86400).
-    """
-
-    ua_hp: torch.Tensor  # shape (faces_per_rank, nlev, nside, nside) on CUDA
-    day_of_year: float
-    second_of_day: float
+# Build HEALPix target grid with healpy 
+nside = 2**HPX_LEVEL
+local_hp_indices = np.arange(start_idx, end_idx)
 
 
-# ---------------------------------------------------------------------------
-# Calendar helpers (cBottle-style)
-# ---------------------------------------------------------------------------
+def _xyz2lonlat(xyz):
+    xyz = np.array(xyz)
+    lat = np.arcsin(xyz[..., 2])
+    lon = np.arctan2(xyz[..., 1], xyz[..., 0])
+    return lon, lat
 
 
-def _second_of_day(time) -> float:
-    """Returns the seconds elapsed since the start of the day."""
-    begin_of_day = time.replace(hour=0, minute=0, second=0)
-    return (time - begin_of_day).total_seconds()
+def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
+    if cell_idx is None:
+        ncells = healpy.pixelfunc.nside2npix(nside)
+        cell_idx = np.arange(ncells)
+
+    centers_xyz = np.stack(
+        healpy.pixelfunc.pix2vec(nside, cell_idx, nest=nest),
+        axis=-1,
+    )
+    clon, clat = _xyz2lonlat(centers_xyz)
+
+    boundaries_xyz = (
+        healpy.boundaries(nside, cell_idx, nest=nest)
+        .transpose(0, 2, 1)
+        .reshape(-1, 3)
+    )
+    verts_xyz, quads = np.unique(boundaries_xyz, return_inverse=True, axis=0)
+    vlon, vlat = _xyz2lonlat(verts_xyz)
+    vertex_of_cell = quads.reshape(-1, 4)
+
+    grid = UnstructuredGrid(
+        name,
+        np.full(len(cell_idx), 4, dtype=np.int32),
+        vlon,
+        vlat,
+        vertex_of_cell.flatten(),
+    )
+    points = grid.def_points(Location.CELL, clon, clat)
+    return grid, points
 
 
-def _get_calendar_inputs(time: cftime.DatetimeGregorian):
-    """Calculate second_of_day and day_of_year from a cftime datetime.
+if len(local_hp_indices) > 0:
+    hp_grid, hp_points = _make_healpix_grid(
+        "hp_level6_grid", nside, cell_idx=local_hp_indices
+    )
+else:
+    # IO / non-compute rank: empty partition to satisfy YAC coupling setup
+    hp_grid = UnstructuredGrid(
+        "hp_level6_grid",
+        np.zeros(0, dtype=np.int32),
+        np.zeros(0),
+        np.zeros(0),
+        np.zeros(0, dtype=np.int32),
+    )
+    hp_points = hp_grid.def_points(Location.CELL, np.zeros(0), np.zeros(0))
 
-    Mirrors the logic in cbottle/datasets/dataset_3d.py.
 
-    Returns
-    -------
-    day_of_year : float  — days since 1 Jan of current year (0 – ~365.25)
-    second_of_day : float — seconds since midnight UTC (0 – 86400)
-    """
-    day_start = time.replace(hour=0, minute=0, second=0)
-    year_start = day_start.replace(month=1, day=1)
-    sec_of_day = (time - day_start).total_seconds()
-    day_of_yr = (time - year_start).total_seconds() / 86400.0
-    return day_of_yr, sec_of_day
+def _extract_icon_cells(data_array) -> xp.ndarray:
+    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
+    nc = domain.cells.ncells
+    data_xp = xp.asarray(data_array)
+    # Drop trailing singleton dimensions added by COMIN
+    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
+        data_xp = data_xp[..., 0]
+    if data_xp.ndim == 2:
+        return data_xp.ravel(order="F")[:nc]
+    nlev = data_xp.shape[1]
+    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
 
 
-def _parse_icon_datetime(iso_str: str) -> cftime.DatetimeGregorian:
-    """Parse the ISO 8601 string returned by comin.current_get_datetime().
+def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
+    """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
+    nside = 2**HPX_LEVEL
+    n_owned, nlev = owned_vals.shape
+    faces = n_owned // (nside * nside)
+    return owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
 
-    ICON returns strings like ``2020-01-20T00:00:00.000``.
-    """
-    # Strip sub-second precision and trailing Z if present, then parse.
-    clean = iso_str.split(".")[0].rstrip("Z")
-    dt = datetime.datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S")
-    return cftime.DatetimeGregorian(
-        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+
+# ----------------------------------------------------------------------------
+# Plugin state — all mutable runtime state lives here instead of as globals.
+# ----------------------------------------------------------------------------
+class _State:
+    __slots__ = (
+        "current_step",
+        "pending_example",
+        "trainer",
+        "icon_var",
+        "hp_field_src",
+        "hp_field_tgt",
+        "var_nlev",
+        "owned_face_ids",
     )
 
-
-# ---------------------------------------------------------------------------
-# Calendar embedding modules (cBottle-style)
-# ---------------------------------------------------------------------------
-
-
-class FrequencyEmbedding(nn.Module):
-    """Periodic embedding for inputs normalised to [0, 1].
-
-    Applies sin/cos at integer frequencies 1 … num_channels, producing
-    2 * num_channels output channels.
-    """
-
-    def __init__(self, num_channels: int):
-        super().__init__()
-        self.register_buffer("freqs", torch.arange(1, num_channels + 1))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (faces, 1, H, W)  →  out: (faces, 2*num_channels, H, W)
-        freqs = self.freqs.view(1, -1, 1, 1)  # (1, C, 1, 1)
-        x_scaled = x * (2 * math.pi * freqs)  # (faces, C, H, W)  — broadcasts on dim 1
-        return torch.cat([x_scaled.cos(), x_scaled.sin()], dim=1)  # (faces, 2C, H, W)
+    def __init__(self) -> None:
+        self.current_step: int = 0
+        self.pending_example: Optional["ForecastExample"] = None
+        self.trainer: Optional[OnlineFieldSpaceNNTrainer] = None
+        self.icon_var = None  # COMIN variable handle, set in sec_ctor
+        self.hp_field_src: Optional[Field] = None  # YAC field on the ICON grid
+        self.hp_field_tgt: Optional[Field] = None  # YAC field on the HEALPix grid
+        self.var_nlev: Optional[int] = None  # Number of vertical levels in the ICON variable
+        self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
 
 
-class CalendarEmbedding(nn.Module):
-    """Embed time-of-day and day-of-year using longitude-corrected local solar time.
+_state = _State()
 
-    Mirrors CalendarEmbedding in cbottle.
-
-    Parameters
-    ----------
-    lon : torch.Tensor, shape (faces_per_rank, nside, nside)
-        Longitude in degrees for each owned HEALPix pixel.
-    embed_channels : int
-        Number of frequency channels per temporal signal.
-        Output has 4 * embed_channels channels total.
-    """
-
-    def __init__(self, lon: torch.Tensor, embed_channels: int):
-        super().__init__()
-        self.register_buffer("lon", lon)  # (faces, nside, nside)
-        self.embed_second = FrequencyEmbedding(embed_channels)
-        self.embed_day = FrequencyEmbedding(embed_channels)
-
-    def forward(self, day_of_year: float, second_of_day: float) -> torch.Tensor:
-        # self.lon: (faces, nside, nside)
-        # Convert UTC second_of_day → local solar time using longitude.
-        local_time = (
-            second_of_day + self.lon * 86400.0 / 360.0
-        ) % 86400.0  # (faces, nside, nside)
-        local_time = local_time.unsqueeze(1)  # (faces, 1, nside, nside)
-        doy = torch.full_like(local_time, day_of_year)  # (faces, 1, nside, nside)
-        a = self.embed_second(local_time / 86400.0)  # (faces, 2C, nside, nside)
-        b = self.embed_day((doy / 365.25) % 1.0)  # (faces, 2C, nside, nside)
-        return torch.cat([a, b], dim=1)  # (faces, 4C, nside, nside)
+if has_gpu:
+    _pixels_per_face = nside * nside
+    _state.owned_face_ids = torch.arange(
+        start_idx // _pixels_per_face,
+        end_idx // _pixels_per_face,
+        dtype=torch.long,
+    )
+else:
+    _state.owned_face_ids = torch.tensor([], dtype=torch.long)
 
 
-def _init_model_and_optimizer(in_channels: int, out_channels: int):
-    model = FaceCNN(in_channels=in_channels, out_channels=out_channels).cuda()
-    ddp_model = DDP(model, device_ids=[0])
-    optimizer = optim.Adam(ddp_model.parameters(), lr=1e-3)
-    return ddp_model, optimizer
+@dataclass
+class ForecastExample:
+    source_snapshot: FieldSpaceNNSnapshot
+    horizon: int
+    due_step: int
 
 
-def _train_step(model, optimizer, x, y):
-    optimizer.zero_grad()
-    pred = model(x)
-    loss = torch.mean((pred - y) ** 2)
-    loss.backward()
-    optimizer.step()
-    return loss.item()
+# ----------------------------------------------------------------------------
+# Time helpers
+# ----------------------------------------------------------------------------
+
+def _parse_icon_datetime(iso_str: str) -> datetime.datetime:
+    """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
+    clean = str(iso_str).split(".")[0].rstrip("Z")
+    dt = datetime.datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S")
+    return dt.replace(tzinfo=datetime.timezone.utc)
+
+
+def _icon_time_unix_seconds() -> float:
+    return float(_parse_icon_datetime(comin.current_get_datetime()).timestamp())
+
+
+# ----------------------------------------------------------------------------
+# Trainer lifecycle
+# ----------------------------------------------------------------------------
+
+def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
+    if _state.trainer is not None:
+        if _state.trainer.nlev != nlev:
+            raise RuntimeError(
+                f"ICON level count changed: {_state.trainer.nlev} → {nlev}"
+            )
+        return _state.trainer
+
+    if _state.owned_face_ids is None:
+        raise RuntimeError("HEALPix face ownership is not initialized.")
+
+    _state.trainer = OnlineFieldSpaceNNTrainer(
+        cfg=_ONLINE_CFG,
+        owned_face_ids=_state.owned_face_ids,
+        nlev=nlev,
+        device=torch.device("cuda", 0),
+        use_ddp=dist.is_initialized(),
+        log_fn=comin.print_info,
+        rank=rank,
+    )
+    comin.print_info(
+        f"[rank={rank}] FieldSpaceNN trainer initialized: "
+        f"zooms={_state.trainer.in_zooms}, "
+    )
+    return _state.trainer
 
 
 def _sample_horizon() -> int:
@@ -318,358 +345,112 @@ def _sample_horizon() -> int:
     return int(horizon_t.item())
 
 
-# ---------------------------------------------------------------------------
-# data constructor: setup variables and data extraction utilities
-# ---------------------------------------------------------------------------
-
-# primary constructor callback to register new variables (only if ua_pred is to be written)
-# var_descriptor = ("ua_pred", 1)
-# comin.var_request_add(
-#     var_descriptor, lmodexclusive=True
-# )  # request variable from icon, with write
-# comin.metadata_set(
-#     var_descriptor,
-#     zaxis_id=comin.COMIN_ZAXIS_3D,
-#     long_name="Predicted zonal wind from MLP",
-#     units="m/s",
-# )
-
-
-def _init_hpx_regridding():
-    """Build and cache the per-rank ICON→HEALPix nearest-neighbour regrid operator.
-
-    Called once from sec_ctor on GPU-bearing ranks.
-
-    Ownership is face-based: HEALPix has exactly 12 base faces, and each
-    compute rank owns (12 // n_compute) consecutive faces in NEST order.
-    In NEST ordering the pixel indices for face f are the contiguous range
-    [f*nside², (f+1)*nside²), so no global communication is needed.
-
-    ICON's halo exchange ensures that each rank already holds the field values
-    for cells belonging to neighbouring ranks near face boundaries, so nearest-
-    neighbour sampling into owned pixels is fully local.
-
-    Requires: 12 % n_compute == 0  (valid GPU counts: 1, 2, 3, 4, 6, 12)
-    """
-    global _hpx_regridder, _n_owned_pixels, _faces_per_rank
-
-    nc = domain.cells.ncells
-    n_compute = compute_comm.Get_size()
-
-    if 12 % n_compute != 0:
-        comin.print_info(
-            f"[rank={rank}] WARNING: n_compute={n_compute} does not divide 12; "
-            "face-based HEALPix ownership is uneven — regrid disabled"
-        )
-        return
-
-    # --- face assignment: each rank owns (12 // n_compute) consecutive faces ---
-    nside = 2**HPX_LEVEL  # 64 for level 6
-    faces_per_rank = 12 // n_compute
-    first_face = compute_rank * faces_per_rank
-    last_face = first_face + faces_per_rank  # exclusive
-
-    # In NEST ordering face f occupies pixels [f*nside², (f+1)*nside²)
-    owned_pixel_ids = np.arange(
-        first_face * nside**2, last_face * nside**2, dtype=np.int64
-    )
-    _n_owned_pixels = len(owned_pixel_ids)
-    _faces_per_rank = faces_per_rank
-
+def _enqueue_snapshot(
+    snapshot: FieldSpaceNNSnapshot,
+    current_step: int,
+    horizon: int,
+) -> ForecastExample:
+    due_step = current_step + horizon
     comin.print_info(
-        f"[rank={rank}/cr={compute_rank}] HPX init: faces {first_face}–{last_face-1}, "
-        f"{_n_owned_pixels} pixels"
+        f"[rank={rank}] enqueued snapshot at step={current_step}, due={due_step}"
     )
-
-    # --- owned pixel centres (degrees) via NEST-ordered grid ---
-    grid = e2g_healpix.Grid(level=HPX_LEVEL, pixel_order=e2g_healpix.PixelOrder.NEST)
-    owned_ids_t = torch.tensor(owned_pixel_ids, dtype=torch.long)
-    owned_lon, owned_lat = grid.pix2ang(owned_ids_t)  # both in degrees, float64
-
-    # --- cell coordinates in degrees (all local cells: interior + halo) ---
-    # domain.cells.clon/clat may be 2D (nproma, nblk) in Fortran block layout;
-    # ravel with Fortran order so cells are indexed column-major (nproma fastest),
-    # then take the first nc elements to get a 1D array matching ncells.
-    cell_lon = np.rad2deg(
-        np.asarray(domain.cells.clon, dtype=np.float64).ravel(order="F")
-    )[:nc]
-    cell_lat = np.rad2deg(
-        np.asarray(domain.cells.clat, dtype=np.float64).ravel(order="F")
-    )[:nc]
-
-    # --- nearest-neighbour regridder (k=1): no weighting needed ---
-    src_lon_t = torch.tensor(cell_lon, dtype=torch.float32)
-    src_lat_t = torch.tensor(cell_lat, dtype=torch.float32)
-
-    regridder = KNNS2Interpolator(
-        src_lon=src_lon_t.flatten(),
-        src_lat=src_lat_t.flatten(),
-        dest_lon=owned_lon.float().flatten(),
-        dest_lat=owned_lat.float().flatten(),
-        k=1,
-    )
-    _hpx_regridder = regridder.cuda()
-    comin.print_info(
-        f"[rank={rank}] HPX regridder ready: {nc} src cells → {_n_owned_pixels} owned pixels"
-    )
-
-    # --- calendar embedding (no learnable params; uses owned pixel longitudes) ---
-    global _calendar_embedding
-    lon_faces = owned_lon.float().cuda().view(faces_per_rank, nside, nside)
-    _calendar_embedding = CalendarEmbedding(
-        lon=lon_faces, embed_channels=CALENDAR_EMBED_CHANNELS
-    ).cuda()
-    comin.print_info(
-        f"[rank={rank}] CalendarEmbedding ready: "
-        f"{4 * CALENDAR_EMBED_CHANNELS} channels, lon shape={lon_faces.shape}"
+    return ForecastExample(
+        source_snapshot=snapshot,
+        horizon=horizon,
+        due_step=due_step,
     )
 
 
-# second constructor callback to get access to variables created by icon
+# ----------------------------------------------------------------------------
+# COMIN callbacks
+# ----------------------------------------------------------------------------
+
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    global ua, ts # , ua_pred
-
-    ua = comin.var_get(
+    _state.icon_var = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        ("u", 1),
+        (ICON_VARIABLE_NAME, DOMAIN_ID),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
 
 
-    ts = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        ("ts", 1),
-        comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
+@comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
+def setup_coupling():
+
+    step_len = str(int(comin.descrdata_get_timesteplength(1)))
+
+    # Derive nlev from the variable's memory layout: COMIN uses (nproma, nlev, nblk)
+    # for 3-D fields and (nproma, nblk) for surface fields.
+
+    _icon_arr = xp.asarray(_state.icon_var)
+    while _icon_arr.ndim > 3 and _icon_arr.shape[-1] == 1:
+        _icon_arr = _icon_arr[..., 0]
+    _state.var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
+
+    comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
+
+    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, _state.var_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, _state.var_nlev, step_len, TimeUnit.SECOND)
+
+    interp = InterpolationStack()
+    interp.add_nnn(NNNReductionType.AVG, n=1)
+
+    yac.def_couple(
+        "icon_r2b4_source", "icon_grid", "var_remap",
+        "healpix_target", "hp_level6_grid", "var_target",
+        step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
     )
-
-
-    # this is to save the prediction to icon, but writing a PyTorch tensor back to the
-    # ICON buffer (with halo re-insertion) is non-trivial,
-    # ua_pred = comin.var_get(
-    #     [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-    #     ("ua_pred", 1),
-    #     comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
-    # )
-
-    if has_gpu:
-        _init_hpx_regridding()
-
-
-def all_local_data(data_array):
-    """Extract all local cells (interior + halo) preserving the level dimension.
-
-    Input shape : (nproma, nlev, nblk) or (nproma, nlev, nblk, 1, 1, ...)
-    Returns     : data (n_local_cells, nlev)   — includes halo cells as donors
-    """
-    nc = domain.cells.ncells
-    data_xp = xp.asarray(data_array)
-    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
-        data_xp = data_xp[..., 0]
-    if data_xp.ndim == 2:
-        return data_xp.ravel(order="F")[:nc]
-    nlev = data_xp.shape[1]
-    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]  # (nc, nlev)
-
-
-def regrid_to_healpix(data_array) -> torch.Tensor:
-    """Regrid ICON cells to owned HEALPix pixels.
-
-    Returns: (n_owned, nlev) float32 tensor on CUDA, or None if not initialised.
-    """
-    if _hpx_regridder is None or _n_owned_pixels == 0:
-        return None
-    cells = all_local_data(data_array)  # (nc, nlev), cupy on GPU
-    cells_t = tdlpack.from_dlpack(cells).float()  # (nc, nlev) torch CUDA tensor
-    # Regridder.forward expects (*, n_src) → produces (*, n_dest)
-    owned = _hpx_regridder(cells_t.T)  # (nlev, nc) → (nlev, n_owned)
-    return owned.T.contiguous()  # (n_owned, nlev)
-
-
-def to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
-    """Reshape (n_owned, nlev) → (faces_per_rank, nlev, nside, nside).
-
-    In NEST ordering each face's nside² pixels are stored contiguously and
-    follow a Z-curve that maps exactly to a 2D (nside, nside) spatial grid,
-    giving a proper image tensor that Conv2d can exploit.
-    """
-    nside = 2**HPX_LEVEL  # 64 for level 6
-    n_owned, nlev = owned_vals.shape
-    faces = n_owned // (nside * nside)  # = faces_per_rank
-    # (n_owned, nlev) → (faces, nside, nside, nlev) → (faces, nlev, nside, nside)
-    return (
-        owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
-    )
-
-
-def to_torch_tensor(arr) -> torch.Tensor:
-    """Convert a CuPy (or DLPack-compatible) array to a PyTorch CUDA tensor."""
-    tensor = tdlpack.from_dlpack(arr)  # zero-copy via DLPack
-    comin.print_info(
-        f"[rank={rank}] to_torch_tensor: shape={tensor.shape}, dtype={tensor.dtype}"
-    )
-    return tensor.float()  # ensure float32 for the MLP
-
-
-def process_step(
-    mode,
-    predicting=False,
-    _pending_example=None,
-    _model=None,
-    _optimizer=None,
-    model_input=None,
-    current_step=0,
-):
-    """Utility to run the training callback logic for a single step, with options to enable/disable stages.
-
-    Parameters
-    ----------
-    model_input : ModelInput | None
-        Current-step ua snapshot with calendar context.  Required in all modes
-        except "waiting".
-    """
-
-    if mode == "waiting":
-        comin.print_info(
-            f"[rank={rank}] step={current_step}, waiting "
-            f"(due at step={_pending_example.due_step}, horizon={_pending_example.horizon})"
-        )
-        return _pending_example, _model, _optimizer
-
-    if mode == "initial" and _pending_example is None:
-        # Symmetric design: model maps (ua+cal) → (ua+cal), in_channels = out_channels = nlev+4C
-        nlev = model_input.ua_hp.shape[1]
-        in_channels = out_channels = nlev + 4 * CALENDAR_EMBED_CHANNELS
-        _model, _optimizer = _init_model_and_optimizer(
-            in_channels=in_channels, out_channels=out_channels
-        )
-        comin.print_info(
-            f"[rank={rank}] FaceCNN initialised, in_channels={in_channels}, out_channels={out_channels}"
-        )
-
-    if mode == "training" and _pending_example is not None:
-        # x = previous model output (nlev+4C) = cat(ua@t, cal@t) stored from prediction step
-        x_local = _pending_example.previous_pred  # (faces, nlev+4C, nside, nside)
-        # y = cat(ua@t+h, cal@t+h) — symmetric target
-        cal_y = _calendar_embedding(
-            model_input.day_of_year, model_input.second_of_day
-        )  # (faces, 4C, nside, nside)
-        y_local = torch.cat(
-            [model_input.ua_hp, cal_y], dim=1
-        )  # (faces, nlev+4C, nside, nside)
-        loss = _train_step(_model, _optimizer, x_local, y_local)
-        comin.print_info(f"trained horizon={_pending_example.horizon}, loss={loss:.6f}")
-
-    if predicting:
-        # horizon = _sample_horizon()
-        horizon = 30 # use a fixed horizon as an example
-        # x = cat(ua@t, cal@t) — (nlev+4C) input
-        cal_pred = _calendar_embedding(
-            model_input.day_of_year, model_input.second_of_day
-        )  # (faces, 4C, nside, nside)
-        x_enc = torch.cat(
-            [model_input.ua_hp, cal_pred], dim=1
-        )  # (faces, nlev+4C, nside, nside)
-        with torch.no_grad():
-            ua_predict = _model(x_enc)  # (faces, nlev+4C, nside, nside) — stores ua+cal
-
-        _pending_example = ForecastExample(
-            previous_pred=ua_predict,
-            horizon=horizon,
-            due_step=current_step + horizon,
-            day_of_year=model_input.day_of_year,
-            second_of_day=model_input.second_of_day,
-        )
-        comin.print_info(
-            f"enqueued horizon={horizon}, due_step={_pending_example.due_step}"
-        )
-
-    return _pending_example, _model, _optimizer
-
-
-# ---------------------------------------------------------------------------
-# training callbacks
-# ---------------------------------------------------------------------------
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    """Online training callback, called by ICON at every time step.
+    """Online FieldSpaceNN training callback called by ICON at each time step."""
 
-    Three modes, depending on the time step:
-    WAITING         – Between t and t+h, a prediction is in flight but not yet due;
-                    return immediately with zero GPU overhead.
-    INITIALIZING    – At step 0, no prediction is in flight; initialise the model
-                    later a prediction is made using the initialized parameters.
-    TRAINING        – When the current step matches the due step (t+h),
-                    train on the pair (previous_pred → encode(ua_current, h))
-
-    The PREDICTION stage runs at both step 0 (after INITIALIZING) and at due steps (after TRAINING).
-    PREDICTION      – After training (or initialisation at step 0), predict a new
-                    ua snapshot to be used as the "previous_pred" for a future step.
-    """
     if not has_gpu:
         return
 
-    global _current_step, _pending_example, _model, _optimizer
+    current_step = _state.current_step
+    _state.current_step += 1
 
-    current_step = _current_step
-    _current_step += 1
-
-    # ---- between step t and t+h, waiting ---------------------
-    if _pending_example is not None and _pending_example.due_step != current_step:
-        _, _, _ = process_step(
-            mode="waiting",
-            predicting=False,
-            _pending_example=_pending_example,
-            current_step=current_step,
-        )
-        return
-
-    # ---- data preparation --------
-    # only prepare data when needed
-    ua_hpx = regrid_to_healpix(ua)
-    if ua_hpx is None:
+    # Mode: Waiting; between t and t+horizon
+    if _state.pending_example is not None and current_step < _state.pending_example.due_step:
         comin.print_info(
-            f"[rank={rank}] HPX regrid not ready, skipping step {current_step}"
+            f"[rank={rank}] step={current_step} waiting "
+            f"horizon={_state.pending_example.horizon} "
+            f"(due={_state.pending_example.due_step})"
         )
         return
-    comin.print_info(
-        f"[rank={rank}] step={current_step} HPX output: shape={ua_hpx.shape}, dtype={ua_hpx.dtype}"
-    )
-    ua_local = to_hpx_faces(ua_hpx)  # (faces_per_rank, nlev, nside, nside)
-    comin.print_info(f"[rank={rank}] HPX faces: shape={ua_local.shape}")
 
-    # ---- build ModelInput (ua + calendar context) ----
-    _icon_time = _parse_icon_datetime(comin.current_get_datetime())
-    _day_of_yr, _sec_of_day = _get_calendar_inputs(_icon_time)
-    model_input = ModelInput(
-        ua_hp=ua_local,
-        day_of_year=_day_of_yr,
-        second_of_day=_sec_of_day,
-    )
-    comin.print_info(
-        f"[rank={rank}] ModelInput: day_of_year={model_input.day_of_year:.3f}, "
-        f"second_of_day={model_input.second_of_day:.1f}"
-    )
+    icon_cells = _extract_icon_cells(_state.icon_var)  # (ncells,) or (ncells, nlev)
 
-    # ---- step0: initializing and predicting --
-    if current_step == 0 and _pending_example is None:
-        _pending_example, _model, _optimizer = process_step(
-            mode="initial",
-            predicting=True,
-            model_input=model_input,
-            current_step=current_step,
-        )
+    # interpolation from native ICON grid to HEALPix using YAC
+    # currently YAC only supports numpy arrays, wait for update to support cupy arrays
+    icon_cells_np = icon_cells.get() if hasattr(icon_cells, 'get') else icon_cells
+    _state.hp_field_src.put(icon_cells_np)
+    var_hpx, info = _state.hp_field_tgt.get()
 
-    # ---- due step (t+h): training (previous model prediction -> encode(ua_current, h)) and predicting --
+    # Convert numpy/cupy array from YAC to a float32 GPU tensor of shape (n_pixels, nlev).
+    var_hpx_t = torch.as_tensor(xp.asarray(var_hpx), device="cuda").float()
+    if var_hpx_t.ndim == 1:
+        var_hpx_t = var_hpx_t.unsqueeze(-1)
+    elif var_hpx_t.ndim == 2:
+        # YAC returns (nlev, ncells); _to_hpx_faces expects (ncells, nlev)
+        var_hpx_t = var_hpx_t.T
+
+    ua_faces = _to_hpx_faces(var_hpx_t)
+    unix_seconds = _icon_time_unix_seconds()
+    trainer = _get_trainer(nlev=_state.var_nlev)
+    snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
+
+    horizon = _sample_horizon()
+
+    if _state.pending_example is None:
+        # First effective timestep: store source snapshot and wait for target.
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=horizon)
     else:
-        _pending_example, _model, _optimizer = process_step(
-            mode="training",
-            predicting=True,
-            _pending_example=_pending_example,
-            _model=_model,
-            _optimizer=_optimizer,
-            model_input=model_input,
-            current_step=current_step,
+        # Due step: train on (source, target) pair, then re-enqueue current as source.
+        result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
+        comin.print_info(
+            f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
         )
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=horizon)

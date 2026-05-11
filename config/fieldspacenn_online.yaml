@@ -1,0 +1,91 @@
+online:
+  hpx_level: 6
+  in_zooms: [3, 5, 6]
+  patch_zoom: 0
+  forecast_horizon_maxsteps: 30
+  variable:
+    icon_name: v
+    domain_id: 1
+
+ddp:
+  enabled: true
+  find_unused_parameters: true
+  wrap_single_process: false
+
+optimizer:
+  _target_: torch.optim.Adam
+  lr: 0.0002
+  weight_decay: 0.0
+
+sampling_zooms:
+  3: &sampling_zoom_defaults
+    n_past_ts: 0
+    n_future_ts: 0
+    zoom_patch_sample: ${online.patch_zoom}
+    mask_n_last_ts: 0
+  5: *sampling_zoom_defaults
+  6: *sampling_zoom_defaults
+
+loss:
+  zooms:
+    3: &mse_one
+      MSE_loss: 1
+    5: *mse_one
+    6: *mse_one
+
+embedding:
+  TimeEmbedder:
+    in_channels: 1
+    embed_dim: 64
+    shared: false
+    time_scales: [86400.0, 604800.0, 2629800.0, 31557600.0]
+    time_min: 1577836800.0  # 2020-01-01 UTC
+    time_max: 2524608000.0  # 2050-01-01 UTC
+    use_linear: false
+
+model:
+  _target_: fieldspacenn.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids:
+    _target_: fieldspacenn.src.modules.grids.grid_utils.healpix_grid_to_mgrid
+    zoom_max: ${online.hpx_level}
+  in_zooms: ${online.in_zooms}
+  in_features: 1
+  n_groups_variables: [1]
+  n_head_channels: 16
+  use_mask: false
+  layer_confs_emb:
+    aggregation: shift_scale
+  block_configs:
+    "0": &fsa_block
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5, 6]
+      kv_zooms: [3, 5, 6]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: 1
+      token_len_time: 1
+      token_overlap_space: false
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: null
+      rank_space: 16
+      rank_time: null
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
+      embed_confs: &shared_embed_confs
+        embed_names: ["TimeEmbedder"]
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: sum
+        token_overlap_space: false
+    "1":
+      <<: *fsa_block
+      embed_confs: *shared_embed_confs
+    "conservative":
+      _target_: fieldspacenn.src.modules.field_space.field_space_base.ConservativeLayerConfig
