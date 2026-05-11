@@ -2,7 +2,7 @@ online:
   hpx_level: 6
   in_zooms: [3, 5, 6]
   patch_zoom: 0
-  forecast_horizon_steps: 30
+  forecast_horizon_maxsteps: 30
   variable:
     icon_name: v
     domain_id: 1

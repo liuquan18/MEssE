@@ -45,7 +45,6 @@ class OnlineFaceCNNTrainer:
         from hydra.utils import instantiate
 
         self.nlev = int(nlev)
-        self.forecast_horizon_steps = int(cfg.online.forecast_horizon_steps)
         self.device = torch.device("cuda", 0) if device is None else device
         self.rank = rank
         self.log_fn = log_fn or (lambda msg: None)
@@ -54,7 +53,6 @@ class OnlineFaceCNNTrainer:
         self.optimizer = instantiate(cfg.optimizer, params=self.model.parameters())
         self.log_fn(
             f"[rank={rank}] FaceCNN initialized: nlev={nlev}, "
-            f"horizon={self.forecast_horizon_steps}"
         )
 
     @torch.no_grad()

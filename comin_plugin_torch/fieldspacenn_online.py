@@ -77,7 +77,6 @@ class OnlineFieldSpaceNNTrainer:
         self.in_zooms = [int(z) for z in cfg.online.in_zooms]
         self.max_zoom = max(self.in_zooms)
         self.patch_zoom = int(cfg.online.patch_zoom)
-        self.forecast_horizon_steps = int(cfg.online.forecast_horizon_steps)
         self.owned_face_ids = owned_face_ids.to(self.device, dtype=torch.long)
         self.encode_zooms = encode_zooms
         self._input_shape_logged = False

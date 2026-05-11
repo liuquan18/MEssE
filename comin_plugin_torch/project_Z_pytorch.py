@@ -43,7 +43,7 @@ _ONLINE_CFG = load_online_config()
 DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
 ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
 HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
-MAX_FORECAST_HORIZON =  30 # 40s per step * 30 steps = 20 mins
+MAX_FORECAST_HORIZON = int(_ONLINE_CFG.online.forecast_horizon_maxsteps)
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -124,11 +124,9 @@ else:
 # ----------------------------------------------------------------------------
 # yac setup (HEALPix interpolation)
 # ----------------------------------------------------------------------------
-glob = comin.descrdata_get_global()
 domain = comin.descrdata_get_domain(DOMAIN_ID)
 
 assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
- 
 yac = YAC.from_id(glob.yac_instance_id)
 source_comp = yac.predef_comp("icon_r2b4_source")
 
@@ -249,13 +247,11 @@ class _State:
         "current_step",
         "pending_example",
         "trainer",
-        "icon_var", 
-        "hp_var", 
+        "icon_var",
         "hp_field_src",
         "hp_field_tgt",
         "var_nlev",
         "owned_face_ids",
-        "horizon",
     )
 
     def __init__(self) -> None:
@@ -263,19 +259,16 @@ class _State:
         self.pending_example: Optional["ForecastExample"] = None
         self.trainer: Optional[OnlineFieldSpaceNNTrainer] = None
         self.icon_var = None  # COMIN variable handle, set in sec_ctor
-        self.hp_var = None  # Regridded variable on the HEALPix grid, set in training callback
         self.hp_field_src: Optional[Field] = None  # YAC field on the ICON grid
         self.hp_field_tgt: Optional[Field] = None  # YAC field on the HEALPix grid
         self.var_nlev: Optional[int] = None  # Number of vertical levels in the ICON variable
         self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
-        self.horizon: Optional[int] = None  # steps to skip for forecasting, yac timestep length is derived from ICON timestep length and this horizon
 
 
 _state = _State()
 
 if has_gpu:
-    _nside = 2**HPX_LEVEL
-    _pixels_per_face = _nside * _nside
+    _pixels_per_face = nside * nside
     _state.owned_face_ids = torch.arange(
         start_idx // _pixels_per_face,
         end_idx // _pixels_per_face,
@@ -290,7 +283,6 @@ class ForecastExample:
     source_snapshot: FieldSpaceNNSnapshot
     horizon: int
     due_step: int
-    source_unix_seconds: float
 
 
 # ----------------------------------------------------------------------------
@@ -356,7 +348,7 @@ def _sample_horizon() -> int:
 def _enqueue_snapshot(
     snapshot: FieldSpaceNNSnapshot,
     current_step: int,
-    horizon: Optional[int] = None,
+    horizon: int,
 ) -> ForecastExample:
     due_step = current_step + horizon
     comin.print_info(
@@ -366,7 +358,6 @@ def _enqueue_snapshot(
         source_snapshot=snapshot,
         horizon=horizon,
         due_step=due_step,
-        source_unix_seconds=snapshot.unix_seconds,
     )
 
 
@@ -386,8 +377,7 @@ def sec_ctor():
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
 def setup_coupling():
 
-    step_len_seconds = str(int(comin.descrdata_get_timesteplength(1)))
-    step_len = step_len_seconds
+    step_len = str(int(comin.descrdata_get_timesteplength(1)))
 
     # Derive nlev from the variable's memory layout: COMIN uses (nproma, nlev, nblk)
     # for 3-D fields and (nproma, nblk) for surface fields.
@@ -412,11 +402,9 @@ def setup_coupling():
     )
 
 
-
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online FieldSpaceNN training callback called by ICON at each time step."""
-
 
     if not has_gpu:
         return
@@ -428,11 +416,10 @@ def training():
     if _state.pending_example is not None and current_step < _state.pending_example.due_step:
         comin.print_info(
             f"[rank={rank}] step={current_step} waiting "
-            f" horizon={_state.pending_example.horizon}"
+            f"horizon={_state.pending_example.horizon} "
             f"(due={_state.pending_example.due_step})"
         )
         return
-
 
     icon_cells = _extract_icon_cells(_state.icon_var)  # (ncells,) or (ncells, nlev)
 
@@ -450,22 +437,20 @@ def training():
         # YAC returns (nlev, ncells); _to_hpx_faces expects (ncells, nlev)
         var_hpx_t = var_hpx_t.T
 
-
     ua_faces = _to_hpx_faces(var_hpx_t)
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev)
     snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
 
-    _state.horizon = _sample_horizon() #  steps
+    horizon = _sample_horizon()
 
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=_state.horizon)
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=horizon)
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
         result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
         comin.print_info(
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
-            f"horizon={_state.pending_example.horizon}"
         )
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=_state.horizon)
+        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=horizon)
