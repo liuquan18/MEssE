@@ -141,6 +141,9 @@ make -j $(nproc)
 make install
 popd
 
+pushd $ICON_BUILD_DIR
+./make_runscripts --all
+popd
 
 echo "Setup complete."
 echo "The python environment is here: $PY_ENV_DIR"
