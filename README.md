@@ -1,5 +1,5 @@
 # Model Essence Extractor (MEssE)
-High-frequency output for km-scale simulations is too big to be stored, but AI emulators precisely rely on these data for training. To address this dilemma, we introduce MEssE --- a framework that trians a surrogate AI model during ICON simulations using in-memory data. 
+High-frequency output for km-scale simulations is too big to be stored, but AI emulators precisely rely on these data for training. To address this dilemma, we introduce MEssE --- a framework that trians a surrogate AI model online during ICON simulations using in-memory data. 
 
 # Structure
 ```text
