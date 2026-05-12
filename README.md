@@ -20,8 +20,6 @@ High-frequency output for km-scale simulations is too big to be stored, but AI e
 ## Build
 
 Prepare environment using `./scripts/build_env_gpu.sh ${desired_path}`
-On successful completion of the script, a py_venv is created under `${desired_path}/messe_env/py_env`,
-and ICON is built in `${desired_path}/messe_env/build_dir/icon-model`
 
 To use the FieldSpace NN, We suggest to go to the root folder which include `MEssE`, git clone the project (more info [here](https://github.com/FREVA-CLINT/FieldSpaceNN))
 ```bash
@@ -33,11 +31,10 @@ pip install -e .
 ## Run
 Run ICON with the plugin like so: `./scripts/run_icon_gpu.sh $ICON_BUILD_DIR $COMIN_PLUGIN_PATH $LEVANTE_ACCOUNT`
 
-```bash
-`ICON_BUILD_DIR` can be found under `${desired_path}/build_dir`
-`COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin_pytorch/project_Z_pytorch.py`
-`LEVANTE_ACCOUNT` is your levante project id
-```
+
+> `ICON_BUILD_DIR` is `${desired_path}/messe_env/build_dir/icon-model`  
+> `COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin_pytorch/project_Z_pytorch.py`  
+> `LEVANTE_ACCOUNT` is your levante project id
 
 ## Online interface (unavailable for now)
 
