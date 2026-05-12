@@ -31,7 +31,8 @@ if [[ ! -f "$COMIN_PLUGIN_SCRIPT" ]]; then
     exit 1
 fi
 
-# ICON_RUN_SCRIPT="${ICON_BUILD_DIR}/run/exp.atm_tracer_Hadley_comin_portability.run"
+# copy the runscript to icon build run
+cp exp.aes_amip_messe_test.run "$ICON_BUILD_DIR/run/"
 ICON_RUN_SCRIPT="${ICON_BUILD_DIR}/run/exp.aes_amip_messe_test.run"
 
 if [[ ! -f "$ICON_RUN_SCRIPT" ]]; then
