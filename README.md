@@ -5,7 +5,7 @@ High-frequency output for km-scale simulations is too big to be stored, but AI e
 ```text
 .
 ├── comin_plugin_JAX                    # project in JAX *under development*
-├── comin_plugin_Pytorch                # in Pytorch 
+├── comin_plugin_torch                # in Pytorch 
 │   ├── facecnn_online.py               # simple example of CNN using HEALPix grid to test
 │   ├── fieldspacenn_online.py          # configuration of [FieldSpaceNN](https://github.com/FREVA-CLINT/FieldSpaceNN) ready for online training
 │   └── project_Z_pytorch.py            # data preparation and online training
