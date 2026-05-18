@@ -13,7 +13,8 @@ High-frequency output for km-scale simulations is too big to be stored, but AI e
 └── scripts                             # scripts 
     ├── build_env_gpu.sh                # building ICON, ComIn, YAC and preparing python env
     ├── run_icon_gpu.sh                 # running ICON with GPU
-    └── exp.aes_amip_messe_test.run     # prepared running scripts 
+    ├── exp.aes_amip_messe_test         # source experiment template for `make_runscripts`
+    └── exp.aes_amip_messe_test.run     # prepared running script 
 ```
 # Workflow
 
