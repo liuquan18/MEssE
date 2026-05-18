@@ -39,11 +39,20 @@ from fieldspacenn_online import (
 )
 
 
+def _resolve_experiments_dir() -> str:
+    """Resolve experiments directory from the ICON run working directory."""
+    return os.path.abspath(os.path.join(os.getcwd(), "..", "experiments"))
+
+
 _ONLINE_CFG = load_online_config()
 DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
 ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
 HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
 MAX_FORECAST_HORIZON = int(_ONLINE_CFG.online.forecast_horizon_maxsteps)
+EXPERIMENTS_DIR = _resolve_experiments_dir()
+SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
+os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
+CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspacenn_online.pt")
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
