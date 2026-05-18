@@ -4,7 +4,7 @@ online:
   patch_zoom: 0
   forecast_horizon_maxsteps: 30
   variable:
-    icon_name: v
+    icon_name: u
     domain_id: 1
 
 ddp:

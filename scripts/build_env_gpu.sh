@@ -15,9 +15,15 @@ if [[ $# -ne 1 ]]; then
 fi
 
 INPUT="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MESSE_EXP_TEMPLATE="${SCRIPT_DIR}/exp.aes_amip_messe_test"
 # check directory exists
 if [[ ! -d "$INPUT" ]]; then
     echo "Error: directory does not exist: $INPUT" >&2
+    exit 1
+fi
+if [[ ! -f "$MESSE_EXP_TEMPLATE" ]]; then
+    echo "Error: missing template file: $MESSE_EXP_TEMPLATE" >&2
     exit 1
 fi
 
@@ -73,6 +79,7 @@ printf '{ yac_*; };\n' > yac_export.list
 sed -i "s|^LDFLAGS=.*|& -Wl,--dynamic-list=$(pwd)/yac_export.list|" icon.mk
 
 make -j $(nproc)
+cp "$MESSE_EXP_TEMPLATE" "$ICON_BUILD_DIR/run/exp.aes_amip_messe_test"
 ./make_runscripts --all
 
 popd
@@ -142,6 +149,7 @@ make install
 popd
 
 pushd $ICON_BUILD_DIR
+cp "$MESSE_EXP_TEMPLATE" "$ICON_BUILD_DIR/run/exp.aes_amip_messe_test"
 ./make_runscripts --all
 popd
 
