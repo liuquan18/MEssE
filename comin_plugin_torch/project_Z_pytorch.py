@@ -261,6 +261,7 @@ class _State:
         "hp_field_tgt",
         "var_nlev",
         "owned_face_ids",
+        "step_len_seconds",
     )
 
     def __init__(self) -> None:
@@ -272,6 +273,7 @@ class _State:
         self.hp_field_tgt: Optional[Field] = None  # YAC field on the HEALPix grid
         self.var_nlev: Optional[int] = None  # Number of vertical levels in the ICON variable
         self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
+        self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
 
 
 _state = _State()
@@ -337,6 +339,18 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
         f"[rank={rank}] FieldSpaceNN trainer initialized: "
         f"zooms={_state.trainer.in_zooms}, "
     )
+    if os.path.exists(CHECKPOINT_PATH):
+        ckpt = torch.load(
+            CHECKPOINT_PATH,
+            map_location=_state.trainer.device,
+            weights_only=False,
+        )
+        _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
+        _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        comin.print_info(
+            f"[rank={rank}] Loaded checkpoint from {CHECKPOINT_PATH} "
+            f"(step={ckpt.get('step', 'unknown')})"
+        )
     return _state.trainer
 
 
@@ -371,6 +385,37 @@ def _enqueue_snapshot(
 
 
 # ----------------------------------------------------------------------------
+# Checkpoint helpers
+# ----------------------------------------------------------------------------
+
+_SAVE_INTERVAL_SECONDS: int = 86400  # P1D — match atm_output_interval in the run script
+
+
+def _save_checkpoint(trainer: OnlineFieldSpaceNNTrainer, step: int) -> None:
+    """Save model + optimizer state to CHECKPOINT_PATH.
+
+    Only compute rank 0 writes to avoid concurrent writes on the shared filesystem.
+    All other GPU ranks return immediately.
+    """
+    if compute_rank != 0:
+        return
+    # Write to a temporary file first, then rename for an atomic replace.
+    tmp_path = CHECKPOINT_PATH + ".tmp"
+    torch.save(
+        {
+            "model_state_dict": trainer.model.state_dict(),
+            "optimizer_state_dict": trainer.optimizer.state_dict(),
+            "step": step,
+        },
+        tmp_path,
+    )
+    os.replace(tmp_path, CHECKPOINT_PATH)
+    comin.print_info(
+        f"[rank={rank}] Checkpoint saved at step={step} → {CHECKPOINT_PATH}"
+    )
+
+
+# ----------------------------------------------------------------------------
 # COMIN callbacks
 # ----------------------------------------------------------------------------
 
@@ -387,6 +432,7 @@ def sec_ctor():
 def setup_coupling():
 
     step_len = str(int(comin.descrdata_get_timesteplength(1)))
+    _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
 
     # Derive nlev from the variable's memory layout: COMIN uses (nproma, nlev, nblk)
     # for 3-D fields and (nproma, nblk) for surface fields.
@@ -420,6 +466,16 @@ def training():
 
     current_step = _state.current_step
     _state.current_step += 1
+
+    # Periodic checkpoint save — independent of training/waiting state.
+    if (
+        _state.trainer is not None
+        and _state.step_len_seconds is not None
+        and current_step > 0
+    ):
+        steps_per_save = max(1, _SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
+        if current_step % steps_per_save == 0:
+            _save_checkpoint(_state.trainer, current_step)
 
     # Mode: Waiting; between t and t+horizon
     if _state.pending_example is not None and current_step < _state.pending_example.due_step:
