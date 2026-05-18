@@ -129,9 +129,9 @@ fi
 # output intervals
 # ---------------------
 
-atm_output_interval_2d="PT40S"
-atm_output_interval_3d="PT40S"
-atm_file_interval="PT40S"
+atm_output_interval_2d="P1D"
+atm_output_interval_3d="P1D"
+atm_file_interval="P1M"
 
 # output file selection
 # ---------------------
