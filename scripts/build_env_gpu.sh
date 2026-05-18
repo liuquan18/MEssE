@@ -116,6 +116,7 @@ $YAXT_SRC_DIR/configure \
     CC=${YAC_CC} \
     FC=${YAC_FC} \
     --disable-mpi-checks \
+    --without-regard-for-quality \
     --disable-silent-rules \
     --prefix=$YAXT_INST_DIR
 make -j $(nproc)
