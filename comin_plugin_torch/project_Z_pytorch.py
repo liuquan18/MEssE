@@ -39,20 +39,17 @@ from fieldspacenn_online import (
 )
 
 
-def _resolve_experiments_dir() -> str:
-    """Resolve experiments directory from the ICON run working directory."""
-    return os.path.abspath(os.path.join(os.getcwd(), "..", "experiments"))
-
-
 _ONLINE_CFG = load_online_config()
 DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
 ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
+FORCING_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.forcing_name)
 HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
 MAX_FORECAST_HORIZON = int(_ONLINE_CFG.online.forecast_horizon_maxsteps)
-EXPERIMENTS_DIR = _resolve_experiments_dir()
+EXPERIMENTS_DIR = os.path.abspath(os.path.join(os.getcwd(), "..", "experiments"))
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspacenn_online.pt")
+SAVE_INTERVAL_SECONDS: int = 86400  # P1D — save the model the same frequency as icon output
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -257,8 +254,11 @@ class _State:
         "pending_example",
         "trainer",
         "icon_var",
+        "icon_forcing",
         "hp_field_src",
         "hp_field_tgt",
+        "hp_forcing_src",
+        "hp_forcing_tgt",
         "var_nlev",
         "owned_face_ids",
         "step_len_seconds",
@@ -268,10 +268,13 @@ class _State:
         self.current_step: int = 0
         self.pending_example: Optional["ForecastExample"] = None
         self.trainer: Optional[OnlineFieldSpaceNNTrainer] = None
-        self.icon_var = None  # COMIN variable handle, set in sec_ctor
-        self.hp_field_src: Optional[Field] = None  # YAC field on the ICON grid
-        self.hp_field_tgt: Optional[Field] = None  # YAC field on the HEALPix grid
-        self.var_nlev: Optional[int] = None  # Number of vertical levels in the ICON variable
+        self.icon_var = None       # COMIN variable handle for ua, set in sec_ctor
+        self.icon_forcing = None   # COMIN variable handle for ts forcing, set in sec_ctor
+        self.hp_field_src: Optional[Field] = None   # YAC field for ua on ICON grid
+        self.hp_field_tgt: Optional[Field] = None   # YAC field for ua on HEALPix grid
+        self.hp_forcing_src: Optional[Field] = None  # YAC field for forcing on ICON grid
+        self.hp_forcing_tgt: Optional[Field] = None  # YAC field for forcing on HEALPix grid
+        self.var_nlev: Optional[int] = None  # Combined nlev (ua + forcing), set in setup_coupling
         self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
         self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
 
@@ -356,10 +359,7 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
 
 def _sample_horizon() -> int:
     """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON].
-
-    The horizon is sampled on compute rank 0 and broadcast to all other
-    compute ranks so that every GPU rank uses the same due_step — required
-    for DDP ALLREDUCE to complete without deadlock.
+    Only compute rank 0 samples the horizon, then broadcast to all ranks
     """
     horizon_t = torch.zeros(1, dtype=torch.int64, device="cuda")
     if compute_rank == 0:
@@ -387,8 +387,6 @@ def _enqueue_snapshot(
 # ----------------------------------------------------------------------------
 # Checkpoint helpers
 # ----------------------------------------------------------------------------
-
-_SAVE_INTERVAL_SECONDS: int = 86400  # P1D — match atm_output_interval in the run script
 
 
 def _save_checkpoint(trainer: OnlineFieldSpaceNNTrainer, step: int) -> None:
@@ -421,9 +419,17 @@ def _save_checkpoint(trainer: OnlineFieldSpaceNNTrainer, step: int) -> None:
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
+    # the variable
     _state.icon_var = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         (ICON_VARIABLE_NAME, DOMAIN_ID),
+        comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
+    )
+
+    # forcing (sst, but use ts here)
+    _state.icon_forcing = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
+        (FORCING_VARIABLE_NAME, DOMAIN_ID),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
 
@@ -434,18 +440,30 @@ def setup_coupling():
     step_len = str(int(comin.descrdata_get_timesteplength(1)))
     _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
 
-    # Derive nlev from the variable's memory layout: COMIN uses (nproma, nlev, nblk)
+    # Derive nlev from each variable's memory layout: COMIN uses (nproma, nlev, nblk)
     # for 3-D fields and (nproma, nblk) for surface fields.
 
     _icon_arr = xp.asarray(_state.icon_var)
     while _icon_arr.ndim > 3 and _icon_arr.shape[-1] == 1:
         _icon_arr = _icon_arr[..., 0]
-    _state.var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
+    var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
+
+    _forcing_arr = xp.asarray(_state.icon_forcing)
+    while _forcing_arr.ndim > 3 and _forcing_arr.shape[-1] == 1:
+        _forcing_arr = _forcing_arr[..., 0]
+    forcing_nlev = int(_forcing_arr.shape[1]) if _forcing_arr.ndim >= 3 else 1
+
+    # Store combined depth for trainer initialization
+    _state.var_nlev = var_nlev + forcing_nlev
 
     comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
+    comin.print_info(f"[rank={rank}] ua nlev={var_nlev}, forcing nlev={forcing_nlev}, combined={_state.var_nlev}")
 
-    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, _state.var_nlev, step_len, TimeUnit.SECOND)
-    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, _state.var_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, var_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND)
+
+    _state.hp_forcing_src = Field.create("forcing_remap", source_comp, icon_cell_centers, forcing_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_forcing_tgt = Field.create("forcing_target", target_comp, hp_points, forcing_nlev, step_len, TimeUnit.SECOND)
 
     interp = InterpolationStack()
     interp.add_nnn(NNNReductionType.AVG, n=1)
@@ -453,6 +471,11 @@ def setup_coupling():
     yac.def_couple(
         "icon_r2b4_source", "icon_grid", "var_remap",
         "healpix_target", "hp_level6_grid", "var_target",
+        step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
+    )
+    yac.def_couple(
+        "icon_r2b4_source", "icon_grid", "forcing_remap",
+        "healpix_target", "hp_level6_grid", "forcing_target",
         step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
     )
 
@@ -473,7 +496,7 @@ def training():
         and _state.step_len_seconds is not None
         and current_step > 0
     ):
-        steps_per_save = max(1, _SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
+        steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
         if current_step % steps_per_save == 0:
             _save_checkpoint(_state.trainer, current_step)
 
@@ -486,23 +509,36 @@ def training():
         )
         return
 
-    icon_cells = _extract_icon_cells(_state.icon_var)  # (ncells,) or (ncells, nlev)
+    icon_var_cells = _extract_icon_cells(_state.icon_var)       # (ncells, nlev_ua)
+    icon_forcing_cells = _extract_icon_cells(_state.icon_forcing)  # (ncells,) or (ncells, 1)
 
-    # interpolation from native ICON grid to HEALPix using YAC
+    # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
-    icon_cells_np = icon_cells.get() if hasattr(icon_cells, 'get') else icon_cells
-    _state.hp_field_src.put(icon_cells_np)
+    icon_var_cells_np = icon_var_cells.get() if hasattr(icon_var_cells, 'get') else icon_var_cells
+    icon_forcing_cells_np = icon_forcing_cells.get() if hasattr(icon_forcing_cells, 'get') else icon_forcing_cells
+    _state.hp_field_src.put(icon_var_cells_np)
+    _state.hp_forcing_src.put(icon_forcing_cells_np)
     var_hpx, info = _state.hp_field_tgt.get()
+    forcing_hpx, _ = _state.hp_forcing_tgt.get()
 
-    # Convert numpy/cupy array from YAC to a float32 GPU tensor of shape (n_pixels, nlev).
+    # Convert numpy/cupy arrays from YAC to float32 GPU tensors of shape (n_pixels, nlev).
+    # YAC returns (nlev, ncells) for multi-level fields and (ncells,) for single-level.
     var_hpx_t = torch.as_tensor(xp.asarray(var_hpx), device="cuda").float()
     if var_hpx_t.ndim == 1:
         var_hpx_t = var_hpx_t.unsqueeze(-1)
     elif var_hpx_t.ndim == 2:
-        # YAC returns (nlev, ncells); _to_hpx_faces expects (ncells, nlev)
-        var_hpx_t = var_hpx_t.T
+        var_hpx_t = var_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
 
-    ua_faces = _to_hpx_faces(var_hpx_t)
+    forcing_hpx_t = torch.as_tensor(xp.asarray(forcing_hpx), device="cuda").float()
+    if forcing_hpx_t.ndim == 1:
+        forcing_hpx_t = forcing_hpx_t.unsqueeze(-1)
+    elif forcing_hpx_t.ndim == 2:
+        forcing_hpx_t = forcing_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
+
+    # Concatenate ua and forcing along the level dimension: (ncells, nlev_ua + forcing_nlev)
+    combined_hpx_t = torch.cat([var_hpx_t, forcing_hpx_t], dim=1)
+
+    ua_faces = _to_hpx_faces(combined_hpx_t)
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev)
     snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
