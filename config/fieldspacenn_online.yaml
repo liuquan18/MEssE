@@ -4,7 +4,7 @@ online:
   patch_zoom: 0
   forecast_horizon_maxsteps: 30
   variable:
-    icon_name: u
+    icon_name: ua
     forcing_name: ts_wtr # pre-sliced 2D field
     domain_id: 1
 
