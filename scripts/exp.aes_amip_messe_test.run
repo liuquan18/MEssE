@@ -5,17 +5,17 @@
 # --------------------------------
 #SBATCH --account=mh0033
 
-#SBATCH --job-name=exp.aes_amip_test.run
+#SBATCH --job-name=exp.aes_amip_messe_test.run
 #SBATCH --partition=gpu
 #SBATCH --chdir=/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/./run
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=0
-#SBATCH --output=/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/./run/LOG.exp.aes_amip_test.run.%j.o
-#SBATCH --error=/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/./run/LOG.exp.aes_amip_test.run.%j.o
+#SBATCH --output=/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/./run/LOG.exp.aes_amip_messe_test.run.%j.o
+#SBATCH --error=/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/./run/LOG.exp.aes_amip_messe_test.run.%j.o
 #SBATCH --exclusive
-#SBATCH --time=00:30:00
-#SBATCH --constraint=a100_80
+#SBATCH --time=00:10:00
+#SBATCH --constraint=a100_40
 
 #-----------------------------------------------------------------------------
 set +x
@@ -122,7 +122,7 @@ set | grep SLURM
 # how to submit the next job
 # --------------------------
 submit="sbatch -N ${SLURM_JOB_NUM_NODES:-1}"
-job_name="exp.aes_amip_test.run"
+job_name="exp.aes_amip_messe_test.run"
 
 # cdo for post-processing
 # -----------------------
