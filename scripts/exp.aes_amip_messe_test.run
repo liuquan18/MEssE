@@ -15,7 +15,7 @@
 #SBATCH --error=/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/./run/LOG.exp.aes_amip_messe_test.run.%j.o
 #SBATCH --exclusive
 #SBATCH --time=00:10:00
-#SBATCH --constraint=a100_40
+#SBATCH --constraint=a100_80
 
 #-----------------------------------------------------------------------------
 set +x
