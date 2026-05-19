@@ -5,6 +5,7 @@ online:
   forecast_horizon_maxsteps: 30
   variable:
     icon_name: u
+    forcing_name: ts_wtr # pre-sliced 2D field
     domain_id: 1
 
 ddp:
