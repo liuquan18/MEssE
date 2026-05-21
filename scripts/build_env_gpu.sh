@@ -116,6 +116,7 @@ $YAXT_SRC_DIR/configure \
     CC=${YAC_CC} \
     FC=${YAC_FC} \
     --disable-mpi-checks \
+    --without-regard-for-quality \
     --disable-silent-rules \
     --prefix=$YAXT_INST_DIR
 make -j $(nproc)
@@ -141,7 +142,10 @@ make -j $(nproc)
 make install
 popd
 
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pushd $ICON_BUILD_DIR
+# copy the exp.aes_amip_messe_test from scripts to the icon build run directory
+cp "$SCRIPTS_DIR/exp.aes_amip_messe_test" ./run/
 ./make_runscripts --all
 popd
 
