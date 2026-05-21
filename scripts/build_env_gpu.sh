@@ -146,7 +146,7 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pushd $ICON_BUILD_DIR
 # copy the exp.aes_amip_messe_test from scripts to the icon build run directory
 cp "$SCRIPTS_DIR/exp.aes_amip_messe_test" ./run/
-./make_runscripts aes_amip_messe_test -r run
+./make_runscripts --all
 popd
 
 echo "Setup complete."
