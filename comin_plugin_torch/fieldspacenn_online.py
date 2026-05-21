@@ -2,7 +2,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import torch
 import torch.distributed as dist
@@ -42,9 +42,9 @@ def load_online_config():
 
 @dataclass
 class FieldSpaceNNSnapshot:
-    x_zooms: Dict[int, torch.Tensor]
-    mask_zooms: Dict[int, torch.Tensor]
-    emb_group: Dict[str, Any]
+    x_zooms_groups: List[Dict[int, torch.Tensor]]
+    mask_zooms_groups: List[Dict[int, torch.Tensor]]
+    emb_groups: List[Dict[str, Any]]
     sample_configs: Dict[int, Dict[str, Any]]
     unix_seconds: float
 
@@ -56,7 +56,7 @@ class OnlineFieldSpaceNNTrainer:
         self,
         cfg: Any,
         owned_face_ids: torch.Tensor,
-        nlev: int,
+        nlev_groups: List[int],
         device: Optional[torch.device] = None,
         use_ddp: Optional[bool] = None,
         log_fn: Optional[Callable[[str], None]] = None,
@@ -72,7 +72,7 @@ class OnlineFieldSpaceNNTrainer:
         self.device = torch.device("cuda", 0) if device is None else device
         self.rank = rank
         self.log_fn = log_fn or (lambda msg: None)
-        self.nlev = int(nlev)
+        self.nlev_groups = [int(n) for n in nlev_groups]
         self.hpx_level = int(cfg.online.hpx_level)
         self.in_zooms = [int(z) for z in cfg.online.in_zooms]
         self.max_zoom = max(self.in_zooms)
@@ -182,34 +182,45 @@ class OnlineFieldSpaceNNTrainer:
 
     @torch.no_grad()
     def prepare_snapshot(
-        self, ua_faces: torch.Tensor, unix_seconds: float
+        self, faces_list: List[torch.Tensor], unix_seconds: float
     ) -> FieldSpaceNNSnapshot:
-        ua_faces = ua_faces.to(self.device, dtype=torch.float32, non_blocking=True)
-        max_zoom_tensor = self._faces_to_max_zoom_tensor(ua_faces)
-
-        x_zooms = {
-            zoom: self._rescale_zoom(max_zoom_tensor, self.max_zoom, zoom).contiguous()
-            for zoom in self.in_zooms
-        }
         sample_configs = self._sample_configs_with_patch_index()
         patch_index_zooms = {zoom: self.owned_face_ids for zoom in self.in_zooms}
-        x_zooms = self.encode_zooms(x_zooms, sample_configs, patch_index_zooms)
-        x_zooms = {zoom: t.detach().contiguous() for zoom, t in x_zooms.items()}
-        mask_zooms = {
-            zoom: torch.zeros_like(t, dtype=torch.bool) for zoom, t in x_zooms.items()
-        }
+
+        x_zooms_groups = []
+        mask_zooms_groups = []
+        emb_groups = []
+
+        for ua_faces in faces_list:
+            ua_faces = ua_faces.to(self.device, dtype=torch.float32, non_blocking=True)
+            max_zoom_tensor = self._faces_to_max_zoom_tensor(ua_faces)
+
+            x_zooms = {
+                zoom: self._rescale_zoom(max_zoom_tensor, self.max_zoom, zoom).contiguous()
+                for zoom in self.in_zooms
+            }
+            x_zooms = self.encode_zooms(x_zooms, sample_configs, patch_index_zooms)
+            x_zooms = {zoom: t.detach().contiguous() for zoom, t in x_zooms.items()}
+            mask_zooms = {
+                zoom: torch.zeros_like(t, dtype=torch.bool) for zoom, t in x_zooms.items()
+            }
+
+            x_zooms_groups.append(x_zooms)
+            mask_zooms_groups.append(mask_zooms)
+            emb_groups.append(self._make_embeddings(unix_seconds))
 
         if not self._input_shape_logged:
-            shapes = ", ".join(
-                f"z{z}={tuple(x_zooms[z].shape)}" for z in sorted(x_zooms)
-            )
-            self.log_fn(f"[rank={self.rank}] FieldSpaceNN input shapes: {shapes}")
+            for g, xz in enumerate(x_zooms_groups):
+                shapes = ", ".join(
+                    f"z{z}={tuple(xz[z].shape)}" for z in sorted(xz)
+                )
+                self.log_fn(f"[rank={self.rank}] Group {g} input shapes: {shapes}")
             self._input_shape_logged = True
 
         return FieldSpaceNNSnapshot(
-            x_zooms=x_zooms,
-            mask_zooms=mask_zooms,
-            emb_group=self._make_embeddings(unix_seconds),
+            x_zooms_groups=x_zooms_groups,
+            mask_zooms_groups=mask_zooms_groups,
+            emb_groups=emb_groups,
             sample_configs=sample_configs,
             unix_seconds=float(unix_seconds),
         )
@@ -221,19 +232,29 @@ class OnlineFieldSpaceNNTrainer:
         self.optimizer.zero_grad(set_to_none=True)
 
         outputs = self.forward_model(
-            x_zooms_groups=[source.x_zooms],
-            mask_zooms_groups=[source.mask_zooms],
-            emb_groups=[target.emb_group],
+            x_zooms_groups=source.x_zooms_groups,
+            mask_zooms_groups=source.mask_zooms_groups,
+            emb_groups=target.emb_groups,
             sample_configs=target.sample_configs,
         )
-        loss, loss_dict = self.criterion(
-            outputs[0],
-            target.x_zooms,
-            mask=source.mask_zooms,
-            sample_configs=target.sample_configs,
-            prefix="train/",
-            emb=target.emb_group,
-        )
+
+        losses = []
+        total_loss_dict = {}
+        for i, (output, x_zooms_tgt, mask_zooms_src, emb_tgt) in enumerate(zip(
+            outputs, target.x_zooms_groups, source.mask_zooms_groups, target.emb_groups
+        )):
+            loss_i, loss_dict_i = self.criterion(
+                output,
+                x_zooms_tgt,
+                mask=mask_zooms_src,
+                sample_configs=target.sample_configs,
+                prefix="train/",
+                emb=emb_tgt,
+            )
+            losses.append(loss_i)
+            total_loss_dict.update({f"g{i}/{k}": v for k, v in loss_dict_i.items()})
+
+        loss = sum(losses)
         if not torch.is_tensor(loss):
             raise RuntimeError(
                 "FieldSpaceNN loss config did not produce a tensor loss."
@@ -244,5 +265,5 @@ class OnlineFieldSpaceNNTrainer:
 
         return {
             "loss": loss.item(),
-            "loss_dict": {k: float(v) for k, v in loss_dict.items()},
+            "loss_dict": {k: float(v) for k, v in total_loss_dict.items()},
         }

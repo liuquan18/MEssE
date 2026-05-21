@@ -4,7 +4,7 @@ import os
 import socket
 import sys
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -259,7 +259,7 @@ class _State:
         "hp_field_tgt",
         "hp_forcing_src",
         "hp_forcing_tgt",
-        "var_nlev",
+        "var_nlev_groups",
         "owned_face_ids",
         "step_len_seconds",
     )
@@ -274,7 +274,7 @@ class _State:
         self.hp_field_tgt: Optional[Field] = None   # YAC field for ua on HEALPix grid
         self.hp_forcing_src: Optional[Field] = None  # YAC field for forcing on ICON grid
         self.hp_forcing_tgt: Optional[Field] = None  # YAC field for forcing on HEALPix grid
-        self.var_nlev: Optional[int] = None  # Combined nlev (ua + forcing), set in setup_coupling
+        self.var_nlev_groups: Optional[List[int]] = None  # [ts_nlev, ua_nlev] = [1, 90], set in setup_coupling
         self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
         self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
 
@@ -318,11 +318,11 @@ def _icon_time_unix_seconds() -> float:
 # Trainer lifecycle
 # ----------------------------------------------------------------------------
 
-def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
+def _get_trainer(nlev_groups: List[int]) -> OnlineFieldSpaceNNTrainer:
     if _state.trainer is not None:
-        if _state.trainer.nlev != nlev:
+        if _state.trainer.nlev_groups != nlev_groups:
             raise RuntimeError(
-                f"ICON level count changed: {_state.trainer.nlev} → {nlev}"
+                f"ICON level groups changed: {_state.trainer.nlev_groups} → {nlev_groups}"
             )
         return _state.trainer
 
@@ -332,7 +332,7 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceNNTrainer:
     _state.trainer = OnlineFieldSpaceNNTrainer(
         cfg=_ONLINE_CFG,
         owned_face_ids=_state.owned_face_ids,
-        nlev=nlev,
+        nlev_groups=nlev_groups,
         device=torch.device("cuda", 0),
         use_ddp=dist.is_initialized(),
         log_fn=comin.print_info,
@@ -453,11 +453,11 @@ def setup_coupling():
         _forcing_arr = _forcing_arr[..., 0]
     forcing_nlev = int(_forcing_arr.shape[1]) if _forcing_arr.ndim >= 3 else 1
 
-    # Store combined depth for trainer initialization
-    _state.var_nlev = var_nlev + forcing_nlev
+    # Store per-group depths: group 0 = ts (2D), group 1 = ua (3D)
+    _state.var_nlev_groups = [forcing_nlev, var_nlev]
 
     comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
-    comin.print_info(f"[rank={rank}] ua nlev={var_nlev}, forcing nlev={forcing_nlev}, combined={_state.var_nlev}")
+    comin.print_info(f"[rank={rank}] ua nlev={var_nlev}, forcing nlev={forcing_nlev}, groups={_state.var_nlev_groups}")
 
     _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, var_nlev, step_len, TimeUnit.SECOND)
     _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND)
@@ -535,13 +535,11 @@ def training():
     elif forcing_hpx_t.ndim == 2:
         forcing_hpx_t = forcing_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
 
-    # Concatenate ua and forcing along the level dimension: (ncells, nlev_ua + forcing_nlev)
-    combined_hpx_t = torch.cat([var_hpx_t, forcing_hpx_t], dim=1)
-
-    ua_faces = _to_hpx_faces(combined_hpx_t)
+    ts_faces = _to_hpx_faces(forcing_hpx_t)   # (faces, 1, nside, nside)
+    ua_faces = _to_hpx_faces(var_hpx_t)       # (faces, nlev_ua, nside, nside)
     unix_seconds = _icon_time_unix_seconds()
-    trainer = _get_trainer(nlev=_state.var_nlev)
-    snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
+    trainer = _get_trainer(nlev_groups=_state.var_nlev_groups)
+    snapshot = trainer.prepare_snapshot([ts_faces, ua_faces], unix_seconds)
 
     horizon = _sample_horizon()
 
