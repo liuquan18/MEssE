@@ -51,6 +51,12 @@ sed -i "s|^#SBATCH --nodes=.*|#SBATCH --nodes=${NUM_NODES}|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%plugin_library[[:space:]]*=.*|  plugin_list(1)%plugin_library = \"${PYTHON_ADAPTER_LIB}\"|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%options[[:space:]]*=.*|  plugin_list(1)%options        = \"${COMIN_PLUGIN_SCRIPT}\"|" "$ICON_RUN_SCRIPT"
 
+# Apply DKRZ-recommended OpenMPI runtime settings (https://docs.dkrz.de/doc/levante/running-jobs/runtime-settings.html).
+# Force UCX as the PML and disable other BTLs so Open MPI does not fall back to
+# BTL sm (which fails with ptrace_scope=3 set on Levante after the May 2026 maintenance).
+LEVANTE_WRAPPER="${ICON_BUILD_DIR}/run/run_wrapper/levante.sh"
+sed -i "s|export UCX_TLS=.*|export OMPI_MCA_pml=ucx\n    export OMPI_MCA_btl=self\n    export UCX_RNDV_SCHEME=put_zcopy\n    export UCX_IB_GPU_DIRECT_RDMA=yes\n    export UCX_MEMTYPE_CACHE=n\n    export UCX_TLS=cma,mm,rc,cuda_ipc,cuda_copy,gdr_copy|g" "$LEVANTE_WRAPPER"
+
 
 # clean the experiment directory to avoid issues with previous runs
 ICON_EXP_DIR="${ICON_BUILD_DIR}/experiments/"
