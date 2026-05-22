@@ -326,6 +326,7 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
         lr=float(os.environ.get("MESSE_UNET_LR", "2e-4")),
         base_channels=int(os.environ.get("MESSE_UNET_BASE_CH", "64")),
         grad_clip=1.0,
+        use_ddp=dist.is_initialized(),
         device=torch.device("cuda", 0),
         log_fn=comin.print_info,
         rank=rank,
