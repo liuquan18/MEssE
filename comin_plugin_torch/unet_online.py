@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import torch
@@ -10,67 +13,55 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
-class DoubleConv(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int) -> None:
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-        )
+def _ensure_fieldspacenn_on_path() -> None:
+    env_root = os.environ.get("FIELDSPACENN_ROOT", "")
+    if env_root:
+        fieldspacenn_root = Path(env_root).resolve()
+    else:
+        src_root = Path(__file__).resolve().parents[2]
+        fieldspacenn_root = src_root / "FieldSpaceNN"
+    if fieldspacenn_root.exists():
+        path = str(fieldspacenn_root)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
 
+def _build_fscnn(nlev: int, model_channels: int = 64) -> nn.Module:
+    from fieldspacenn.src.models.cnn.model import CNN
+    from fieldspacenn.src.models.cnn.confs import CNNBlockConfig, PatchEmbConfig
 
-class UNet(nn.Module):
-    """Standard 3-level UNet with skip connections.
-
-    Input/output shape: (B, channels, H, W).
-    Requires H and W to be divisible by 8 (three MaxPool halvings).
-    At HEALPix level 6: nside=64, which is exactly divisible.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        base_channels: int = 64,
-    ) -> None:
-        super().__init__()
-        b = base_channels
-
-        self.enc1 = DoubleConv(in_channels, b)
-        self.down1 = nn.MaxPool2d(2)
-        self.enc2 = DoubleConv(b, b * 2)
-        self.down2 = nn.MaxPool2d(2)
-        self.enc3 = DoubleConv(b * 2, b * 4)
-        self.down3 = nn.MaxPool2d(2)
-
-        self.bottleneck = DoubleConv(b * 4, b * 8)
-
-        self.up3 = nn.ConvTranspose2d(b * 8, b * 4, kernel_size=2, stride=2)
-        self.dec3 = DoubleConv(b * 8, b * 4)
-        self.up2 = nn.ConvTranspose2d(b * 4, b * 2, kernel_size=2, stride=2)
-        self.dec2 = DoubleConv(b * 4, b * 2)
-        self.up1 = nn.ConvTranspose2d(b * 2, b, kernel_size=2, stride=2)
-        self.dec1 = DoubleConv(b * 2, b)
-
-        self.out_conv = nn.Conv2d(b, out_channels, kernel_size=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        s1 = self.enc1(x)
-        s2 = self.enc2(self.down1(s1))
-        s3 = self.enc3(self.down2(s2))
-
-        h = self.bottleneck(self.down3(s3))
-
-        h = self.dec3(torch.cat([self.up3(h), s3], dim=1))
-        h = self.dec2(torch.cat([self.up2(h), s2], dim=1))
-        h = self.dec1(torch.cat([self.up1(h), s1], dim=1))
-
-        return self.out_conv(h)
+    block_configs = [
+        CNNBlockConfig(
+            depth=1, block_type="ResnetBlock", ch_mult=2, enc=True,
+            sub_confs={"blocks": ["normal", "normal", "down"]},
+        ),
+        CNNBlockConfig(
+            depth=3, block_type="ResnetBlock", ch_mult=2, enc=True,
+            sub_confs={"blocks": ["normal", "normal", "down"]},
+        ),
+        CNNBlockConfig(
+            depth=3, block_type="ResnetBlock", ch_mult=2,
+            sub_confs={"blocks": ["normal"]},
+        ),
+        CNNBlockConfig(
+            depth=4, block_type="ResnetBlock", ch_mult=0.5, dec=True,
+            sub_confs={"blocks": ["normal", "normal", "up"]},
+        ),
+    ]
+    patch_emb_config = PatchEmbConfig(
+        block_type="ConvBlock",
+        patch_emb_size=(1, 1),
+        patch_emb_kernel=(3, 3),
+    )
+    return CNN(
+        init_in_ch=nlev,
+        final_out_ch=nlev,
+        block_configs=block_configs,
+        patch_emb_config=patch_emb_config,
+        model_channels=model_channels,
+        skip_connections=True,
+        spatial_dim_count=2,
+    )
 
 
 @dataclass
@@ -84,38 +75,35 @@ class OnlineUNetTrainer:
         self,
         nlev: int,
         lr: float = 2e-4,
-        base_channels: int = 64,
+        model_channels: int = 64,
         grad_clip: Optional[float] = 1.0,
         use_ddp: Optional[bool] = None,
         device: Optional[torch.device] = None,
         log_fn: Optional[Callable[[str], None]] = None,
         rank: Optional[int] = None,
     ) -> None:
+        _ensure_fieldspacenn_on_path()
+
         self.nlev = int(nlev)
         self.device = torch.device("cuda", 0) if device is None else device
         self.grad_clip = grad_clip
         self.rank = rank
         self.log_fn = log_fn if log_fn is not None else (lambda msg: None)
 
-        self.model = UNet(
-            in_channels=self.nlev,
-            out_channels=self.nlev,
-            base_channels=base_channels,
-        ).to(self.device)
-
+        self.model = _build_fscnn(nlev, model_channels).to(self.device)
         self.forward_model = self._wrap_ddp(use_ddp)
-
         self.optimizer = torch.optim.Adam(
             self.forward_model.parameters(), lr=lr, weight_decay=0.0
         )
 
         n_params = sum(p.numel() for p in self.model.parameters())
         self.log_fn(
-            f"[rank={rank}] UNet initialized: nlev={nlev}, base_channels={base_channels}, "
-            f"params={n_params:,}, device={self.device}, ddp={isinstance(self.forward_model, DDP)}"
+            f"[rank={rank}] FieldSpaceNN CNN initialized: nlev={nlev}, "
+            f"model_channels={model_channels}, params={n_params:,}, "
+            f"device={self.device}, ddp={isinstance(self.forward_model, DDP)}"
         )
 
-    def _wrap_ddp(self, use_ddp: Optional[bool]) -> torch.nn.Module:
+    def _wrap_ddp(self, use_ddp: Optional[bool]) -> nn.Module:
         if use_ddp is None:
             use_ddp = dist.is_available() and dist.is_initialized()
         if not use_ddp:
@@ -129,6 +117,16 @@ class OnlineUNetTrainer:
             broadcast_buffers=False,
             find_unused_parameters=False,
         )
+
+    @staticmethod
+    def _to_cnn_input(faces: torch.Tensor) -> torch.Tensor:
+        # (F, nlev, H, W) → (F, 1, 1, H, W, nlev)
+        return faces.permute(0, 2, 3, 1)[:, None, None]
+
+    @staticmethod
+    def _from_cnn_output(out: torch.Tensor) -> torch.Tensor:
+        # (F, 1, 1, H, W, nlev) → (F, nlev, H, W)
+        return out[:, 0, 0].permute(0, 3, 1, 2)
 
     @torch.no_grad()
     def prepare_snapshot(
@@ -147,7 +145,8 @@ class OnlineUNetTrainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
-        pred = self.forward_model(source.faces)
+        pred = self.forward_model(self._to_cnn_input(source.faces), emb=None)
+        pred = self._from_cnn_output(pred)
         loss = F.mse_loss(pred, target.faces)
         loss.backward()
 
