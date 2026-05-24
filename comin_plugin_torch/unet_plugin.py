@@ -39,7 +39,7 @@ DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "ua")
 FORCING_VARIABLE_NAME = os.environ.get("MESSE_FORCING_VAR", "ts_wtr")
 HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
-MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "30"))
+MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
@@ -249,6 +249,7 @@ class _State:
         "pending_example",
         "trainer",
         "icon_var",
+        "AI_pred",
         "icon_forcing",
         "hp_field_src",
         "hp_field_tgt",
@@ -264,6 +265,7 @@ class _State:
         self.pending_example: Optional["ForecastExample"] = None
         self.trainer: Optional[OnlineUNetTrainer] = None
         self.icon_var = None       # COMIN variable handle for ua, set in sec_ctor
+        self.AI_pred = None       # COMIN variable handle for predicted ua, set in sec_ctor
         self.icon_forcing = None   # COMIN variable handle for ts forcing, set in sec_ctor
         self.hp_field_src: Optional[Field] = None   # YAC field for ua on ICON grid
         self.hp_field_tgt: Optional[Field] = None   # YAC field for ua on HEALPix grid
@@ -409,9 +411,17 @@ def _save_checkpoint(trainer: OnlineUNetTrainer, step: int) -> None:
 # COMIN callbacks
 # ----------------------------------------------------------------------------
 
+# primary constructor to save prediction
+
+var_descriptor = ("var_predict", DOMAIN_ID)
+comin.var_request_add(var_descriptor, lmodexclusive=True)  
+comin.metadata_set(var_descriptor, "long_name", "UNet-predicted ua", zaxis_id = comin.COMIN_ZAXIS_LEVELS)
+
+
+# secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    # the variable
+    # the variable to read
     _state.icon_var = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         (ICON_VARIABLE_NAME, DOMAIN_ID),
@@ -424,6 +434,14 @@ def sec_ctor():
         (FORCING_VARIABLE_NAME, DOMAIN_ID),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
+
+    # the prediction to save
+    _state.AI_pred = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
+        ("var_predict", DOMAIN_ID),
+        comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
+    )
+
 
 
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
@@ -503,6 +521,7 @@ def training():
 
     icon_var_cells = _extract_icon_cells(_state.icon_var)       # (ncells, nlev_ua)
     icon_forcing_cells = _extract_icon_cells(_state.icon_forcing)  # (ncells,) or (ncells, 1)
+    AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)       # (ncells, nlev_ua)
 
     # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
