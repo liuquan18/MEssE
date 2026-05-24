@@ -37,7 +37,7 @@ $PY_BIN -m venv $PY_ENV_DIR
 source $PY_ENV_DIR/bin/activate
 
 pip install --upgrade pip
-pip install setuptools wheel pumpy pandas cython numpy pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax healpy scipy
+pip install setuptools wheel pumpy pandas cython numpy pyyaml isodate matplotlib netcdf4 xarray torch cartopy cupy-cuda12x flax healpy scipy Flask
 pip install --upgrade "jax[cuda13]"
 
 
