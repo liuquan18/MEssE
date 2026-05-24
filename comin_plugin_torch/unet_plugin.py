@@ -32,23 +32,18 @@ except NameError:
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-from fieldspacenn_online import (
-    FieldSpaceNNSnapshot,
-    OnlineFieldSpaceNNTrainer,
-    load_online_config,
-)
+from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 
-_ONLINE_CFG = load_online_config()
-DOMAIN_ID = int(_ONLINE_CFG.online.variable.domain_id)
-ICON_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.icon_name)
-FORCING_VARIABLE_NAME = str(_ONLINE_CFG.online.variable.forcing_name)
-HPX_LEVEL = int(_ONLINE_CFG.online.hpx_level)
-MAX_FORECAST_HORIZON = int(_ONLINE_CFG.online.forecast_horizon_maxsteps)
+DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
+ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "ua")
+FORCING_VARIABLE_NAME = os.environ.get("MESSE_FORCING_VAR", "ts_wtr")
+HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
+MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
-CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspacenn_online.pt")
+CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
 SAVE_INTERVAL_SECONDS: int = 86400  # P1D — save the model the same frequency as icon output
 
 # ----------------------------------------------------------------------------
@@ -89,7 +84,7 @@ world_size = comm.Get_size()
 
 # ----------------------------------------------------------------------------
 # PyTorch distributed initialization.
-# Non-GPU ranks never enter NCCL or the online FieldSpaceNN trainer.
+# Non-GPU ranks never enter NCCL or the online UNet trainer.
 # ----------------------------------------------------------------------------
 _cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 # A single digit means exactly one GPU was assigned to this rank.
@@ -165,7 +160,7 @@ else:
     start_idx = 0
     end_idx = 0
 
-# Build HEALPix target grid with healpy 
+# Build HEALPix target grid with healpy
 nside = 2**HPX_LEVEL
 local_hp_indices = np.arange(start_idx, end_idx)
 
@@ -254,6 +249,7 @@ class _State:
         "pending_example",
         "trainer",
         "icon_var",
+        "AI_pred",
         "icon_forcing",
         "hp_field_src",
         "hp_field_tgt",
@@ -267,8 +263,9 @@ class _State:
     def __init__(self) -> None:
         self.current_step: int = 0
         self.pending_example: Optional["ForecastExample"] = None
-        self.trainer: Optional[OnlineFieldSpaceNNTrainer] = None
+        self.trainer: Optional[OnlineUNetTrainer] = None
         self.icon_var = None       # COMIN variable handle for ua, set in sec_ctor
+        self.AI_pred = None       # COMIN variable handle for predicted ua, set in sec_ctor
         self.icon_forcing = None   # COMIN variable handle for ts forcing, set in sec_ctor
         self.hp_field_src: Optional[Field] = None   # YAC field for ua on ICON grid
         self.hp_field_tgt: Optional[Field] = None   # YAC field for ua on HEALPix grid
@@ -294,7 +291,7 @@ else:
 
 @dataclass
 class ForecastExample:
-    source_snapshot: FieldSpaceNNSnapshot
+    source_snapshot: UNetSnapshot
     horizon: int
     due_step: int
 
@@ -318,29 +315,26 @@ def _icon_time_unix_seconds() -> float:
 # Trainer lifecycle
 # ----------------------------------------------------------------------------
 
-def _get_trainer(nlev_groups: List[int]) -> OnlineFieldSpaceNNTrainer:
+def _get_trainer(nlev: int) -> OnlineUNetTrainer:
     if _state.trainer is not None:
-        if _state.trainer.nlev_groups != nlev_groups:
+        if _state.trainer.nlev != nlev:
             raise RuntimeError(
-                f"ICON level groups changed: {_state.trainer.nlev_groups} → {nlev_groups}"
+                f"ICON level count changed: {_state.trainer.nlev} → {nlev}"
             )
         return _state.trainer
 
-    if _state.owned_face_ids is None:
-        raise RuntimeError("HEALPix face ownership is not initialized.")
-
-    _state.trainer = OnlineFieldSpaceNNTrainer(
-        cfg=_ONLINE_CFG,
-        owned_face_ids=_state.owned_face_ids,
-        nlev_groups=nlev_groups,
-        device=torch.device("cuda", 0),
+    _state.trainer = OnlineUNetTrainer(
+        nlev=nlev,
+        lr=float(os.environ.get("MESSE_UNET_LR", "2e-4")),
+        model_channels=int(os.environ.get("MESSE_UNET_MODEL_CH", "64")),
+        grad_clip=1.0,
         use_ddp=dist.is_initialized(),
+        device=torch.device("cuda", 0),
         log_fn=comin.print_info,
         rank=rank,
     )
     comin.print_info(
-        f"[rank={rank}] FieldSpaceNN trainer initialized: "
-        f"zooms={_state.trainer.in_zooms}, "
+        f"[rank={rank}] UNet trainer initialized: nlev={nlev}"
     )
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(
@@ -351,7 +345,7 @@ def _get_trainer(nlev_groups: List[int]) -> OnlineFieldSpaceNNTrainer:
         _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
         _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         comin.print_info(
-            f"[rank={rank}] Loaded checkpoint from {CHECKPOINT_PATH} "
+            f"[rank={rank}] Loaded UNet checkpoint from {CHECKPOINT_PATH} "
             f"(step={ckpt.get('step', 'unknown')})"
         )
     return _state.trainer
@@ -369,7 +363,7 @@ def _sample_horizon() -> int:
 
 
 def _enqueue_snapshot(
-    snapshot: FieldSpaceNNSnapshot,
+    snapshot: UNetSnapshot,
     current_step: int,
     horizon: int,
 ) -> ForecastExample:
@@ -389,7 +383,7 @@ def _enqueue_snapshot(
 # ----------------------------------------------------------------------------
 
 
-def _save_checkpoint(trainer: OnlineFieldSpaceNNTrainer, step: int) -> None:
+def _save_checkpoint(trainer: OnlineUNetTrainer, step: int) -> None:
     """Save model + optimizer state to CHECKPOINT_PATH.
 
     Only compute rank 0 writes to avoid concurrent writes on the shared filesystem.
@@ -417,9 +411,17 @@ def _save_checkpoint(trainer: OnlineFieldSpaceNNTrainer, step: int) -> None:
 # COMIN callbacks
 # ----------------------------------------------------------------------------
 
+# primary constructor to save prediction
+
+var_descriptor = ("var_predict", DOMAIN_ID)
+comin.var_request_add(var_descriptor, lmodexclusive=True)  
+comin.metadata_set(var_descriptor, "long_name", "UNet-predicted ua", zaxis_id = comin.COMIN_ZAXIS_LEVELS)
+
+
+# secondary constructor
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
-    # the variable
+    # the variable to read
     _state.icon_var = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         (ICON_VARIABLE_NAME, DOMAIN_ID),
@@ -432,6 +434,14 @@ def sec_ctor():
         (FORCING_VARIABLE_NAME, DOMAIN_ID),
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
+
+    # the prediction to save
+    _state.AI_pred = comin.var_get(
+        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
+        ("var_predict", DOMAIN_ID),
+        comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
+    )
+
 
 
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
@@ -482,7 +492,7 @@ def setup_coupling():
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    """Online FieldSpaceNN training callback called by ICON at each time step."""
+    """Online UNet training callback called by ICON at each time step."""
 
     if not has_gpu:
         return
@@ -511,6 +521,7 @@ def training():
 
     icon_var_cells = _extract_icon_cells(_state.icon_var)       # (ncells, nlev_ua)
     icon_forcing_cells = _extract_icon_cells(_state.icon_forcing)  # (ncells,) or (ncells, 1)
+    AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)       # (ncells, nlev_ua)
 
     # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
@@ -535,11 +546,11 @@ def training():
     elif forcing_hpx_t.ndim == 2:
         forcing_hpx_t = forcing_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
 
-    ts_faces = _to_hpx_faces(forcing_hpx_t)   # (faces, 1, nside, nside)
+    ts_faces = _to_hpx_faces(forcing_hpx_t)   # (faces, 1, nside, nside) — needed for YAC exchange
     ua_faces = _to_hpx_faces(var_hpx_t)       # (faces, nlev_ua, nside, nside)
     unix_seconds = _icon_time_unix_seconds()
-    trainer = _get_trainer(nlev_groups=_state.var_nlev_groups)
-    snapshot = trainer.prepare_snapshot([ts_faces, ua_faces], unix_seconds)
+    trainer = _get_trainer(nlev=_state.var_nlev_groups[1])
+    snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
 
     horizon = _sample_horizon()
 
