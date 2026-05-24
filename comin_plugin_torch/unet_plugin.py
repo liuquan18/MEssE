@@ -698,3 +698,16 @@ def training():
     _state.pred_hp_src.put(pred_flat_np)  # HEALPix source → YAC
     pred_icon_np, _ = _state.pred_icon_tgt.get()  # (nlev, ncells) on ICON grid
     _insert_icon_cells(pred_icon_np.T.astype(np.float64), _state.AI_pred)
+
+
+@comin.register_callback(comin.EP_DESTRUCTOR)
+def destructor():
+    """Cleanly tear down PyTorch distributed before MPI_Finalize.
+
+    Without this, the NCCL process group holds onto MPI communicators and
+    causes UCX 'unexpected tag-receive descriptor' warnings that prevent
+    ICON from writing finish.status, breaking the restart chain.
+    """
+    if has_gpu and dist.is_initialized():
+        dist.destroy_process_group()
+        comin.print_info(f"[rank={rank}] PyTorch distributed destroyed")
