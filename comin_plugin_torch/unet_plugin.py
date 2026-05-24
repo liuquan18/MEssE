@@ -21,7 +21,7 @@ from yac import (
     TimeUnit,
     InterpolationStack,
     NNNReductionType,
-    Reduction
+    Reduction,
 )
 
 try:
@@ -34,7 +34,6 @@ if _PLUGIN_DIR not in sys.path:
 
 from unet_online import UNetSnapshot, OnlineUNetTrainer
 
-
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "ua")
 FORCING_VARIABLE_NAME = os.environ.get("MESSE_FORCING_VAR", "ts_wtr")
@@ -44,7 +43,9 @@ EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
-SAVE_INTERVAL_SECONDS: int = 86400  # P1D — save the model the same frequency as icon output
+SAVE_INTERVAL_SECONDS: int = (
+    86400  # P1D — save the model the same frequency as icon output
+)
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -121,7 +122,6 @@ else:
     _ = comm.Split(color=1, key=rank)
 
 
-
 # ----------------------------------------------------------------------------
 # yac setup (HEALPix interpolation)
 # ----------------------------------------------------------------------------
@@ -131,20 +131,22 @@ assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
 yac = YAC.from_id(glob.yac_instance_id)
 source_comp = yac.predef_comp("icon_r2b4_source")
 
-connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (np.asarray(domain.cells.vertex_idx) - 1)
+connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (
+    np.asarray(domain.cells.vertex_idx) - 1
+)
 
 icon_grid = UnstructuredGrid(
     "icon_grid",
     np.ones(domain.cells.ncells, dtype=np.int32) * 3,
     np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]),
     np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]),
-    np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells]
+    np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells],
 )
 
 icon_cell_centers = icon_grid.def_points(
     Location.CELL,
     np.ravel(domain.cells.clon)[: domain.cells.ncells],
-    np.ravel(domain.cells.clat)[: domain.cells.ncells]
+    np.ravel(domain.cells.clat)[: domain.cells.ncells],
 )
 
 target_comp = yac.predef_comp("healpix_target")
@@ -155,7 +157,11 @@ if has_gpu:
     cells_per_rank = total_hp_cells // num_calculate_processes
     start_idx = compute_rank * cells_per_rank
     # Last GPU rank takes the remainder
-    end_idx = (compute_rank + 1) * cells_per_rank if compute_rank != num_calculate_processes - 1 else total_hp_cells
+    end_idx = (
+        (compute_rank + 1) * cells_per_rank
+        if compute_rank != num_calculate_processes - 1
+        else total_hp_cells
+    )
 else:
     start_idx = 0
     end_idx = 0
@@ -184,9 +190,7 @@ def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
     clon, clat = _xyz2lonlat(centers_xyz)
 
     boundaries_xyz = (
-        healpy.boundaries(nside, cell_idx, nest=nest)
-        .transpose(0, 2, 1)
-        .reshape(-1, 3)
+        healpy.boundaries(nside, cell_idx, nest=nest).transpose(0, 2, 1).reshape(-1, 3)
     )
     verts_xyz, quads = np.unique(boundaries_xyz, return_inverse=True, axis=0)
     vlon, vlat = _xyz2lonlat(verts_xyz)
@@ -232,12 +236,36 @@ def _extract_icon_cells(data_array) -> xp.ndarray:
     return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
 
 
+def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
+    """Scatter (ncells, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
+
+    Inverse of _extract_icon_cells: cell c maps to buf[c % nproma, :, c // nproma].
+    """
+    nc, nlev = pred_cells.shape
+    buf = xp.asarray(buffer)
+    while buf.ndim > 3 and buf.shape[-1] == 1:
+        buf = buf[..., 0]
+    nproma_val = buf.shape[0]
+    c = np.arange(nc)
+    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells)
+
+
 def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
     """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
     nside = 2**HPX_LEVEL
     n_owned, nlev = owned_vals.shape
     faces = n_owned // (nside * nside)
-    return owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
+    return (
+        owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
+    )
+
+
+def _from_hpx_faces(pred_faces: torch.Tensor) -> torch.Tensor:
+    """Reshape (faces_per_rank, nlev, nside, nside) back to (n_owned_pixels, nlev).
+
+    Inverse of _to_hpx_faces.
+    """
+    return pred_faces.permute(0, 2, 3, 1).contiguous().reshape(-1, pred_faces.shape[1])
 
 
 # ----------------------------------------------------------------------------
@@ -255,6 +283,8 @@ class _State:
         "hp_field_tgt",
         "hp_forcing_src",
         "hp_forcing_tgt",
+        "pred_hp_src",
+        "pred_icon_tgt",
         "var_nlev_groups",
         "owned_face_ids",
         "step_len_seconds",
@@ -264,15 +294,31 @@ class _State:
         self.current_step: int = 0
         self.pending_example: Optional["ForecastExample"] = None
         self.trainer: Optional[OnlineUNetTrainer] = None
-        self.icon_var = None       # COMIN variable handle for ua, set in sec_ctor
-        self.AI_pred = None       # COMIN variable handle for predicted ua, set in sec_ctor
-        self.icon_forcing = None   # COMIN variable handle for ts forcing, set in sec_ctor
-        self.hp_field_src: Optional[Field] = None   # YAC field for ua on ICON grid
-        self.hp_field_tgt: Optional[Field] = None   # YAC field for ua on HEALPix grid
-        self.hp_forcing_src: Optional[Field] = None  # YAC field for forcing on ICON grid
-        self.hp_forcing_tgt: Optional[Field] = None  # YAC field for forcing on HEALPix grid
-        self.var_nlev_groups: Optional[List[int]] = None  # [ts_nlev, ua_nlev] = [1, 90], set in setup_coupling
-        self.owned_face_ids: Optional[torch.Tensor] = None  # HEALPix face indices owned by this rank
+        self.icon_var = None  # COMIN variable handle for ua, set in sec_ctor
+        self.AI_pred = None  # COMIN variable handle for predicted ua, set in sec_ctor
+        self.icon_forcing = (
+            None  # COMIN variable handle for ts forcing, set in sec_ctor
+        )
+        self.hp_field_src: Optional[Field] = None  # YAC field for ua on ICON grid
+        self.hp_field_tgt: Optional[Field] = None  # YAC field for ua on HEALPix grid
+        self.hp_forcing_src: Optional[Field] = (
+            None  # YAC field for forcing on ICON grid
+        )
+        self.hp_forcing_tgt: Optional[Field] = (
+            None  # YAC field for forcing on HEALPix grid
+        )
+        self.pred_hp_src: Optional[Field] = (
+            None  # YAC field for prediction on HEALPix (reverse coupling source)
+        )
+        self.pred_icon_tgt: Optional[Field] = (
+            None  # YAC field for prediction on ICON (reverse coupling target)
+        )
+        self.var_nlev_groups: Optional[List[int]] = (
+            None  # [ts_nlev, ua_nlev] = [1, 90], set in setup_coupling
+        )
+        self.owned_face_ids: Optional[torch.Tensor] = (
+            None  # HEALPix face indices owned by this rank
+        )
         self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
 
 
@@ -300,6 +346,7 @@ class ForecastExample:
 # Time helpers
 # ----------------------------------------------------------------------------
 
+
 def _parse_icon_datetime(iso_str: str) -> datetime.datetime:
     """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
     clean = str(iso_str).split(".")[0].rstrip("Z")
@@ -314,6 +361,7 @@ def _icon_time_unix_seconds() -> float:
 # ----------------------------------------------------------------------------
 # Trainer lifecycle
 # ----------------------------------------------------------------------------
+
 
 def _get_trainer(nlev: int) -> OnlineUNetTrainer:
     if _state.trainer is not None:
@@ -333,9 +381,7 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
         log_fn=comin.print_info,
         rank=rank,
     )
-    comin.print_info(
-        f"[rank={rank}] UNet trainer initialized: nlev={nlev}"
-    )
+    comin.print_info(f"[rank={rank}] UNet trainer initialized: nlev={nlev}")
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(
             CHECKPOINT_PATH,
@@ -414,8 +460,10 @@ def _save_checkpoint(trainer: OnlineUNetTrainer, step: int) -> None:
 # primary constructor to save prediction
 
 var_descriptor = ("var_predict", DOMAIN_ID)
-comin.var_request_add(var_descriptor, lmodexclusive=True)  
-comin.metadata_set(var_descriptor, "long_name", "UNet-predicted ua", zaxis_id = comin.COMIN_ZAXIS_LEVELS)
+comin.var_request_add(var_descriptor, lmodexclusive=True)
+comin.metadata_set(
+    var_descriptor, zaxis_id=comin.COMIN_ZAXIS_3D
+)
 
 
 # secondary constructor
@@ -443,7 +491,6 @@ def sec_ctor():
     )
 
 
-
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
 def setup_coupling():
 
@@ -467,26 +514,87 @@ def setup_coupling():
     _state.var_nlev_groups = [forcing_nlev, var_nlev]
 
     comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
-    comin.print_info(f"[rank={rank}] ua nlev={var_nlev}, forcing nlev={forcing_nlev}, groups={_state.var_nlev_groups}")
+    comin.print_info(
+        f"[rank={rank}] ua nlev={var_nlev}, forcing nlev={forcing_nlev}, groups={_state.var_nlev_groups}"
+    )
 
-    _state.hp_field_src = Field.create("var_remap", source_comp, icon_cell_centers, var_nlev, step_len, TimeUnit.SECOND)
-    _state.hp_field_tgt = Field.create("var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_field_src = Field.create(
+        "var_remap", source_comp, icon_cell_centers, var_nlev, step_len, TimeUnit.SECOND
+    )
+    _state.hp_field_tgt = Field.create(
+        "var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
+    )
 
-    _state.hp_forcing_src = Field.create("forcing_remap", source_comp, icon_cell_centers, forcing_nlev, step_len, TimeUnit.SECOND)
-    _state.hp_forcing_tgt = Field.create("forcing_target", target_comp, hp_points, forcing_nlev, step_len, TimeUnit.SECOND)
+    _state.hp_forcing_src = Field.create(
+        "forcing_remap",
+        source_comp,
+        icon_cell_centers,
+        forcing_nlev,
+        step_len,
+        TimeUnit.SECOND,
+    )
+    _state.hp_forcing_tgt = Field.create(
+        "forcing_target",
+        target_comp,
+        hp_points,
+        forcing_nlev,
+        step_len,
+        TimeUnit.SECOND,
+    )
 
     interp = InterpolationStack()
     interp.add_nnn(NNNReductionType.AVG, n=1)
 
     yac.def_couple(
-        "icon_r2b4_source", "icon_grid", "var_remap",
-        "healpix_target", "hp_level6_grid", "var_target",
-        step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
+        "icon_r2b4_source",
+        "icon_grid",
+        "var_remap",
+        "healpix_target",
+        "hp_level6_grid",
+        "var_target",
+        step_len,
+        TimeUnit.SECOND,
+        Reduction.TIME_NONE,
+        interp,
     )
     yac.def_couple(
-        "icon_r2b4_source", "icon_grid", "forcing_remap",
-        "healpix_target", "hp_level6_grid", "forcing_target",
-        step_len, TimeUnit.SECOND, Reduction.TIME_NONE, interp
+        "icon_r2b4_source",
+        "icon_grid",
+        "forcing_remap",
+        "healpix_target",
+        "hp_level6_grid",
+        "forcing_target",
+        step_len,
+        TimeUnit.SECOND,
+        Reduction.TIME_NONE,
+        interp,
+    )
+
+    # Reverse coupling: HEALPix prediction -> ICON grid (mirrors forward ua coupling)
+    _state.pred_hp_src = Field.create(
+        "pred_hp_src", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
+    )
+    _state.pred_icon_tgt = Field.create(
+        "pred_icon_tgt",
+        source_comp,
+        icon_cell_centers,
+        var_nlev,
+        step_len,
+        TimeUnit.SECOND,
+    )
+    interp_rev = InterpolationStack()
+    interp_rev.add_nnn(NNNReductionType.AVG, n=1)
+    yac.def_couple(
+        "healpix_target",
+        "hp_level6_grid",
+        "pred_hp_src",
+        "icon_r2b4_source",
+        "icon_grid",
+        "pred_icon_tgt",
+        step_len,
+        TimeUnit.SECOND,
+        Reduction.TIME_NONE,
+        interp_rev,
     )
 
 
@@ -511,7 +619,10 @@ def training():
             _save_checkpoint(_state.trainer, current_step)
 
     # Mode: Waiting; between t and t+horizon
-    if _state.pending_example is not None and current_step < _state.pending_example.due_step:
+    if (
+        _state.pending_example is not None
+        and current_step < _state.pending_example.due_step
+    ):
         comin.print_info(
             f"[rank={rank}] step={current_step} waiting "
             f"horizon={_state.pending_example.horizon} "
@@ -519,14 +630,22 @@ def training():
         )
         return
 
-    icon_var_cells = _extract_icon_cells(_state.icon_var)       # (ncells, nlev_ua)
-    icon_forcing_cells = _extract_icon_cells(_state.icon_forcing)  # (ncells,) or (ncells, 1)
-    AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)       # (ncells, nlev_ua)
+    icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
+    icon_forcing_cells = _extract_icon_cells(
+        _state.icon_forcing
+    )  # (ncells,) or (ncells, 1)
+    AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)  # (ncells, nlev_ua)
 
     # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
-    icon_var_cells_np = icon_var_cells.get() if hasattr(icon_var_cells, 'get') else icon_var_cells
-    icon_forcing_cells_np = icon_forcing_cells.get() if hasattr(icon_forcing_cells, 'get') else icon_forcing_cells
+    icon_var_cells_np = (
+        icon_var_cells.get() if hasattr(icon_var_cells, "get") else icon_var_cells
+    )
+    icon_forcing_cells_np = (
+        icon_forcing_cells.get()
+        if hasattr(icon_forcing_cells, "get")
+        else icon_forcing_cells
+    )
     _state.hp_field_src.put(icon_var_cells_np)
     _state.hp_forcing_src.put(icon_forcing_cells_np)
     var_hpx, info = _state.hp_field_tgt.get()
@@ -546,8 +665,10 @@ def training():
     elif forcing_hpx_t.ndim == 2:
         forcing_hpx_t = forcing_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
 
-    ts_faces = _to_hpx_faces(forcing_hpx_t)   # (faces, 1, nside, nside) — needed for YAC exchange
-    ua_faces = _to_hpx_faces(var_hpx_t)       # (faces, nlev_ua, nside, nside)
+    ts_faces = _to_hpx_faces(
+        forcing_hpx_t
+    )  # (faces, 1, nside, nside) — needed for YAC exchange
+    ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev_ua, nside, nside)
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev_groups[1])
     snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
@@ -556,11 +677,24 @@ def training():
 
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=horizon)
+        _state.pending_example = _enqueue_snapshot(
+            snapshot, current_step, horizon=horizon
+        )
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
         result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
         comin.print_info(
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
         )
-        _state.pending_example = _enqueue_snapshot(snapshot, current_step, horizon=horizon)
+        _state.pending_example = _enqueue_snapshot(
+            snapshot, current_step, horizon=horizon
+        )
+
+    # Run inference and scatter prediction to ICON grid via reverse YAC coupling
+    pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32
+    pred_flat_np = (
+        _from_hpx_faces(pred_faces).cpu().numpy()
+    )  # (n_local_hp_cells, nlev) float32
+    _state.pred_hp_src.put(pred_flat_np)  # HEALPix source → YAC
+    pred_icon_np, _ = _state.pred_icon_tgt.get()  # (nlev, ncells) on ICON grid
+    _insert_icon_cells(pred_icon_np.T.astype(np.float64), _state.AI_pred)

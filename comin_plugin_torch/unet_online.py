@@ -32,19 +32,30 @@ def _build_fscnn(nlev: int, model_channels: int = 64) -> nn.Module:
 
     block_configs = [
         CNNBlockConfig(
-            depth=1, block_type="ResnetBlock", ch_mult=2, enc=True,
+            depth=1,
+            block_type="ResnetBlock",
+            ch_mult=2,
+            enc=True,
             sub_confs={"blocks": ["normal", "normal", "down"]},
         ),
         CNNBlockConfig(
-            depth=3, block_type="ResnetBlock", ch_mult=2, enc=True,
+            depth=3,
+            block_type="ResnetBlock",
+            ch_mult=2,
+            enc=True,
             sub_confs={"blocks": ["normal", "normal", "down"]},
         ),
         CNNBlockConfig(
-            depth=3, block_type="ResnetBlock", ch_mult=2,
+            depth=3,
+            block_type="ResnetBlock",
+            ch_mult=2,
             sub_confs={"blocks": ["normal"]},
         ),
         CNNBlockConfig(
-            depth=4, block_type="ResnetBlock", ch_mult=0.5, dec=True,
+            depth=4,
+            block_type="ResnetBlock",
+            ch_mult=0.5,
+            dec=True,
             sub_confs={"blocks": ["normal", "normal", "up"]},
         ),
     ]
@@ -134,7 +145,9 @@ class OnlineUNetTrainer:
         ua_faces: torch.Tensor,
         unix_seconds: float,
     ) -> UNetSnapshot:
-        faces = ua_faces.to(self.device, dtype=torch.float32, non_blocking=True).detach()
+        faces = ua_faces.to(
+            self.device, dtype=torch.float32, non_blocking=True
+        ).detach()
         return UNetSnapshot(faces=faces, unix_seconds=float(unix_seconds))
 
     def train_step(
@@ -156,3 +169,10 @@ class OnlineUNetTrainer:
         self.optimizer.step()
 
         return {"loss": loss.item(), "loss_dict": {"train/MSE": loss.item()}}
+
+    @torch.no_grad()
+    def predict(self, snapshot: UNetSnapshot) -> torch.Tensor:
+        """Inference only; returns (faces_per_rank, nlev, nside, nside) float32 on GPU."""
+        self.model.eval()
+        pred = self.forward_model(self._to_cnn_input(snapshot.faces), emb=None)
+        return self._from_cnn_output(pred)
