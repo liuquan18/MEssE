@@ -32,7 +32,7 @@ except NameError:
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-from fieldspacenn_online import (
+from MEssE.comin_plugin_torch.fieldspacenn_online import (
     FieldSpaceNNSnapshot,
     OnlineFieldSpaceNNTrainer,
     load_online_config,
