@@ -115,7 +115,7 @@ function render() {
         datasets: [{
           data: ys,
           borderColor: "#000",
-          borderWidth: 1.5,
+          borderWidth: 3,
           pointRadius: pts.length > 200 ? 0 : 2.5,
           pointHoverRadius: 5,
           fill: false,
