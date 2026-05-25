@@ -340,6 +340,8 @@ class ForecastExample:
     source_snapshot: UNetSnapshot
     horizon: int
     due_step: int
+    mean: torch.Tensor  # Per-level mean for denormalization
+    std: torch.Tensor   # Per-level std for denormalization
 
 
 # ----------------------------------------------------------------------------
@@ -389,10 +391,11 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
             weights_only=False,
         )
         _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
+        # Reset optimizer state to avoid NaN after restart due to data distribution change
         _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         comin.print_info(
             f"[rank={rank}] Loaded UNet checkpoint from {CHECKPOINT_PATH} "
-            f"(step={ckpt.get('step', 'unknown')})"
+            f"(step={ckpt.get('step', 'unknown')}), optimizer state reset"
         )
     return _state.trainer
 
@@ -412,6 +415,8 @@ def _enqueue_snapshot(
     snapshot: UNetSnapshot,
     current_step: int,
     horizon: int,
+    mean: torch.Tensor,
+    std: torch.Tensor,
 ) -> ForecastExample:
     due_step = current_step + horizon
     comin.print_info(
@@ -421,6 +426,8 @@ def _enqueue_snapshot(
         source_snapshot=snapshot,
         horizon=horizon,
         due_step=due_step,
+        mean=mean,
+        std=std,
     )
 
 
@@ -669,16 +676,21 @@ def training():
         forcing_hpx_t
     )  # (faces, 1, nside, nside) — needed for YAC exchange
     ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev_ua, nside, nside)
+
+    mean = ua_faces.mean(dim=(0, 2, 3), keepdim=True)
+    std = ua_faces.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
+    ua_faces_norm = (ua_faces - mean) / std
+
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev_groups[1])
-    snapshot = trainer.prepare_snapshot(ua_faces, unix_seconds)
+    snapshot = trainer.prepare_snapshot(ua_faces_norm, unix_seconds)
 
     horizon = _sample_horizon()
 
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
         _state.pending_example = _enqueue_snapshot(
-            snapshot, current_step, horizon=horizon
+            snapshot, current_step, horizon=horizon, mean=mean, std=std
         )
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
@@ -687,13 +699,15 @@ def training():
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
         )
         _state.pending_example = _enqueue_snapshot(
-            snapshot, current_step, horizon=horizon
+            snapshot, current_step, horizon=horizon, mean=mean, std=std
         )
 
     # Run inference and scatter prediction to ICON grid via reverse YAC coupling
     pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32
+    # Denormalize prediction: original = normalized * std + mean
+    pred_faces_denorm = pred_faces * _state.pending_example.std + _state.pending_example.mean
     pred_flat_np = (
-        _from_hpx_faces(pred_faces).cpu().numpy()
+        _from_hpx_faces(pred_faces_denorm).cpu().numpy()
     )  # (n_local_hp_cells, nlev) float32
     _state.pred_hp_src.put(pred_flat_np)  # HEALPix source → YAC
     pred_icon_np, _ = _state.pred_icon_tgt.get()  # (nlev, ncells) on ICON grid
