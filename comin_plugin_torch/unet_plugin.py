@@ -88,7 +88,16 @@ world_size = comm.Get_size()
 # ----------------------------------------------------------------------------
 _cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 # A single digit means exactly one GPU was assigned to this rank.
-has_gpu = _cuda_vis.isdigit()
+_has_physical_gpu = _cuda_vis.isdigit()
+
+# Cap GPU ranks to one per HEALPix face (12 base faces).
+# MPI_Scan gives the inclusive prefix sum so we can determine each GPU rank's
+# 0-based index among all GPU ranks without a second comm.Split.
+# Only the first 12 GPU ranks join DDP so each owns exactly one complete face
+# (nside² cells). Extra GPU ranks beyond 12 fall through as non-GPU ranks.
+_gpu_prefix_sum = comm.scan(1 if _has_physical_gpu else 0, op=MPI.SUM)
+_raw_gpu_rank = (_gpu_prefix_sum - 1) if _has_physical_gpu else -1
+has_gpu = _has_physical_gpu and _raw_gpu_rank < 12
 
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
 
