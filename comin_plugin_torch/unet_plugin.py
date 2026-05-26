@@ -724,7 +724,8 @@ def training():
     trainer = _get_trainer(nlev=_state.var_nlev_groups[1])
     snapshot = trainer.prepare_snapshot(ua_faces_norm, unix_seconds)
 
-    horizon = _sample_horizon()
+    # horizon = _sample_horizon()
+    horizon = 10  # for debugging, use a fixed horizon of 10 steps
 
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
