@@ -373,7 +373,7 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
             )
         return _state.trainer
 
-    _state.trainer = OnlineUNetTrainer(
+    _trainer_kwargs = dict(
         nlev=nlev,
         lr=float(os.environ.get("MESSE_UNET_LR", "2e-4")),
         model_channels=int(os.environ.get("MESSE_UNET_MODEL_CH", "64")),
@@ -383,20 +383,28 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
         log_fn=comin.print_info,
         rank=rank,
     )
-    comin.print_info(f"[rank={rank}] UNet trainer initialized: nlev={nlev}")
+
     if os.path.exists(CHECKPOINT_PATH):
+        # Checkpoint found: restore model and optimizer state from previous run.
         ckpt = torch.load(
             CHECKPOINT_PATH,
-            map_location=_state.trainer.device,
+            map_location=torch.device("cuda", 0),
             weights_only=False,
         )
+        _state.trainer = OnlineUNetTrainer(**_trainer_kwargs)
         _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
-        # Reset optimizer state to avoid NaN after restart due to data distribution change
         _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        saved_step = ckpt.get("step", "unknown")
+        _state.current_step = int(saved_step) if isinstance(saved_step, int) else 0
         comin.print_info(
-            f"[rank={rank}] Loaded UNet checkpoint from {CHECKPOINT_PATH} "
-            f"(step={ckpt.get('step', 'unknown')}), optimizer state reset"
+            f"[rank={rank}] Restored UNet from checkpoint {CHECKPOINT_PATH} "
+            f"(step={saved_step}), resuming from step={_state.current_step}"
         )
+    else:
+        # No checkpoint: fresh initialization.
+        _state.trainer = OnlineUNetTrainer(**_trainer_kwargs)
+        comin.print_info(f"[rank={rank}] UNet trainer initialized fresh: nlev={nlev}")
+
     return _state.trainer
 
 
@@ -458,6 +466,30 @@ def _save_checkpoint(trainer: OnlineUNetTrainer, step: int) -> None:
     comin.print_info(
         f"[rank={rank}] Checkpoint saved at step={step} → {CHECKPOINT_PATH}"
     )
+
+
+def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
+    """Reload model + optimizer from the last saved checkpoint on all GPU ranks.
+
+    Returns the step stored in the checkpoint, or 0 if no checkpoint exists.
+    All compute ranks reload the same file so weights and optimizer moments stay
+    consistent after a NaN-triggered recovery.
+    """
+    if not os.path.exists(CHECKPOINT_PATH):
+        comin.print_info(f"[rank={rank}] No checkpoint to roll back to — weights remain corrupted")
+        return 0
+    ckpt = torch.load(
+        CHECKPOINT_PATH,
+        map_location=torch.device("cuda", 0),
+        weights_only=False,
+    )
+    trainer.model.load_state_dict(ckpt["model_state_dict"])
+    trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    step = int(ckpt.get("step", 0))
+    comin.print_info(
+        f"[rank={rank}] Rolled back to checkpoint at step={step} from {CHECKPOINT_PATH}"
+    )
+    return step
 
 
 # ----------------------------------------------------------------------------
@@ -681,6 +713,13 @@ def training():
     std = ua_faces.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
     ua_faces_norm = (ua_faces - mean) / std
 
+    if not torch.isfinite(ua_faces_norm).all():
+        comin.print_info(
+            f"[rank={rank}] step={current_step} WARNING: NaN/Inf in ua_faces_norm "
+            f"(ua_faces min={ua_faces.min().item():.3f} max={ua_faces.max().item():.3f} "
+            f"std_min={std.min().item():.3e})"
+        )
+
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev_groups[1])
     snapshot = trainer.prepare_snapshot(ua_faces_norm, unix_seconds)
@@ -694,13 +733,27 @@ def training():
         )
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
+        comin.print_info(
+            f"[rank={rank}] step={current_step} ua_faces: "
+            f"min={ua_faces.min().item():.3f} max={ua_faces.max().item():.3f} "
+            f"mean={ua_faces.mean().item():.3f} std={ua_faces.std().item():.3f}"
+        )
         result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
         comin.print_info(
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
+            f"grad_norm={result.get('grad_norm', 0.0):.4f} "
+            f"skipped={result.get('skipped', False)}"
         )
-        _state.pending_example = _enqueue_snapshot(
-            snapshot, current_step, horizon=horizon, mean=mean, std=std
-        )
+        if result.get("needs_rollback"):
+            comin.print_info(
+                f"[rank={rank}] step={current_step} NaN detected — rolling back to last checkpoint"
+            )
+            _rollback_checkpoint(_state.trainer)
+            _state.pending_example = None  # discard potentially corrupted snapshot
+        else:
+            _state.pending_example = _enqueue_snapshot(
+                snapshot, current_step, horizon=horizon, mean=mean, std=std
+            )
 
     # Run inference and scatter prediction to ICON grid via reverse YAC coupling
     pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+import math
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -155,20 +157,74 @@ class OnlineUNetTrainer:
         source: UNetSnapshot,
         target: UNetSnapshot,
     ) -> Dict[str, Any]:
+        # Guard: NaN/Inf in inputs — skip without touching model weights or optimizer
+        if not torch.isfinite(source.faces).all():
+            self.log_fn("[trainer] NaN/Inf in source.faces — skipping step")
+            return {
+                "loss": float("nan"),
+                "loss_dict": {},
+                "skipped": True,
+                "needs_rollback": False,
+                "grad_norm": 0.0,
+            }
+        if not torch.isfinite(target.faces).all():
+            self.log_fn("[trainer] NaN/Inf in target.faces — skipping step")
+            return {
+                "loss": float("nan"),
+                "loss_dict": {},
+                "skipped": True,
+                "needs_rollback": False,
+                "grad_norm": 0.0,
+            }
+
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
         pred = self.forward_model(self._to_cnn_input(source.faces), emb=None)
         pred = self._from_cnn_output(pred)
         loss = F.mse_loss(pred, target.faces)
+
+        # Guard: NaN/Inf loss with finite inputs means model internals are corrupted
+        if not torch.isfinite(loss):
+            self.log_fn(
+                f"[trainer] Non-finite loss ({loss.item()}) with finite inputs — model may be corrupted"
+            )
+            return {
+                "loss": loss.item(),
+                "loss_dict": {},
+                "skipped": True,
+                "needs_rollback": True,
+                "grad_norm": 0.0,
+            }
+
         loss.backward()
 
-        if self.grad_clip is not None:
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+        # Always compute grad norm; clip only if grad_clip is set
+        max_norm = self.grad_clip if self.grad_clip is not None else float("inf")
+        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), max_norm).item()
+
+        if not math.isfinite(grad_norm):
+            self.log_fn(
+                f"[trainer] Non-finite grad_norm ({grad_norm}) — skipping optimizer step"
+            )
+            self.optimizer.zero_grad(set_to_none=True)
+            return {
+                "loss": loss.item(),
+                "loss_dict": {},
+                "skipped": True,
+                "needs_rollback": True,
+                "grad_norm": grad_norm,
+            }
 
         self.optimizer.step()
 
-        return {"loss": loss.item(), "loss_dict": {"train/MSE": loss.item()}}
+        return {
+            "loss": loss.item(),
+            "loss_dict": {"train/MSE": loss.item()},
+            "skipped": False,
+            "needs_rollback": False,
+            "grad_norm": grad_norm,
+        }
 
     @torch.no_grad()
     def predict(self, snapshot: UNetSnapshot) -> torch.Tensor:
