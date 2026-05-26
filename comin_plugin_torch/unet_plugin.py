@@ -36,7 +36,6 @@ from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "ua")
-FORCING_VARIABLE_NAME = os.environ.get("MESSE_FORCING_VAR", "ts_wtr")
 HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
 MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
@@ -278,11 +277,8 @@ class _State:
         "trainer",
         "icon_var",
         "AI_pred",
-        "icon_forcing",
         "hp_field_src",
         "hp_field_tgt",
-        "hp_forcing_src",
-        "hp_forcing_tgt",
         "pred_hp_src",
         "pred_icon_tgt",
         "var_nlev_groups",
@@ -296,17 +292,8 @@ class _State:
         self.trainer: Optional[OnlineUNetTrainer] = None
         self.icon_var = None  # COMIN variable handle for ua, set in sec_ctor
         self.AI_pred = None  # COMIN variable handle for predicted ua, set in sec_ctor
-        self.icon_forcing = (
-            None  # COMIN variable handle for ts forcing, set in sec_ctor
-        )
         self.hp_field_src: Optional[Field] = None  # YAC field for ua on ICON grid
         self.hp_field_tgt: Optional[Field] = None  # YAC field for ua on HEALPix grid
-        self.hp_forcing_src: Optional[Field] = (
-            None  # YAC field for forcing on ICON grid
-        )
-        self.hp_forcing_tgt: Optional[Field] = (
-            None  # YAC field for forcing on HEALPix grid
-        )
         self.pred_hp_src: Optional[Field] = (
             None  # YAC field for prediction on HEALPix (reverse coupling source)
         )
@@ -314,7 +301,7 @@ class _State:
             None  # YAC field for prediction on ICON (reverse coupling target)
         )
         self.var_nlev_groups: Optional[List[int]] = (
-            None  # [ts_nlev, ua_nlev] = [1, 90], set in setup_coupling
+            None  # [ua_nlev] = [90], set in setup_coupling
         )
         self.owned_face_ids: Optional[torch.Tensor] = (
             None  # HEALPix face indices owned by this rank
@@ -515,13 +502,6 @@ def sec_ctor():
         comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
     )
 
-    # forcing (sst, but use ts here)
-    _state.icon_forcing = comin.var_get(
-        [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
-        (FORCING_VARIABLE_NAME, DOMAIN_ID),
-        comin.COMIN_FLAG_READ | DEVICE_SYNC_FLAG,
-    )
-
     # the prediction to save
     _state.AI_pred = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
@@ -544,17 +524,12 @@ def setup_coupling():
         _icon_arr = _icon_arr[..., 0]
     var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
 
-    _forcing_arr = xp.asarray(_state.icon_forcing)
-    while _forcing_arr.ndim > 3 and _forcing_arr.shape[-1] == 1:
-        _forcing_arr = _forcing_arr[..., 0]
-    forcing_nlev = int(_forcing_arr.shape[1]) if _forcing_arr.ndim >= 3 else 1
-
-    # Store per-group depths: group 0 = ts (2D), group 1 = ua (3D)
-    _state.var_nlev_groups = [forcing_nlev, var_nlev]
+    # Store group depths: group 0 = ua (3D)
+    _state.var_nlev_groups = [var_nlev]
 
     comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
     comin.print_info(
-        f"[rank={rank}] ua nlev={var_nlev}, forcing nlev={forcing_nlev}, groups={_state.var_nlev_groups}"
+        f"[rank={rank}] ua nlev={var_nlev}, groups={_state.var_nlev_groups}"
     )
 
     _state.hp_field_src = Field.create(
@@ -562,23 +537,6 @@ def setup_coupling():
     )
     _state.hp_field_tgt = Field.create(
         "var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
-    )
-
-    _state.hp_forcing_src = Field.create(
-        "forcing_remap",
-        source_comp,
-        icon_cell_centers,
-        forcing_nlev,
-        step_len,
-        TimeUnit.SECOND,
-    )
-    _state.hp_forcing_tgt = Field.create(
-        "forcing_target",
-        target_comp,
-        hp_points,
-        forcing_nlev,
-        step_len,
-        TimeUnit.SECOND,
     )
 
     interp = InterpolationStack()
@@ -596,19 +554,6 @@ def setup_coupling():
         Reduction.TIME_NONE,
         interp,
     )
-    yac.def_couple(
-        "icon_r2b4_source",
-        "icon_grid",
-        "forcing_remap",
-        "healpix_target",
-        "hp_level6_grid",
-        "forcing_target",
-        step_len,
-        TimeUnit.SECOND,
-        Reduction.TIME_NONE,
-        interp,
-    )
-
     # Reverse coupling: HEALPix prediction -> ICON grid (mirrors forward ua coupling)
     _state.pred_hp_src = Field.create(
         "pred_hp_src", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
@@ -670,9 +615,6 @@ def training():
         return
 
     icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
-    icon_forcing_cells = _extract_icon_cells(
-        _state.icon_forcing
-    )  # (ncells,) or (ncells, 1)
     AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)  # (ncells, nlev_ua)
 
     # Interpolation from native ICON grid to HEALPix using YAC
@@ -680,15 +622,8 @@ def training():
     icon_var_cells_np = (
         icon_var_cells.get() if hasattr(icon_var_cells, "get") else icon_var_cells
     )
-    icon_forcing_cells_np = (
-        icon_forcing_cells.get()
-        if hasattr(icon_forcing_cells, "get")
-        else icon_forcing_cells
-    )
     _state.hp_field_src.put(icon_var_cells_np)
-    _state.hp_forcing_src.put(icon_forcing_cells_np)
     var_hpx, info = _state.hp_field_tgt.get()
-    forcing_hpx, _ = _state.hp_forcing_tgt.get()
 
     # Convert numpy/cupy arrays from YAC to float32 GPU tensors of shape (n_pixels, nlev).
     # YAC returns (nlev, ncells) for multi-level fields and (ncells,) for single-level.
@@ -698,15 +633,6 @@ def training():
     elif var_hpx_t.ndim == 2:
         var_hpx_t = var_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
 
-    forcing_hpx_t = torch.as_tensor(xp.asarray(forcing_hpx), device="cuda").float()
-    if forcing_hpx_t.ndim == 1:
-        forcing_hpx_t = forcing_hpx_t.unsqueeze(-1)
-    elif forcing_hpx_t.ndim == 2:
-        forcing_hpx_t = forcing_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
-
-    ts_faces = _to_hpx_faces(
-        forcing_hpx_t
-    )  # (faces, 1, nside, nside) — needed for YAC exchange
     ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev_ua, nside, nside)
 
     mean = ua_faces.mean(dim=(0, 2, 3), keepdim=True)
@@ -721,7 +647,7 @@ def training():
         )
 
     unix_seconds = _icon_time_unix_seconds()
-    trainer = _get_trainer(nlev=_state.var_nlev_groups[1])
+    trainer = _get_trainer(nlev=_state.var_nlev_groups[0])
     snapshot = trainer.prepare_snapshot(ua_faces_norm, unix_seconds)
 
     # horizon = _sample_horizon()
@@ -759,7 +685,7 @@ def training():
     # Run inference and scatter prediction to ICON grid via reverse YAC coupling
     pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32
     # Denormalize prediction: original = normalized * std + mean
-    pred_faces_denorm = pred_faces * _state.pending_example.std + _state.pending_example.mean
+    pred_faces_denorm = pred_faces * std + mean
     pred_flat_np = (
         _from_hpx_faces(pred_faces_denorm).cpu().numpy()
     )  # (n_local_hp_cells, nlev) float32
