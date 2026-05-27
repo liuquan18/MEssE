@@ -35,8 +35,8 @@ if _PLUGIN_DIR not in sys.path:
 from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
-ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "ua")
-HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
+ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u")
+HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "7"))
 MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
@@ -86,25 +86,30 @@ world_size = comm.Get_size()
 # PyTorch distributed initialization.
 # Non-GPU ranks never enter NCCL or the online UNet trainer.
 # ----------------------------------------------------------------------------
-# GPU detection: require SLURM to have *explicitly* assigned a GPU device to this
-# task via CUDA_VISIBLE_DEVICES.  Non-GPU ranks either get CUDA_VISIBLE_DEVICES
-# unset, empty, or set to "NoDevFiles".  If CUDA_VISIBLE_DEVICES is absent, the
-# task inherits all node GPUs, making torch.cuda.device_count() > 0 unreliable.
-_cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-_cv_assigned = (
-    bool(_cuda_vis)
-    and _cuda_vis not in ("NoDevFiles", "MIG-GPU")
-    and _cuda_vis[0].isdigit()
-)
-has_gpu = _cv_assigned and torch.cuda.is_available() and torch.cuda.device_count() > 0
+# GPU detection: use SLURM_LOCALID (local rank within the node, 0-based) as
+# the authoritative source.  levante.sh assigns CUDA_VISIBLE_DEVICES via
+# local_rank % num_gpus, so local rank 4 (the IO/non-compute rank) also
+# receives CUDA_VISIBLE_DEVICES='0', making CUDA_VISIBLE_DEVICES alone
+# unreliable.  Only local ranks 0-3 are designated as compute GPU ranks.
+# ICON can launch more MPI tasks per node than physical GPUs (e.g. 5 tasks vs 4 GPUs).
+# We use the SLURM local rank to identify which tasks are GPU-bearing.
+local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
+gpus_per_node = 4
+has_gpu = local_rank >= 0 and local_rank < gpus_per_node
+
+# Count how many MPI ranks are GPU-bearing globally.
+num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
+
 print(
-    f"[rank={rank}] has_gpu={has_gpu} "
-    f"CUDA_VISIBLE_DEVICES={_cuda_vis!r} "
-    f"device_count={torch.cuda.device_count() if torch.cuda.is_available() else 0}",
-    file=sys.stderr
+    f"[rank={rank}] MPI world size={world_size}, num_calculate_processes={num_calculate_processes}",
+    file=sys.stderr,
 )
 
-num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
+print(
+    f"[rank={rank}] local_rank={local_rank}, gpus_per_node={gpus_per_node}, "
+    f"has_gpu={has_gpu}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
+    file=sys.stderr,
+)
 
 compute_rank: Optional[int] = None
 compute_comm: Optional[MPI.Comm] = None
@@ -129,7 +134,7 @@ if has_gpu:
     torch.cuda.manual_seed(42)
     comin.print_info(
         f"[rank={rank}] PyTorch distributed initialised: "
-        f"compute_rank={compute_rank}/{num_calculate_processes}"
+        f"compute_rank={compute_rank}+1/{num_calculate_processes}"
     )
 else:
     _ = comm.Split(color=1, key=rank)
@@ -142,27 +147,38 @@ domain = comin.descrdata_get_domain(DOMAIN_ID)
 
 assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
 yac = YAC.from_id(glob.yac_instance_id)
-source_comp = yac.predef_comp("icon_r2b4_source")
 
-connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (
-    np.asarray(domain.cells.vertex_idx) - 1
-)
+# Only GPU (compute) ranks register YAC components and grids.
+# The IO rank must not call predef_comp or any grid/point definition —
+# doing so would register rank 4 as a member of icon_r2b4_source and cause
+# YAC to expect source field data from it during interpolation, which it
+# never provides (it returns early from setup_coupling / training).
+if has_gpu:
+    source_comp = yac.predef_comp("icon_r2b4_source")
+    target_comp = yac.predef_comp("healpix_target")
 
-icon_grid = UnstructuredGrid(
-    "icon_grid",
-    np.ones(domain.cells.ncells, dtype=np.int32) * 3,
-    np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]),
-    np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]),
-    np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells],
-)
+    connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (
+        np.asarray(domain.cells.vertex_idx) - 1
+    )
 
-icon_cell_centers = icon_grid.def_points(
-    Location.CELL,
-    np.ravel(domain.cells.clon)[: domain.cells.ncells],
-    np.ravel(domain.cells.clat)[: domain.cells.ncells],
-)
+    icon_grid = UnstructuredGrid(
+        "icon_grid",
+        np.ones(domain.cells.ncells, dtype=np.int32) * 3,
+        np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]),
+        np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]),
+        np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells],
+    )
 
-target_comp = yac.predef_comp("healpix_target")
+    icon_cell_centers = icon_grid.def_points(
+        Location.CELL,
+        np.ravel(domain.cells.clon)[: domain.cells.ncells],
+        np.ravel(domain.cells.clat)[: domain.cells.ncells],
+    )
+else:
+    source_comp = None
+    target_comp = None
+    icon_grid = None
+    icon_cell_centers = None
 
 # Build HEALPix target grid with healpy
 nside = 2**HPX_LEVEL
@@ -225,20 +241,12 @@ def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
     return grid, points
 
 
-if len(local_hp_indices) > 0:
+if has_gpu:
     hp_grid, hp_points = _make_healpix_grid(
         "hp_level6_grid", nside, cell_idx=local_hp_indices
     )
 else:
-    # IO / non-compute rank: empty partition to satisfy YAC coupling setup
-    hp_grid = UnstructuredGrid(
-        "hp_level6_grid",
-        np.zeros(0, dtype=np.int32),
-        np.zeros(0),
-        np.zeros(0),
-        np.zeros(0, dtype=np.int32),
-    )
-    hp_points = hp_grid.def_points(Location.CELL, np.zeros(0), np.zeros(0))
+    hp_grid = hp_points = None
 
 
 def _extract_icon_cells(data_array) -> xp.ndarray:
@@ -352,7 +360,7 @@ class ForecastExample:
     horizon: int
     due_step: int
     mean: torch.Tensor  # Per-level mean for denormalization
-    std: torch.Tensor   # Per-level std for denormalization
+    std: torch.Tensor  # Per-level std for denormalization
 
 
 # ----------------------------------------------------------------------------
@@ -487,7 +495,9 @@ def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
     consistent after a NaN-triggered recovery.
     """
     if not os.path.exists(CHECKPOINT_PATH):
-        comin.print_info(f"[rank={rank}] No checkpoint to roll back to — weights remain corrupted")
+        comin.print_info(
+            f"[rank={rank}] No checkpoint to roll back to — weights remain corrupted"
+        )
         return 0
     ckpt = torch.load(
         CHECKPOINT_PATH,
@@ -511,9 +521,7 @@ def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
 
 var_descriptor = ("var_predict", DOMAIN_ID)
 comin.var_request_add(var_descriptor, lmodexclusive=True)
-comin.metadata_set(
-    var_descriptor, zaxis_id=comin.COMIN_ZAXIS_3D
-)
+comin.metadata_set(var_descriptor, zaxis_id=comin.COMIN_ZAXIS_3D)
 
 
 # secondary constructor
@@ -536,6 +544,10 @@ def sec_ctor():
 
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
 def setup_coupling():
+    # Non-GPU (IO) ranks are not part of the healpix_target component and
+    # have no HEALPix grid objects — skip all YAC field/coupling definitions.
+    if not has_gpu:
+        return
 
     step_len = str(int(comin.descrdata_get_timesteplength(1)))
     _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
