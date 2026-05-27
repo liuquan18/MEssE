@@ -35,8 +35,8 @@ if _PLUGIN_DIR not in sys.path:
 from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
-ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "ua")
-HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
+ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u")
+HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "7"))
 MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
@@ -157,11 +157,14 @@ icon_cell_centers = icon_grid.def_points(
     np.ravel(domain.cells.clat)[: domain.cells.ncells],
 )
 
-target_comp = yac.predef_comp("healpix_target")
-
-# For parallel target: distribute HEALPix cells across GPU compute ranks only
+# Only computing ranks (one per HEALPix face) join the healpix_target component.
+# Non-computing ranks do not join this component, so YAC will not wait for them
+# to call put/get on HEALPix fields.  All ranks remain in source_comp (ICON grid)
+# and must still participate in the ICON-side YAC exchanges.
+nside = 2**HPX_LEVEL
 total_hp_cells = 12 * 4**HPX_LEVEL
 if has_gpu:
+    target_comp = yac.predef_comp("healpix_target")
     cells_per_rank = total_hp_cells // num_calculate_processes
     start_idx = compute_rank * cells_per_rank
     # Last GPU rank takes the remainder
@@ -170,13 +173,11 @@ if has_gpu:
         if compute_rank != num_calculate_processes - 1
         else total_hp_cells
     )
+    local_hp_indices = np.arange(start_idx, end_idx)
 else:
+    target_comp = None
     start_idx = 0
     end_idx = 0
-
-# Build HEALPix target grid with healpy
-nside = 2**HPX_LEVEL
-local_hp_indices = np.arange(start_idx, end_idx)
 
 
 def _xyz2lonlat(xyz):
@@ -215,20 +216,12 @@ def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
     return grid, points
 
 
-if len(local_hp_indices) > 0:
+if has_gpu:
     hp_grid, hp_points = _make_healpix_grid(
         "hp_level6_grid", nside, cell_idx=local_hp_indices
     )
 else:
-    # IO / non-compute rank: empty partition to satisfy YAC coupling setup
-    hp_grid = UnstructuredGrid(
-        "hp_level6_grid",
-        np.zeros(0, dtype=np.int32),
-        np.zeros(0),
-        np.zeros(0),
-        np.zeros(0, dtype=np.int32),
-    )
-    hp_points = hp_grid.def_points(Location.CELL, np.zeros(0), np.zeros(0))
+    hp_points = None
 
 
 def _extract_icon_cells(data_array) -> xp.ndarray:
@@ -337,7 +330,7 @@ class ForecastExample:
     horizon: int
     due_step: int
     mean: torch.Tensor  # Per-level mean for denormalization
-    std: torch.Tensor   # Per-level std for denormalization
+    std: torch.Tensor  # Per-level std for denormalization
 
 
 # ----------------------------------------------------------------------------
@@ -472,7 +465,9 @@ def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
     consistent after a NaN-triggered recovery.
     """
     if not os.path.exists(CHECKPOINT_PATH):
-        comin.print_info(f"[rank={rank}] No checkpoint to roll back to — weights remain corrupted")
+        comin.print_info(
+            f"[rank={rank}] No checkpoint to roll back to — weights remain corrupted"
+        )
         return 0
     ckpt = torch.load(
         CHECKPOINT_PATH,
@@ -496,9 +491,7 @@ def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
 
 var_descriptor = ("var_predict", DOMAIN_ID)
 comin.var_request_add(var_descriptor, lmodexclusive=True)
-comin.metadata_set(
-    var_descriptor, zaxis_id=comin.COMIN_ZAXIS_3D
-)
+comin.metadata_set(var_descriptor, zaxis_id=comin.COMIN_ZAXIS_3D)
 
 
 # secondary constructor
@@ -541,16 +534,20 @@ def setup_coupling():
         f"[rank={rank}] ua nlev={var_nlev}, groups={_state.var_nlev_groups}"
     )
 
+    # ICON source field: all ranks define this (they all own a slice of ICON cells).
     _state.hp_field_src = Field.create(
         "var_remap", source_comp, icon_cell_centers, var_nlev, step_len, TimeUnit.SECOND
     )
-    _state.hp_field_tgt = Field.create(
-        "var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
-    )
+    # HEALPix target field: only compute ranks join healpix_target component.
+    if has_gpu:
+        _state.hp_field_tgt = Field.create(
+            "var_target", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
+        )
 
     interp = InterpolationStack()
     interp.add_nnn(NNNReductionType.AVG, n=1)
 
+    # def_couple is called by all ranks; YAC resolves coupling per component membership.
     yac.def_couple(
         "icon_r2b4_source",
         "icon_grid",
@@ -564,9 +561,11 @@ def setup_coupling():
         interp,
     )
     # Reverse coupling: HEALPix prediction -> ICON grid (mirrors forward ua coupling)
-    _state.pred_hp_src = Field.create(
-        "pred_hp_src", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
-    )
+    if has_gpu:
+        _state.pred_hp_src = Field.create(
+            "pred_hp_src", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
+        )
+    # All ICON ranks receive the prediction to scatter back to their local ICON cells.
     _state.pred_icon_tgt = Field.create(
         "pred_icon_tgt",
         source_comp,
@@ -595,9 +594,28 @@ def setup_coupling():
 def training():
     """Online UNet training callback called by ICON at each time step."""
 
+    # ------------------------------------------------------------------
+    # STEP 1 — All ICON ranks push their local cell data to the forward
+    # YAC coupling.  Every rank owns a slice of the ICON grid, so all
+    # ranks must contribute; otherwise the interpolation to HEALPix is
+    # incomplete and YAC stalls.
+    # ------------------------------------------------------------------
+    icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
+    icon_var_cells_np = (
+        icon_var_cells.get() if hasattr(icon_var_cells, "get") else icon_var_cells
+    )
+    _state.hp_field_src.put(icon_var_cells_np)
+
     if not has_gpu:
+        # Non-compute ranks: collect the HEALPix→ICON prediction written by
+        # the GPU ranks and scatter it to their local ICON cells, then return.
+        pred_icon_np, _ = _state.pred_icon_tgt.get()
+        _insert_icon_cells(pred_icon_np.T.astype(np.float64), _state.AI_pred)
         return
 
+    # ------------------------------------------------------------------
+    # GPU / compute ranks from here.
+    # ------------------------------------------------------------------
     current_step = _state.current_step
     _state.current_step += 1
 
@@ -611,27 +629,11 @@ def training():
         if current_step % steps_per_save == 0:
             _save_checkpoint(_state.trainer, current_step)
 
-    # Mode: Waiting; between t and t+horizon
-    if (
-        _state.pending_example is not None
-        and current_step < _state.pending_example.due_step
-    ):
-        comin.print_info(
-            f"[rank={rank}] step={current_step} waiting "
-            f"horizon={_state.pending_example.horizon} "
-            f"(due={_state.pending_example.due_step})"
-        )
-        return
-
-    icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
-    AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)  # (ncells, nlev_ua)
-
-    # Interpolation from native ICON grid to HEALPix using YAC
-    # currently YAC only supports numpy arrays, wait for update to support cupy arrays
-    icon_var_cells_np = (
-        icon_var_cells.get() if hasattr(icon_var_cells, "get") else icon_var_cells
-    )
-    _state.hp_field_src.put(icon_var_cells_np)
+    # ------------------------------------------------------------------
+    # STEP 2 — GPU ranks receive the HEALPix-interpolated field from YAC.
+    # This is called at every step (no early-return during waiting) so the
+    # reverse coupling is never left in a stalled state.
+    # ------------------------------------------------------------------
     var_hpx, info = _state.hp_field_tgt.get()
 
     # Convert numpy/cupy arrays from YAC to float32 GPU tensors of shape (n_pixels, nlev).
@@ -662,12 +664,15 @@ def training():
     # horizon = _sample_horizon()
     horizon = 10  # for debugging, use a fixed horizon of 10 steps
 
+    # ------------------------------------------------------------------
+    # STEP 3 — Training logic: only train when the due step is reached.
+    # ------------------------------------------------------------------
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
         _state.pending_example = _enqueue_snapshot(
             snapshot, current_step, horizon=horizon, mean=mean, std=std
         )
-    else:
+    elif current_step >= _state.pending_example.due_step:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
         comin.print_info(
             f"[rank={rank}] step={current_step} ua_faces: "
@@ -690,8 +695,19 @@ def training():
             _state.pending_example = _enqueue_snapshot(
                 snapshot, current_step, horizon=horizon, mean=mean, std=std
             )
+    else:
+        # Waiting for the due step: log only; inference still runs below.
+        comin.print_info(
+            f"[rank={rank}] step={current_step} waiting "
+            f"horizon={_state.pending_example.horizon} "
+            f"(due={_state.pending_example.due_step})"
+        )
 
-    # Run inference and scatter prediction to ICON grid via reverse YAC coupling
+    # ------------------------------------------------------------------
+    # STEP 4 — Run inference at every step and push prediction to ICON.
+    # Inference during waiting steps keeps the reverse YAC coupling alive
+    # across all time steps so non-GPU ranks never stall.
+    # ------------------------------------------------------------------
     pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32
     # Denormalize prediction: original = normalized * std + mean
     pred_faces_denorm = pred_faces * std + mean
