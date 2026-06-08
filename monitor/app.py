@@ -1,5 +1,7 @@
 import re
 import argparse
+import os
+import glob
 from datetime import datetime
 from flask import Flask, jsonify, render_template_string
 
@@ -10,8 +12,18 @@ app = Flask(__name__)
 _job_id = None
 
 
+def find_log_file(job_id):
+    """Search for log file matching job_id in LOG_DIR"""
+    pattern = os.path.join(LOG_DIR, f"LOG.exp.*.run.{job_id}.o*")
+    matches = glob.glob(pattern)
+    return matches[0] if matches else None
+
+
 def parse_log():
-    log_path = f"{LOG_DIR}/{LOG_NAME.format(job_id=_job_id)}"
+    log_path = find_log_file(_job_id)
+    if not log_path:
+        return None, f"Log file not found for job {_job_id}"
+
     step_times = {}
     losses = []
 
