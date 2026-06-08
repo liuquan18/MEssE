@@ -33,8 +33,8 @@ if [[ ! -f "$COMIN_PLUGIN_SCRIPT" ]]; then
     exit 1
 fi
 
-
-ICON_RUN_SCRIPT="${ICON_BUILD_DIR}/run/exp.aes_amip_messe_test.run"
+# ICON_RUN_SCRIPT="${ICON_BUILD_DIR}/run/exp.aes_amip_messe_test.run"
+ICON_RUN_SCRIPT="${ICON_BUILD_DIR}/run/exp.atm_nwp_jsbach_xpp_r2b4.run"
 
 if [[ ! -f "$ICON_RUN_SCRIPT" ]]; then
     echo "Error: ICON runscript not found: $ICON_RUN_SCRIPT" >&2
