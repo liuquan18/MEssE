@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import Flask, jsonify, render_template_string
 
 LOG_DIR = "/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/run"
-LOG_NAME = "LOG.exp.aes_amip_messe_test.run.{job_id}.o"
+LOG_NAME = "LOG.exp.atm_tracer_Hadley_comin_portability.run.{job_id}.o"
 
 app = Flask(__name__)
 _job_id = None
