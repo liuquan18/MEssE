@@ -66,7 +66,8 @@ git_checkout_or_update https://gitlab.dkrz.de/icon/icon-model.git release-2025.1
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
 mkdir -p $ICON_BUILD_DIR
 pushd $ICON_BUILD_DIR
-$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
+# $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
+$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-ecrad --enable-bundled-python=comin  --disable-silent-rules
 # Export ICON's YAC symbols globally so the Python yac.so shares the same lookup table
 # --export-dynamic-symbol requires binutils>=2.35; use --dynamic-list for compatibility with RHEL8 ld (~2.30)
 printf '{ yac_*; };\n' > yac_export.list
