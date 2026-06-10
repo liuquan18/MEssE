@@ -86,11 +86,6 @@ world_size = comm.Get_size()
 # PyTorch distributed initialization.
 # Non-GPU ranks never enter NCCL or the online UNet trainer.
 # ----------------------------------------------------------------------------
-# GPU detection: use SLURM_LOCALID (local rank within the node, 0-based) as
-# the authoritative source.  levante.sh assigns CUDA_VISIBLE_DEVICES via
-# local_rank % num_gpus, so local rank 4 (the IO/non-compute rank) also
-# receives CUDA_VISIBLE_DEVICES='0', making CUDA_VISIBLE_DEVICES alone
-# unreliable.  Only local ranks 0-3 are designated as compute GPU ranks.
 # ICON can launch more MPI tasks per node than physical GPUs (e.g. 5 tasks vs 4 GPUs).
 # We use the SLURM local rank to identify which tasks are GPU-bearing.
 local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
@@ -149,10 +144,6 @@ assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
 yac = YAC.from_id(glob.yac_instance_id)
 
 # Only GPU (compute) ranks register YAC components and grids.
-# The IO rank must not call predef_comp or any grid/point definition —
-# doing so would register rank 4 as a member of icon_r2b4_source and cause
-# YAC to expect source field data from it during interpolation, which it
-# never provides (it returns early from setup_coupling / training).
 if has_gpu:
     source_comp = yac.predef_comp("icon_r2b4_source")
     target_comp = yac.predef_comp("healpix_target")
