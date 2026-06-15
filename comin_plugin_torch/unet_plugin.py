@@ -42,6 +42,8 @@ EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
+SNAPSHOTS_DIR = os.path.join(EXPERIMENTS_DIR, "snapshots")
+os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 SAVE_INTERVAL_SECONDS: int = (
     86400  # P1D — save the model the same frequency as icon output
 )
@@ -160,11 +162,17 @@ if has_gpu:
         np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells],
     )
 
+    print("vlon_max:", np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]).max(), file=sys.stderr)
+    print("vlon_min:", np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]).min(), file=sys.stderr)
+    print("vlat_max:", np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]).max(), file=sys.stderr)
+    print("vlat_min:", np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]).min(), file=sys.stderr)
+
     icon_cell_centers = icon_grid.def_points(
         Location.CELL,
         np.ravel(domain.cells.clon)[: domain.cells.ncells],
         np.ravel(domain.cells.clat)[: domain.cells.ncells],
     )
+
 else:
     source_comp = None
     target_comp = None
@@ -504,6 +512,30 @@ def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
     return step
 
 
+def _save_snapshot_pair(
+    input_faces: torch.Tensor, pred_faces: torch.Tensor, step: int
+) -> None:
+    """Gather HEALPix face pairs from all compute ranks and save to disk (rank 0 only).
+
+    Saves a compressed .npz file with:
+      input : (12, nlev, nside, nside)  — denormalized ICON field on HEALPix faces
+      pred  : (12, nlev, nside, nside)  — UNet prediction on HEALPix faces
+      step  : scalar int
+    Faces are stored in NESTED HEALPix ordering, matching the plugin convention.
+    """
+    local_inp = input_faces.cpu().numpy()  # (local_faces, nlev, nside, nside)
+    local_pred = pred_faces.cpu().numpy()
+    all_inp = compute_comm.gather(local_inp, root=0)
+    all_pred = compute_comm.gather(local_pred, root=0)
+    if compute_rank != 0:
+        return
+    full_inp = np.concatenate(all_inp, axis=0)  # (12, nlev, nside, nside)
+    full_pred = np.concatenate(all_pred, axis=0)
+    snap_path = os.path.join(SNAPSHOTS_DIR, f"snapshot_step{step:06d}.npz")
+    np.savez_compressed(snap_path, input=full_inp, pred=full_pred, step=step)
+    comin.print_info(f"[rank={rank}] Snapshot saved at step={step} \u2192 {snap_path}")
+
+
 # ----------------------------------------------------------------------------
 # COMIN callbacks
 # ----------------------------------------------------------------------------
@@ -642,8 +674,6 @@ def training():
         return
 
     icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
-    AI_var_pred_cells = _extract_icon_cells(_state.AI_pred)  # (ncells, nlev_ua)
-
     # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
     icon_var_cells_np = (
@@ -713,6 +743,11 @@ def training():
     pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32
     # Denormalize prediction: original = normalized * std + mean
     pred_faces_denorm = pred_faces * std + mean
+    # Save (input, prediction) snapshot pair at the same daily interval as checkpoints.
+    if _state.step_len_seconds is not None and current_step > 0:
+        _steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
+        if current_step % _steps_per_save == 0:
+            _save_snapshot_pair(ua_faces, pred_faces_denorm, current_step)
     pred_flat_np = (
         _from_hpx_faces(pred_faces_denorm).cpu().numpy()
     )  # (n_local_hp_cells, nlev) float32
