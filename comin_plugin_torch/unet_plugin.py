@@ -264,7 +264,8 @@ def _extract_icon_cells(data_array) -> xp.ndarray:
 def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
     """Scatter (ncells, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
 
-    Inverse of _extract_icon_cells: cell c maps to buf[c % nproma, :, c // nproma].
+    Inverse of _extract_icon_cells: uses Fortran-order unraveling to match _extract_icon_cells.
+    Fortran order: cell c in flattened array maps to buf[c % nproma, :, c // nproma].
     """
     nc, nlev = pred_cells.shape
     buf = xp.asarray(buffer)
@@ -272,7 +273,8 @@ def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
         buf = buf[..., 0]
     nproma_val = buf.shape[0]
     c = np.arange(nc)
-    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells)
+    # Invert Fortran-order reshape: unravel index c in Fortran order
+    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(nc, nlev)
 
 
 def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
