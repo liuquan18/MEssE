@@ -1,28 +1,17 @@
 import re
 import argparse
 import os
-import glob
 from datetime import datetime
 from flask import Flask, jsonify, render_template_string
 
-LOG_DIR = "/work/mh0033/m300883/Project_week_global/MEssE/build_atm/messe_env/build_dir/icon-model/run"
-LOG_NAME = "LOG.exp.atm_tracer_Hadley_comin_portability.run.{job_id}.o"
-
 app = Flask(__name__)
-_job_id = None
-
-
-def find_log_file(job_id):
-    """Search for log file matching job_id in LOG_DIR"""
-    pattern = os.path.join(LOG_DIR, f"LOG.exp.*.run.{job_id}.o*")
-    matches = glob.glob(pattern)
-    return matches[0] if matches else None
+_log_file = None
 
 
 def parse_log():
-    log_path = find_log_file(_job_id)
-    if not log_path:
-        return None, f"Log file not found for job {_job_id}"
+    log_path = _log_file
+    if not log_path or not os.path.exists(log_path):
+        return None, f"Log file not found: {log_path}"
 
     step_times = {}
     losses = []
@@ -31,7 +20,7 @@ def parse_log():
         with open(log_path) as f:
             for line in f:
                 m = re.match(
-                    r"0:\s+Time step:\s+(\d+) model time (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
+                    r"0:\s+Time step:\s+(\d+),\s+model time:\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
                     line,
                 )
                 if m:
@@ -188,7 +177,7 @@ setInterval(tick, 1000);
 
 @app.route("/")
 def index():
-    return render_template_string(HTML, job_id=_job_id)
+    return render_template_string(HTML, job_id=os.path.basename(_log_file))
 
 
 @app.route("/data")
@@ -201,10 +190,10 @@ def data():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ICON training loss monitor")
-    parser.add_argument("job_id", help="SLURM job ID")
+    parser.add_argument("log_file", help="Path to the ICON log file")
     parser.add_argument("port", type=int, help="Port to serve on")
     args = parser.parse_args()
-    _job_id = args.job_id
-    print(f"Monitoring job {args.job_id}")
+    _log_file = os.path.abspath(args.log_file)
+    print(f"Monitoring log: {_log_file}")
     print(f"Open: http://localhost:{args.port}")
     app.run(host="0.0.0.0", port=args.port, debug=False)
