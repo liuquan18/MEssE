@@ -35,8 +35,8 @@ if _PLUGIN_DIR not in sys.path:
 from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
-ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u")
-HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "7"))
+ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "pres_sfc")
+HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
 MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
@@ -45,7 +45,7 @@ CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
 SNAPSHOTS_DIR = os.path.join(EXPERIMENTS_DIR, "snapshots")
 os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 SAVE_INTERVAL_SECONDS: int = (
-    86400  # P1D — save the model the same frequency as icon output
+    4500  # P1D — save the model the same frequency as icon output
 )
 
 # ----------------------------------------------------------------------------
@@ -145,7 +145,7 @@ domain = comin.descrdata_get_domain(DOMAIN_ID)
 assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
 yac = YAC.from_id(glob.yac_instance_id)
 
-# Only GPU (compute) ranks register YAC components and grids.
+# the native ICON grid
 if has_gpu:
     source_comp = yac.predef_comp("icon_r2b4_source")
     target_comp = yac.predef_comp("healpix_target")
@@ -162,11 +162,6 @@ if has_gpu:
         np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells],
     )
 
-    print("vlon_max:", np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]).max(), file=sys.stderr)
-    print("vlon_min:", np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]).min(), file=sys.stderr)
-    print("vlat_max:", np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]).max(), file=sys.stderr)
-    print("vlat_min:", np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]).min(), file=sys.stderr)
-
     icon_cell_centers = icon_grid.def_points(
         Location.CELL,
         np.ravel(domain.cells.clon)[: domain.cells.ncells],
@@ -179,31 +174,8 @@ else:
     icon_grid = None
     icon_cell_centers = None
 
+
 # Build HEALPix target grid with healpy
-nside = 2**HPX_LEVEL
-
-# For parallel target: distribute whole HEALPix faces across GPU compute ranks.
-# HEALPix always has exactly 12 faces; each face has nside² pixels. Partitioning
-# by pixels (as before) can leave non-face-aligned boundaries that break
-# _to_hpx_faces when num_calculate_processes does not evenly divide total pixels.
-_pixels_per_face = nside * nside
-_total_hp_faces = 12
-total_hp_cells = _total_hp_faces * _pixels_per_face
-
-if has_gpu:
-    _faces_per_rank = _total_hp_faces // num_calculate_processes
-    _extra_faces = _total_hp_faces % num_calculate_processes
-    _start_face = compute_rank * _faces_per_rank + min(compute_rank, _extra_faces)
-    _n_local_faces = _faces_per_rank + (1 if compute_rank < _extra_faces else 0)
-    _end_face = _start_face + _n_local_faces
-    start_idx = _start_face * _pixels_per_face
-    end_idx = _end_face * _pixels_per_face
-else:
-    start_idx = 0
-    end_idx = 0
-local_hp_indices = np.arange(start_idx, end_idx)
-
-
 def _xyz2lonlat(xyz):
     xyz = np.array(xyz)
     lat = np.arcsin(xyz[..., 2])
@@ -239,6 +211,25 @@ def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
     points = grid.def_points(Location.CELL, clon, clat)
     return grid, points
 
+nside = 2**HPX_LEVEL
+
+_pixels_per_face = nside * nside
+_total_hp_faces = 12
+total_hp_cells = _total_hp_faces * _pixels_per_face
+
+if has_gpu:
+    _faces_per_rank = _total_hp_faces // num_calculate_processes
+    _extra_faces = _total_hp_faces % num_calculate_processes
+    _start_face = compute_rank * _faces_per_rank + min(compute_rank, _extra_faces)
+    _n_local_faces = _faces_per_rank + (1 if compute_rank < _extra_faces else 0)
+    _end_face = _start_face + _n_local_faces
+    start_idx = _start_face * _pixels_per_face
+    end_idx = _end_face * _pixels_per_face
+else:
+    start_idx = 0
+    end_idx = 0
+local_hp_indices = np.arange(start_idx, end_idx)
+
 
 if has_gpu:
     hp_grid, hp_points = _make_healpix_grid(
@@ -246,59 +237,6 @@ if has_gpu:
     )
 else:
     hp_grid = hp_points = None
-
-
-def _extract_icon_cells(data_array) -> xp.ndarray:
-    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
-    nc = domain.cells.ncells
-    data_xp = xp.asarray(data_array)
-    # Drop trailing singleton dimensions added by COMIN
-    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
-        data_xp = data_xp[..., 0]
-    if data_xp.ndim == 2:
-        return data_xp.ravel(order="F")[:nc]
-    nlev = data_xp.shape[1]
-    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
-
-
-def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
-    """Scatter (ncells, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
-
-    Inverse of _extract_icon_cells: uses Fortran-order unraveling to match _extract_icon_cells.
-    Fortran order: cell c in flattened array maps to buf[c % nproma, :, c // nproma].
-    """
-    nc, nlev = pred_cells.shape
-    buf = xp.asarray(buffer)
-    while buf.ndim > 3 and buf.shape[-1] == 1:
-        buf = buf[..., 0]
-    nproma_val = buf.shape[0]
-    c = np.arange(nc)
-    # Invert Fortran-order reshape: unravel index c in Fortran order
-    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(nc, nlev)
-
-
-def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
-    """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
-    nside = 2**HPX_LEVEL
-    n_owned, nlev = owned_vals.shape
-    faces = n_owned // (nside * nside)
-    if faces * nside * nside != n_owned:
-        raise ValueError(
-            f"_to_hpx_faces: n_owned={n_owned} is not divisible by nside²={nside*nside}. "
-            f"Check num_calculate_processes ({num_calculate_processes}) and HEALPix partition. "
-            f"Likely cause: has_gpu detected incorrectly for some ranks."
-        )
-    return (
-        owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
-    )
-
-
-def _from_hpx_faces(pred_faces: torch.Tensor) -> torch.Tensor:
-    """Reshape (faces_per_rank, nlev, nside, nside) back to (n_owned_pixels, nlev).
-
-    Inverse of _to_hpx_faces.
-    """
-    return pred_faces.permute(0, 2, 3, 1).contiguous().reshape(-1, pred_faces.shape[1])
 
 
 # ----------------------------------------------------------------------------
@@ -368,7 +306,6 @@ class ForecastExample:
 # Time helpers
 # ----------------------------------------------------------------------------
 
-
 def _parse_icon_datetime(iso_str: str) -> datetime.datetime:
     """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
     clean = str(iso_str).split(".")[0].rstrip("Z")
@@ -380,8 +317,66 @@ def _icon_time_unix_seconds() -> float:
     return float(_parse_icon_datetime(comin.current_get_datetime()).timestamp())
 
 
+
 # ----------------------------------------------------------------------------
-# Trainer lifecycle
+# Grid helpers
+# ----------------------------------------------------------------------------
+
+def _extract_icon_cells(data_array) -> xp.ndarray:
+    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
+    nc = domain.cells.ncells
+    data_xp = xp.asarray(data_array)
+    # Drop trailing singleton dimensions added by COMIN
+    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
+        data_xp = data_xp[..., 0]
+    if data_xp.ndim == 2:
+        return data_xp.ravel(order="F")[:nc]
+    nlev = data_xp.shape[1]
+    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
+
+
+def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
+    """Scatter (ncells, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
+
+    Inverse of _extract_icon_cells: uses Fortran-order unraveling to match _extract_icon_cells.
+    Fortran order: cell c in flattened array maps to buf[c % nproma, :, c // nproma].
+    """
+    nc, nlev = pred_cells.shape
+    buf = xp.asarray(buffer)
+    while buf.ndim > 3 and buf.shape[-1] == 1:
+        buf = buf[..., 0]
+    nproma_val = buf.shape[0]
+    c = np.arange(nc)
+    # Invert Fortran-order reshape: unravel index c in Fortran order
+    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(nc, nlev)
+
+
+def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
+    """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
+    nside = 2**HPX_LEVEL
+    n_owned, nlev = owned_vals.shape
+    faces = n_owned // (nside * nside)
+    if faces * nside * nside != n_owned:
+        raise ValueError(
+            f"_to_hpx_faces: n_owned={n_owned} is not divisible by nside²={nside*nside}. "
+            f"Check num_calculate_processes ({num_calculate_processes}) and HEALPix partition. "
+            f"Likely cause: has_gpu detected incorrectly for some ranks."
+        )
+    return (
+        owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
+    )
+
+
+def _from_hpx_faces(pred_faces: torch.Tensor) -> torch.Tensor:
+    """Reshape (faces_per_rank, nlev, nside, nside) back to (n_owned_pixels, nlev).
+
+    Inverse of _to_hpx_faces.
+    """
+    return pred_faces.permute(0, 2, 3, 1).contiguous().reshape(-1, pred_faces.shape[1])
+
+
+# ----------------------------------------------------------------------------
+# Trainer helpers
 # ----------------------------------------------------------------------------
 
 
@@ -460,7 +455,7 @@ def _enqueue_snapshot(
 
 
 # ----------------------------------------------------------------------------
-# Checkpoint helpers
+# Checkpoint load/save helpers
 # ----------------------------------------------------------------------------
 
 
@@ -574,11 +569,13 @@ def setup_coupling():
     if not has_gpu:
         return
 
+    # integration rate
     step_len = str(int(comin.descrdata_get_timesteplength(1)))
     _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
 
-    # Derive nlev from each variable's memory layout: COMIN uses (nproma, nlev, nblk)
-    # for 3-D fields and (nproma, nblk) for surface fields.
+    # COMIN uses 
+    #   (nproma, nlev, nblk) for 3-D fields
+    #   (nproma, nblk) for surface fields.
 
     _icon_arr = xp.asarray(_state.icon_var)
     while _icon_arr.ndim > 3 and _icon_arr.shape[-1] == 1:
@@ -615,6 +612,8 @@ def setup_coupling():
         Reduction.TIME_NONE,
         interp,
     )
+
+
     # Reverse coupling: HEALPix prediction -> ICON grid (mirrors forward ua coupling)
     _state.pred_hp_src = Field.create(
         "pred_hp_src", target_comp, hp_points, var_nlev, step_len, TimeUnit.SECOND
@@ -676,6 +675,7 @@ def training():
         return
 
     icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
+
     # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
     icon_var_cells_np = (
@@ -694,6 +694,7 @@ def training():
 
     ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev_ua, nside, nside)
 
+    # normalize
     mean = ua_faces.mean(dim=(0, 2, 3), keepdim=True)
     std = ua_faces.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
     ua_faces_norm = (ua_faces - mean) / std
