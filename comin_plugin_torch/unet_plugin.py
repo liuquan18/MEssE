@@ -35,7 +35,7 @@ if _PLUGIN_DIR not in sys.path:
 from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
-ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "pres_sfc")
+ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
 HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
 MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
@@ -44,8 +44,9 @@ os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
 SNAPSHOTS_DIR = os.path.join(EXPERIMENTS_DIR, "snapshots")
 os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
+DRY_RUN_TIME_SECONDS: int = 4500 #2592000  # 1 month
 SAVE_INTERVAL_SECONDS: int = (
-    4500  # P1D — save the model the same frequency as icon output
+    4500  # 
 )
 
 # ----------------------------------------------------------------------------
@@ -245,8 +246,6 @@ else:
 class _State:
     __slots__ = (
         "current_step",
-        "pending_example",
-        "trainer",
         "icon_var",
         "AI_pred",
         "hp_field_src",
@@ -255,7 +254,16 @@ class _State:
         "pred_icon_tgt",
         "var_nlev_groups",
         "owned_face_ids",
+        "pending_example",
+        "trainer",
         "step_len_seconds",
+        "dryrun_time",
+        "dryrun_done",
+        "accum_count",
+        "hp_accum_sum",
+        "hp_accum_sumsq",
+        "hp_accum_mean",
+        "hp_accum_std",
     )
 
     def __init__(self) -> None:
@@ -279,6 +287,13 @@ class _State:
             None  # HEALPix face indices owned by this rank
         )
         self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
+        self.dryrun_time: Optional[int] = None  # Time for dry run in seconds
+        self.dryrun_done: bool = False  # Whether the dry run is complete
+        self.accum_count: int = 0
+        self.hp_accum_sum: Optional[torch.Tensor] = None
+        self.hp_accum_sumsq: Optional[torch.Tensor] = None
+        self.hp_accum_mean: Optional[torch.Tensor] = None  # Accumulated mean for HEALPix normalization during dry run
+        self.hp_accum_std: Optional[torch.Tensor] = None  # Accumulated std for HEALPix normalization during dry run
 
 
 _state = _State()
@@ -541,7 +556,7 @@ def _save_snapshot_pair(
 
 var_descriptor = ("var_predict", DOMAIN_ID)
 comin.var_request_add(var_descriptor, lmodexclusive=True)
-comin.metadata_set(var_descriptor, zaxis_id=comin.COMIN_ZAXIS_3D)
+comin.metadata_set(var_descriptor, zaxis_id=comin.COMIN_ZAXIS_2D)
 
 
 # secondary constructor
@@ -560,6 +575,7 @@ def sec_ctor():
         ("var_predict", DOMAIN_ID),
         comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
     )
+
 
 
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
@@ -590,6 +606,8 @@ def setup_coupling():
         f"[rank={rank}] ua nlev={var_nlev}, groups={_state.var_nlev_groups}"
     )
 
+
+    # from icon grid to healpix grid
     _state.hp_field_src = Field.create(
         "var_remap", source_comp, icon_cell_centers, var_nlev, step_len, TimeUnit.SECOND
     )
@@ -643,10 +661,84 @@ def setup_coupling():
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
+def dry_run():
+    """Dry run to accumulate mean and std over the first `DRY_RUN_TIME_SECONDS` seconds."""
+
+    # integration rate
+    _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
+
+    if not has_gpu:
+        return
+
+    if _state.dryrun_done:
+        return
+    
+    dry_run_steps = DRY_RUN_TIME_SECONDS // _state.step_len_seconds
+    current_step = _state.current_step
+
+    if current_step < dry_run_steps:
+        icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev), xp array
+
+        # to healpix
+        icon_var_cells_np = (
+            icon_var_cells.get() if hasattr(icon_var_cells, "get") else icon_var_cells
+        )
+
+        _state.hp_field_src.put(icon_var_cells_np)
+        var_hpx, info = _state.hp_field_tgt.get()
+
+        # Apply the same shape transformation as in training so that mean/std
+        # have shape (faces, nlev, nside, nside), matching ua_faces exactly.
+        var_hpx_t = torch.as_tensor(xp.asarray(var_hpx), device="cuda").float()
+        if var_hpx_t.ndim == 1:
+            var_hpx_t = var_hpx_t.unsqueeze(-1)
+        elif var_hpx_t.ndim == 2:
+            var_hpx_t = var_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
+        ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev, nside, nside)
+        ua_faces_d = ua_faces.double()  # float64 for stable accumulation
+
+        if _state.hp_accum_sum is None:
+            _state.hp_accum_sum = torch.zeros_like(ua_faces_d)
+            _state.hp_accum_sumsq = torch.zeros_like(ua_faces_d)
+
+        _state.hp_accum_sum += ua_faces_d
+        _state.hp_accum_sumsq += ua_faces_d ** 2
+
+        _state.accum_count += 1
+        _state.current_step += 1
+
+        comin.print_info(
+            f"[rank={rank}] Dry run step {current_step + 1}/{dry_run_steps}"
+        )
+        return  # don't fall through to finalization on the same call
+
+    # current_step >= dry_run_steps: finalize
+    mean = (_state.hp_accum_sum / _state.accum_count).float()
+    e_x2 = (_state.hp_accum_sumsq / _state.accum_count).float()
+    var = torch.clamp(e_x2 - mean ** 2, min=1e-6)
+    std = torch.sqrt(var)
+
+    _state.hp_accum_mean = mean  # (faces, nlev, nside, nside) float32 CUDA tensor
+    _state.hp_accum_std = std
+    _state.dryrun_done = True
+
+    comin.print_info(
+        f"[rank={rank}] Dry run complete after {_state.accum_count} steps: "
+        f"mean range=[{float(mean.min())}, {float(mean.max())}], "
+        f"std range=[{float(std.min())}, {float(std.max())}]"
+    )
+
+
+
+@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online UNet training callback called by ICON at each time step."""
 
     if not has_gpu:
+        return
+    
+    if not _state.dryrun_done:
+        comin.print_info(f"[rank={rank}] Dry run not complete, skipping training")
         return
 
     current_step = _state.current_step
@@ -681,6 +773,7 @@ def training():
     icon_var_cells_np = (
         icon_var_cells.get() if hasattr(icon_var_cells, "get") else icon_var_cells
     )
+
     _state.hp_field_src.put(icon_var_cells_np)
     var_hpx, info = _state.hp_field_tgt.get()
 
@@ -695,16 +788,10 @@ def training():
     ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev_ua, nside, nside)
 
     # normalize
-    mean = ua_faces.mean(dim=(0, 2, 3), keepdim=True)
-    std = ua_faces.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
+    mean = _state.hp_accum_mean
+    std = _state.hp_accum_std
     ua_faces_norm = (ua_faces - mean) / std
 
-    if not torch.isfinite(ua_faces_norm).all():
-        comin.print_info(
-            f"[rank={rank}] step={current_step} WARNING: NaN/Inf in ua_faces_norm "
-            f"(ua_faces min={ua_faces.min().item():.3f} max={ua_faces.max().item():.3f} "
-            f"std_min={std.min().item():.3e})"
-        )
 
     unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.var_nlev_groups[0])
