@@ -1,14 +1,15 @@
 # Model Essence Extractor (MEssE)
-High-frequency output for km-scale simulations is too big to be stored, but AI emulators precisely rely on these data for training. To address this dilemma, we introduce MEssE --- a framework that trians a surrogate AI model online during ICON simulations using in-memory data. 
+A framework for pretraining surrogate AI models online for km-scale ICON simulations. Documentation and Demo are available in the [overview](./docs/overview.md) page.
 
 # Structure
 ```text
 .
 ├── comin_plugin_JAX                    # project in JAX *under development*
-├── comin_plugin_torch                # in Pytorch 
-│   ├── facecnn_online.py               # simple example of CNN using HEALPix grid to test
-│   ├── fieldspacenn_online.py          # configuration of [FieldSpaceNN](https://github.com/FREVA-CLINT/FieldSpaceNN) ready for online training
-│   └── project_Z_pytorch.py            # data preparation and online training
+├── comin_plugin_torch                  # in Pytorch 
+│   ├── fieldspacenn_online.py          # wrapper of [FieldSpaceNN](https://github.com/FREVA-CLINT/FieldSpaceNN)
+│   ├── fieldspacenn_plugin.py          # the plugin to be connected to COMIN
+│   ├── unet_online.py                  # the plugin to be connected to COMIN
+│   └── unet_plugin.py                  # data preparation and online training
 ├── monitors                            # *under development*
 └── scripts                             # scripts 
     ├── build_env_gpu.sh                # building ICON, ComIn, YAC and preparing python env
@@ -36,11 +37,10 @@ Run ICON with the plugin like so: `./scripts/run_icon_gpu.sh $ICON_BUILD_DIR $CO
 > `COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin_pytorch/project_Z_pytorch.py`  
 > `LEVANTE_ACCOUNT` is your levante project id
 
-## Online interface (unavailable for now)
+## Online interface 
 
 ```bash
-cd $(pwd)/monitor
-./start_monitor.sh 5000 #(any port number)
+./scripts/monitor.sh $LOG_FILE_PATH $local_host_port
 ```
 
-Then access: **http://localhost:5000**
+Then access: **http://localhost:$local_host_port**
