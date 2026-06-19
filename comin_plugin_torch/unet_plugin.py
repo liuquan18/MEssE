@@ -10,6 +10,9 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
+from unet_online import UNetSnapshot, OnlineUNetTrainer
+from utils import parse_icon_datetime, to_hpx_faces, from_hpx_faces
+
 from mpi4py import MPI
 
 import healpy
@@ -32,7 +35,6 @@ except NameError:
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-from unet_online import UNetSnapshot, OnlineUNetTrainer
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
@@ -320,16 +322,8 @@ class ForecastExample:
 # ----------------------------------------------------------------------------
 # Time helpers
 # ----------------------------------------------------------------------------
-
-def _parse_icon_datetime(iso_str: str) -> datetime.datetime:
-    """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
-    clean = str(iso_str).split(".")[0].rstrip("Z")
-    dt = datetime.datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S")
-    return dt.replace(tzinfo=datetime.timezone.utc)
-
-
 def _icon_time_unix_seconds() -> float:
-    return float(_parse_icon_datetime(comin.current_get_datetime()).timestamp())
+    return float(parse_icon_datetime(comin.current_get_datetime()).timestamp())
 
 
 
@@ -364,30 +358,6 @@ def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
     c = np.arange(nc)
     # Invert Fortran-order reshape: unravel index c in Fortran order
     buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(nc, nlev)
-
-
-def _to_hpx_faces(owned_vals: torch.Tensor) -> torch.Tensor:
-    """Reshape (n_owned_pixels, nlev) to (faces_per_rank, nlev, nside, nside)."""
-    nside = 2**HPX_LEVEL
-    n_owned, nlev = owned_vals.shape
-    faces = n_owned // (nside * nside)
-    if faces * nside * nside != n_owned:
-        raise ValueError(
-            f"_to_hpx_faces: n_owned={n_owned} is not divisible by nside²={nside*nside}. "
-            f"Check num_calculate_processes ({num_calculate_processes}) and HEALPix partition. "
-            f"Likely cause: has_gpu detected incorrectly for some ranks."
-        )
-    return (
-        owned_vals.reshape(faces, nside, nside, nlev).permute(0, 3, 1, 2).contiguous()
-    )
-
-
-def _from_hpx_faces(pred_faces: torch.Tensor) -> torch.Tensor:
-    """Reshape (faces_per_rank, nlev, nside, nside) back to (n_owned_pixels, nlev).
-
-    Inverse of _to_hpx_faces.
-    """
-    return pred_faces.permute(0, 2, 3, 1).contiguous().reshape(-1, pred_faces.shape[1])
 
 
 # ----------------------------------------------------------------------------
@@ -694,7 +664,7 @@ def dry_run():
             var_hpx_t = var_hpx_t.unsqueeze(-1)
         elif var_hpx_t.ndim == 2:
             var_hpx_t = var_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
-        ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev, nside, nside)
+        ua_faces = to_hpx_faces(var_hpx_t, HPX_LEVEL)  # (faces, nlev, nside, nside)
         ua_faces_d = ua_faces.double()  # float64 for stable accumulation
 
         if _state.hp_accum_sum is None:
@@ -785,7 +755,7 @@ def training():
     elif var_hpx_t.ndim == 2:
         var_hpx_t = var_hpx_t.T  # (nlev, ncells) -> (ncells, nlev)
 
-    ua_faces = _to_hpx_faces(var_hpx_t)  # (faces, nlev_ua, nside, nside)
+    ua_faces = to_hpx_faces(var_hpx_t, HPX_LEVEL)  # (faces, nlev_ua, nside, nside)
 
     # normalize
     mean = _state.hp_accum_mean
@@ -833,13 +803,15 @@ def training():
     pred_faces = trainer.predict(snapshot)  # (F, nlev, nside, nside) GPU float32
     # Denormalize prediction: original = normalized * std + mean
     pred_faces_denorm = pred_faces * std + mean
-    # Save (input, prediction) snapshot pair at the same daily interval as checkpoints.
-    if _state.step_len_seconds is not None and current_step > 0:
-        _steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
-        if current_step % _steps_per_save == 0:
-            _save_snapshot_pair(ua_faces, pred_faces_denorm, current_step)
+
+    # # Save (input, prediction) snapshot pair at for debugging
+    # if _state.step_len_seconds is not None and current_step > 0:
+    #     _steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
+    #     if current_step % _steps_per_save == 0:
+    #         _save_snapshot_pair(ua_faces, pred_faces_denorm, current_step)
+
     pred_flat_np = (
-        _from_hpx_faces(pred_faces_denorm).cpu().numpy()
+        from_hpx_faces(pred_faces_denorm).cpu().numpy()
     )  # (n_local_hp_cells, nlev) float32
     _state.pred_hp_src.put(pred_flat_np)  # HEALPix source → YAC
     pred_icon_np, _ = _state.pred_icon_tgt.get()  # (nlev, ncells) on ICON grid
