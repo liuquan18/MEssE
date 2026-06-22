@@ -3,7 +3,6 @@ import datetime
 import os
 import socket
 import sys
-from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
@@ -11,7 +10,21 @@ import torch
 import torch.distributed as dist
 
 from unet_online import UNetSnapshot, OnlineUNetTrainer
-from utils import parse_icon_datetime, to_hpx_faces, from_hpx_faces
+from utils import (
+    setup_mpi_dist,
+    setup_icon_grid,
+    setup_hpx_grid,
+    parse_icon_datetime,
+    to_hpx_faces,
+    from_hpx_faces,
+    save_checkpoint,
+    rollback_checkpoint,
+    sample_horizon,
+    extract_icon_cells,
+    insert_icon_cells,
+    enqueue_snapshot,
+    ForecastExample,
+)
 
 from mpi4py import MPI
 
@@ -36,20 +49,24 @@ if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
 
+# ----------------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------------
+
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
 HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
-MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "90"))
+MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "10"))  # steps
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
+
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
 SNAPSHOTS_DIR = os.path.join(EXPERIMENTS_DIR, "snapshots")
 os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
-DRY_RUN_TIME_SECONDS: int = 4500 #2592000  # 1 month
-SAVE_INTERVAL_SECONDS: int = (
-    4500  # 
-)
+DRY_RUN_TIME_SECONDS: int = 900  # 2592000  # 1 month
+SAVE_INTERVAL_SECONDS: int = 4500  # 10 steps
+
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -81,184 +98,54 @@ else:
 
 
 # ----------------------------------------------------------------------------
-# MPI setup
+# MPI and PyTorch distributed setup
 # ----------------------------------------------------------------------------
+
+# compute ranks on GPU-bearing MPI ranks, None on IO ranks without GPU
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
+size = comm.Get_size()
 rank = comm.Get_rank()
-world_size = comm.Get_size()
 
-# ----------------------------------------------------------------------------
-# PyTorch distributed initialization.
-# Non-GPU ranks never enter NCCL or the online UNet trainer.
-# ----------------------------------------------------------------------------
-# ICON can launch more MPI tasks per node than physical GPUs (e.g. 5 tasks vs 4 GPUs).
-# We use the SLURM local rank to identify which tasks are GPU-bearing.
-local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
-gpus_per_node = 4
-has_gpu = local_rank >= 0 and local_rank < gpus_per_node
-
-# Count how many MPI ranks are GPU-bearing globally.
+# GPU ranks
+compute_comm, compute_rank, compute_size, has_gpu = setup_mpi_dist(
+    comm
+)  # all None for io ranks (without GPU)
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
 
-print(
-    f"[rank={rank}] MPI world size={world_size}, num_calculate_processes={num_calculate_processes}",
-    file=sys.stderr,
-)
-
-print(
-    f"[rank={rank}] local_rank={local_rank}, gpus_per_node={gpus_per_node}, "
-    f"has_gpu={has_gpu}, CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
-    file=sys.stderr,
-)
-
-compute_rank: Optional[int] = None
-compute_comm: Optional[MPI.Comm] = None
-
-if has_gpu:
-    compute_comm = comm.Split(color=0, key=rank)
-    compute_rank = compute_comm.Get_rank()
-
-    master_addr = socket.gethostname() if compute_rank == 0 else None
-    master_addr = compute_comm.bcast(master_addr, root=0)
-
-    os.environ["MASTER_ADDR"] = master_addr
-    os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
-
-    torch.cuda.set_device(0)
-    dist.init_process_group(
-        backend="nccl",
-        rank=compute_rank,
-        world_size=num_calculate_processes,
-    )
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-    comin.print_info(
-        f"[rank={rank}] PyTorch distributed initialised: "
-        f"compute_rank={compute_rank}+1/{num_calculate_processes}"
-    )
-else:
-    _ = comm.Split(color=1, key=rank)
-
 
 # ----------------------------------------------------------------------------
-# yac setup (HEALPix interpolation)
+# YAC setup (HEALPix interpolation)
 # ----------------------------------------------------------------------------
 domain = comin.descrdata_get_domain(DOMAIN_ID)
-
 assert glob.yac_instance_id != -1, "The host-model is not configured with yac"
+
 yac = YAC.from_id(glob.yac_instance_id)
-
-# the native ICON grid
-if has_gpu:
-    source_comp = yac.predef_comp("icon_r2b4_source")
-    target_comp = yac.predef_comp("healpix_target")
-
-    connectivity = (np.asarray(domain.cells.vertex_blk) - 1) * glob.nproma + (
-        np.asarray(domain.cells.vertex_idx) - 1
-    )
-
-    icon_grid = UnstructuredGrid(
-        "icon_grid",
-        np.ones(domain.cells.ncells, dtype=np.int32) * 3,
-        np.array(np.ravel(np.transpose(domain.verts.vlon))[: domain.verts.nverts]),
-        np.array(np.ravel(np.transpose(domain.verts.vlat))[: domain.verts.nverts]),
-        np.ravel(np.swapaxes(connectivity, 0, 1))[: 3 * domain.cells.ncells],
-    )
-
-    icon_cell_centers = icon_grid.def_points(
-        Location.CELL,
-        np.ravel(domain.cells.clon)[: domain.cells.ncells],
-        np.ravel(domain.cells.clat)[: domain.cells.ncells],
-    )
-
-else:
-    source_comp = None
-    target_comp = None
-    icon_grid = None
-    icon_cell_centers = None
-
-
-# Build HEALPix target grid with healpy
-def _xyz2lonlat(xyz):
-    xyz = np.array(xyz)
-    lat = np.arcsin(xyz[..., 2])
-    lon = np.arctan2(xyz[..., 1], xyz[..., 0])
-    return lon, lat
-
-
-def _make_healpix_grid(name, nside, nest=True, cell_idx=None):
-    if cell_idx is None:
-        ncells = healpy.pixelfunc.nside2npix(nside)
-        cell_idx = np.arange(ncells)
-
-    centers_xyz = np.stack(
-        healpy.pixelfunc.pix2vec(nside, cell_idx, nest=nest),
-        axis=-1,
-    )
-    clon, clat = _xyz2lonlat(centers_xyz)
-
-    boundaries_xyz = (
-        healpy.boundaries(nside, cell_idx, nest=nest).transpose(0, 2, 1).reshape(-1, 3)
-    )
-    verts_xyz, quads = np.unique(boundaries_xyz, return_inverse=True, axis=0)
-    vlon, vlat = _xyz2lonlat(verts_xyz)
-    vertex_of_cell = quads.reshape(-1, 4)
-
-    grid = UnstructuredGrid(
-        name,
-        np.full(len(cell_idx), 4, dtype=np.int32),
-        vlon,
-        vlat,
-        vertex_of_cell.flatten(),
-    )
-    points = grid.def_points(Location.CELL, clon, clat)
-    return grid, points
-
-nside = 2**HPX_LEVEL
-
-_pixels_per_face = nside * nside
-_total_hp_faces = 12
-total_hp_cells = _total_hp_faces * _pixels_per_face
-
-if has_gpu:
-    _faces_per_rank = _total_hp_faces // num_calculate_processes
-    _extra_faces = _total_hp_faces % num_calculate_processes
-    _start_face = compute_rank * _faces_per_rank + min(compute_rank, _extra_faces)
-    _n_local_faces = _faces_per_rank + (1 if compute_rank < _extra_faces else 0)
-    _end_face = _start_face + _n_local_faces
-    start_idx = _start_face * _pixels_per_face
-    end_idx = _end_face * _pixels_per_face
-else:
-    start_idx = 0
-    end_idx = 0
-local_hp_indices = np.arange(start_idx, end_idx)
-
-
-if has_gpu:
-    hp_grid, hp_points = _make_healpix_grid(
-        "hp_level6_grid", nside, cell_idx=local_hp_indices
-    )
-else:
-    hp_grid = hp_points = None
+source_comp, icon_grid, icon_cell_centers = setup_icon_grid(yac, glob, domain, has_gpu)
+target_comp, hp_grid, hp_points = setup_hpx_grid(
+    yac, HPX_LEVEL, compute_rank, compute_size, has_gpu
+)
 
 
 # ----------------------------------------------------------------------------
-# Plugin state — all mutable runtime state lives here instead of as globals.
+# Plugin state
 # ----------------------------------------------------------------------------
 class _State:
     __slots__ = (
+        # info
         "current_step",
+        "nlev",
+        "step_len_seconds",
+        "horizon_length_steps",
+        # data
         "icon_var",
-        "AI_pred",
+        "AI_var",
+        # YAC ICON-> HEALPix
         "hp_field_src",
         "hp_field_tgt",
+        # YAC HEALPix -> ICON (reverse coupling for prediction)
         "pred_hp_src",
         "pred_icon_tgt",
-        "var_nlev_groups",
-        "owned_face_ids",
-        "pending_example",
-        "trainer",
-        "step_len_seconds",
+        # dry run for normalization
         "dryrun_time",
         "dryrun_done",
         "accum_count",
@@ -266,14 +153,25 @@ class _State:
         "hp_accum_sumsq",
         "hp_accum_mean",
         "hp_accum_std",
+        # training
+        "pending_example",
+        "trainer",
     )
 
     def __init__(self) -> None:
+        # info
         self.current_step: int = 0
-        self.pending_example: Optional["ForecastExample"] = None
-        self.trainer: Optional[OnlineUNetTrainer] = None
+        self.nlev: Optional[int] = None  # Number of vertical levels
+        self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
+        self.horizon_length_steps: Optional[int] = (
+            None  # Forecast horizon length in steps
+        )
+
+        # data
         self.icon_var = None  # COMIN variable handle for ua, set in sec_ctor
-        self.AI_pred = None  # COMIN variable handle for predicted ua, set in sec_ctor
+        self.AI_var = None  # COMIN variable handle for predicted ua, set in sec_ctor
+
+        # YAC
         self.hp_field_src: Optional[Field] = None  # YAC field for ua on ICON grid
         self.hp_field_tgt: Optional[Field] = None  # YAC field for ua on HEALPix grid
         self.pred_hp_src: Optional[Field] = (
@@ -282,97 +180,46 @@ class _State:
         self.pred_icon_tgt: Optional[Field] = (
             None  # YAC field for prediction on ICON (reverse coupling target)
         )
-        self.var_nlev_groups: Optional[List[int]] = (
-            None  # [ua_nlev] = [90], set in setup_coupling
-        )
-        self.owned_face_ids: Optional[torch.Tensor] = (
-            None  # HEALPix face indices owned by this rank
-        )
-        self.step_len_seconds: Optional[int] = None  # ICON timestep length in seconds
+
+        # normalization dry run
         self.dryrun_time: Optional[int] = None  # Time for dry run in seconds
         self.dryrun_done: bool = False  # Whether the dry run is complete
         self.accum_count: int = 0
         self.hp_accum_sum: Optional[torch.Tensor] = None
         self.hp_accum_sumsq: Optional[torch.Tensor] = None
-        self.hp_accum_mean: Optional[torch.Tensor] = None  # Accumulated mean for HEALPix normalization during dry run
-        self.hp_accum_std: Optional[torch.Tensor] = None  # Accumulated std for HEALPix normalization during dry run
+        self.hp_accum_mean: Optional[torch.Tensor] = (
+            None  # Accumulated mean for HEALPix normalization during dry run
+        )
+        self.hp_accum_std: Optional[torch.Tensor] = (
+            None  # Accumulated std for HEALPix normalization during dry run
+        )
+
+        # training
+        self.pending_example: Optional["ForecastExample"] = None
+        self.trainer: Optional[OnlineUNetTrainer] = None
 
 
 _state = _State()
 
-if has_gpu:
-    _state.owned_face_ids = torch.arange(
-        start_idx // _pixels_per_face,
-        end_idx // _pixels_per_face,
-        dtype=torch.long,
-    )
-else:
-    _state.owned_face_ids = torch.tensor([], dtype=torch.long)
-
-
-@dataclass
-class ForecastExample:
-    source_snapshot: UNetSnapshot
-    horizon: int
-    due_step: int
-    mean: torch.Tensor  # Per-level mean for denormalization
-    std: torch.Tensor  # Per-level std for denormalization
-
 
 # ----------------------------------------------------------------------------
-# Time helpers
+# Helper functions
 # ----------------------------------------------------------------------------
+
+
+# Time helper
 def _icon_time_unix_seconds() -> float:
     return float(parse_icon_datetime(comin.current_get_datetime()).timestamp())
 
 
 
-# ----------------------------------------------------------------------------
-# Grid helpers
-# ----------------------------------------------------------------------------
 
-def _extract_icon_cells(data_array) -> xp.ndarray:
-    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
-    nc = domain.cells.ncells
-    data_xp = xp.asarray(data_array)
-    # Drop trailing singleton dimensions added by COMIN
-    while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
-        data_xp = data_xp[..., 0]
-    if data_xp.ndim == 2:
-        return data_xp.ravel(order="F")[:nc]
-    nlev = data_xp.shape[1]
-    return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
-
-
-def _insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
-    """Scatter (ncells, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
-
-    Inverse of _extract_icon_cells: uses Fortran-order unraveling to match _extract_icon_cells.
-    Fortran order: cell c in flattened array maps to buf[c % nproma, :, c // nproma].
-    """
-    nc, nlev = pred_cells.shape
-    buf = xp.asarray(buffer)
-    while buf.ndim > 3 and buf.shape[-1] == 1:
-        buf = buf[..., 0]
-    nproma_val = buf.shape[0]
-    c = np.arange(nc)
-    # Invert Fortran-order reshape: unravel index c in Fortran order
-    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(nc, nlev)
-
-
-# ----------------------------------------------------------------------------
 # Trainer helpers
-# ----------------------------------------------------------------------------
-
-
 def _get_trainer(nlev: int) -> OnlineUNetTrainer:
     if _state.trainer is not None:
-        if _state.trainer.nlev != nlev:
-            raise RuntimeError(
-                f"ICON level count changed: {_state.trainer.nlev} → {nlev}"
-            )
         return _state.trainer
 
+    # args
     _trainer_kwargs = dict(
         nlev=nlev,
         lr=float(os.environ.get("MESSE_UNET_LR", "2e-4")),
@@ -380,10 +227,12 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
         grad_clip=1.0,
         use_ddp=dist.is_initialized(),
         device=torch.device("cuda", 0),
+        # for info
         log_fn=comin.print_info,
         rank=rank,
     )
 
+    # checkpoint restore
     if os.path.exists(CHECKPOINT_PATH):
         # Checkpoint found: restore model and optimizer state from previous run.
         ckpt = torch.load(
@@ -391,6 +240,7 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
             map_location=torch.device("cuda", 0),
             weights_only=False,
         )
+
         _state.trainer = OnlineUNetTrainer(**_trainer_kwargs)
         _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
         _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
@@ -408,122 +258,11 @@ def _get_trainer(nlev: int) -> OnlineUNetTrainer:
     return _state.trainer
 
 
-def _sample_horizon() -> int:
-    """Sample a random forecast horizon in [1, MAX_FORECAST_HORIZON].
-    Only compute rank 0 samples the horizon, then broadcast to all ranks
-    """
-    horizon_t = torch.zeros(1, dtype=torch.int64, device="cuda")
-    if compute_rank == 0:
-        horizon_t[0] = torch.randint(1, MAX_FORECAST_HORIZON + 1, (1,)).item()
-    dist.broadcast(horizon_t, src=0)
-    return int(horizon_t.item())
-
-
-def _enqueue_snapshot(
-    snapshot: UNetSnapshot,
-    current_step: int,
-    horizon: int,
-    mean: torch.Tensor,
-    std: torch.Tensor,
-) -> ForecastExample:
-    due_step = current_step + horizon
-    comin.print_info(
-        f"[rank={rank}] enqueued snapshot at step={current_step}, due={due_step}"
-    )
-    return ForecastExample(
-        source_snapshot=snapshot,
-        horizon=horizon,
-        due_step=due_step,
-        mean=mean,
-        std=std,
-    )
-
-
-# ----------------------------------------------------------------------------
-# Checkpoint load/save helpers
-# ----------------------------------------------------------------------------
-
-
-def _save_checkpoint(trainer: OnlineUNetTrainer, step: int) -> None:
-    """Save model + optimizer state to CHECKPOINT_PATH.
-
-    Only compute rank 0 writes to avoid concurrent writes on the shared filesystem.
-    All other GPU ranks return immediately.
-    """
-    if compute_rank != 0:
-        return
-    # Write to a temporary file first, then rename for an atomic replace.
-    tmp_path = CHECKPOINT_PATH + ".tmp"
-    torch.save(
-        {
-            "model_state_dict": trainer.model.state_dict(),
-            "optimizer_state_dict": trainer.optimizer.state_dict(),
-            "step": step,
-        },
-        tmp_path,
-    )
-    os.replace(tmp_path, CHECKPOINT_PATH)
-    comin.print_info(
-        f"[rank={rank}] Checkpoint saved at step={step} → {CHECKPOINT_PATH}"
-    )
-
-
-def _rollback_checkpoint(trainer: OnlineUNetTrainer) -> int:
-    """Reload model + optimizer from the last saved checkpoint on all GPU ranks.
-
-    Returns the step stored in the checkpoint, or 0 if no checkpoint exists.
-    All compute ranks reload the same file so weights and optimizer moments stay
-    consistent after a NaN-triggered recovery.
-    """
-    if not os.path.exists(CHECKPOINT_PATH):
-        comin.print_info(
-            f"[rank={rank}] No checkpoint to roll back to — weights remain corrupted"
-        )
-        return 0
-    ckpt = torch.load(
-        CHECKPOINT_PATH,
-        map_location=torch.device("cuda", 0),
-        weights_only=False,
-    )
-    trainer.model.load_state_dict(ckpt["model_state_dict"])
-    trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    step = int(ckpt.get("step", 0))
-    comin.print_info(
-        f"[rank={rank}] Rolled back to checkpoint at step={step} from {CHECKPOINT_PATH}"
-    )
-    return step
-
-
-def _save_snapshot_pair(
-    input_faces: torch.Tensor, pred_faces: torch.Tensor, step: int
-) -> None:
-    """Gather HEALPix face pairs from all compute ranks and save to disk (rank 0 only).
-
-    Saves a compressed .npz file with:
-      input : (12, nlev, nside, nside)  — denormalized ICON field on HEALPix faces
-      pred  : (12, nlev, nside, nside)  — UNet prediction on HEALPix faces
-      step  : scalar int
-    Faces are stored in NESTED HEALPix ordering, matching the plugin convention.
-    """
-    local_inp = input_faces.cpu().numpy()  # (local_faces, nlev, nside, nside)
-    local_pred = pred_faces.cpu().numpy()
-    all_inp = compute_comm.gather(local_inp, root=0)
-    all_pred = compute_comm.gather(local_pred, root=0)
-    if compute_rank != 0:
-        return
-    full_inp = np.concatenate(all_inp, axis=0)  # (12, nlev, nside, nside)
-    full_pred = np.concatenate(all_pred, axis=0)
-    snap_path = os.path.join(SNAPSHOTS_DIR, f"snapshot_step{step:06d}.npz")
-    np.savez_compressed(snap_path, input=full_inp, pred=full_pred, step=step)
-    comin.print_info(f"[rank={rank}] Snapshot saved at step={step} \u2192 {snap_path}")
-
-
 # ----------------------------------------------------------------------------
 # COMIN callbacks
 # ----------------------------------------------------------------------------
 
 # primary constructor to save prediction
-
 var_descriptor = ("var_predict", DOMAIN_ID)
 comin.var_request_add(var_descriptor, lmodexclusive=True)
 comin.metadata_set(var_descriptor, zaxis_id=comin.COMIN_ZAXIS_2D)
@@ -540,12 +279,11 @@ def sec_ctor():
     )
 
     # the prediction to save
-    _state.AI_pred = comin.var_get(
+    _state.AI_var = comin.var_get(
         [comin.EP_ATM_WRITE_OUTPUT_BEFORE],
         ("var_predict", DOMAIN_ID),
         comin.COMIN_FLAG_WRITE | DEVICE_SYNC_FLAG,
     )
-
 
 
 @comin.register_callback(comin.EP_ATM_YAC_DEFCOMP_AFTER)
@@ -559,7 +297,7 @@ def setup_coupling():
     step_len = str(int(comin.descrdata_get_timesteplength(1)))
     _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
 
-    # COMIN uses 
+    # COMIN uses
     #   (nproma, nlev, nblk) for 3-D fields
     #   (nproma, nblk) for surface fields.
 
@@ -567,15 +305,9 @@ def setup_coupling():
     while _icon_arr.ndim > 3 and _icon_arr.shape[-1] == 1:
         _icon_arr = _icon_arr[..., 0]
     var_nlev = int(_icon_arr.shape[1]) if _icon_arr.ndim >= 3 else 1
-
-    # Store group depths: group 0 = ua (3D)
-    _state.var_nlev_groups = [var_nlev]
+    _state.nlev = var_nlev  # Store nlev in state for trainer initialization
 
     comin.print_info(f"[rank={rank}] timestep length: {step_len} seconds")
-    comin.print_info(
-        f"[rank={rank}] ua nlev={var_nlev}, groups={_state.var_nlev_groups}"
-    )
-
 
     # from icon grid to healpix grid
     _state.hp_field_src = Field.create(
@@ -600,7 +332,6 @@ def setup_coupling():
         Reduction.TIME_NONE,
         interp,
     )
-
 
     # Reverse coupling: HEALPix prediction -> ICON grid (mirrors forward ua coupling)
     _state.pred_hp_src = Field.create(
@@ -642,12 +373,14 @@ def dry_run():
 
     if _state.dryrun_done:
         return
-    
+
     dry_run_steps = DRY_RUN_TIME_SECONDS // _state.step_len_seconds
     current_step = _state.current_step
 
     if current_step < dry_run_steps:
-        icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev), xp array
+        icon_var_cells = extract_icon_cells(
+            _state.icon_var, domain.cells.ncells
+        )  # (ncells, nlev), xp array
 
         # to healpix
         icon_var_cells_np = (
@@ -672,7 +405,7 @@ def dry_run():
             _state.hp_accum_sumsq = torch.zeros_like(ua_faces_d)
 
         _state.hp_accum_sum += ua_faces_d
-        _state.hp_accum_sumsq += ua_faces_d ** 2
+        _state.hp_accum_sumsq += ua_faces_d**2
 
         _state.accum_count += 1
         _state.current_step += 1
@@ -685,7 +418,7 @@ def dry_run():
     # current_step >= dry_run_steps: finalize
     mean = (_state.hp_accum_sum / _state.accum_count).float()
     e_x2 = (_state.hp_accum_sumsq / _state.accum_count).float()
-    var = torch.clamp(e_x2 - mean ** 2, min=1e-6)
+    var = torch.clamp(e_x2 - mean**2, min=1e-6)
     std = torch.sqrt(var)
 
     _state.hp_accum_mean = mean  # (faces, nlev, nside, nside) float32 CUDA tensor
@@ -699,14 +432,13 @@ def dry_run():
     )
 
 
-
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online UNet training callback called by ICON at each time step."""
 
     if not has_gpu:
         return
-    
+
     if not _state.dryrun_done:
         comin.print_info(f"[rank={rank}] Dry run not complete, skipping training")
         return
@@ -714,7 +446,7 @@ def training():
     current_step = _state.current_step
     _state.current_step += 1
 
-    # Periodic checkpoint save — independent of training/waiting state.
+    # Periodic checkpoint save
     if (
         _state.trainer is not None
         and _state.step_len_seconds is not None
@@ -722,7 +454,8 @@ def training():
     ):
         steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
         if current_step % steps_per_save == 0:
-            _save_checkpoint(_state.trainer, current_step)
+            save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step)
+            comin.print_info(f"[rank={rank}] Checkpoint saved at step={current_step}")
 
     # Mode: Waiting; between t and t+horizon
     if (
@@ -736,7 +469,7 @@ def training():
         )
         return
 
-    icon_var_cells = _extract_icon_cells(_state.icon_var)  # (ncells, nlev_ua)
+    icon_var_cells = extract_icon_cells(_state.icon_var, domain.cells.ncells)  # (shape: ncells, nlev_ua; nc)
 
     # Interpolation from native ICON grid to HEALPix using YAC
     # currently YAC only supports numpy arrays, wait for update to support cupy arrays
@@ -762,26 +495,23 @@ def training():
     std = _state.hp_accum_std
     ua_faces_norm = (ua_faces - mean) / std
 
-
     unix_seconds = _icon_time_unix_seconds()
-    trainer = _get_trainer(nlev=_state.var_nlev_groups[0])
-    snapshot = trainer.prepare_snapshot(ua_faces_norm, unix_seconds)
+    trainer = _get_trainer(nlev=_state.nlev)
+    snapshot = trainer.prepare_snapshot(
+        ua_faces_norm, unix_seconds
+    )  # the time is not used in current UNet
 
     # horizon = _sample_horizon()
-    horizon = 10  # for debugging, use a fixed horizon of 10 steps
+    horizon = MAX_FORECAST_HORIZON  # for debugging, use a fixed horizon of 10 steps
+    _state.horizon_length_steps = horizon
 
     if _state.pending_example is None:
         # First effective timestep: store source snapshot and wait for target.
-        _state.pending_example = _enqueue_snapshot(
+        _state.pending_example = enqueue_snapshot(
             snapshot, current_step, horizon=horizon, mean=mean, std=std
         )
     else:
         # Due step: train on (source, target) pair, then re-enqueue current as source.
-        comin.print_info(
-            f"[rank={rank}] step={current_step} ua_faces: "
-            f"min={ua_faces.min().item():.3f} max={ua_faces.max().item():.3f} "
-            f"mean={ua_faces.mean().item():.3f} std={ua_faces.std().item():.3f}"
-        )
         result = trainer.train_step(_state.pending_example.source_snapshot, snapshot)
         comin.print_info(
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
@@ -792,10 +522,10 @@ def training():
             comin.print_info(
                 f"[rank={rank}] step={current_step} NaN detected — rolling back to last checkpoint"
             )
-            _rollback_checkpoint(_state.trainer)
+            rollback_checkpoint(_state.trainer, CHECKPOINT_PATH)
             _state.pending_example = None  # discard potentially corrupted snapshot
         else:
-            _state.pending_example = _enqueue_snapshot(
+            _state.pending_example = enqueue_snapshot(
                 snapshot, current_step, horizon=horizon, mean=mean, std=std
             )
 
@@ -815,7 +545,7 @@ def training():
     )  # (n_local_hp_cells, nlev) float32
     _state.pred_hp_src.put(pred_flat_np)  # HEALPix source → YAC
     pred_icon_np, _ = _state.pred_icon_tgt.get()  # (nlev, ncells) on ICON grid
-    _insert_icon_cells(pred_icon_np.T.astype(np.float64), _state.AI_pred)
+    insert_icon_cells(pred_icon_np.T.astype(np.float64), _state.AI_var)
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
