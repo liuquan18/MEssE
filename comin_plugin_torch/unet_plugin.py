@@ -64,8 +64,8 @@ os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
 SNAPSHOTS_DIR = os.path.join(EXPERIMENTS_DIR, "snapshots")
 os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
-DRY_RUN_TIME_SECONDS: int = 900  # 2592000  # 1 month
-SAVE_INTERVAL_SECONDS: int = 4500  # 10 steps
+DRY_RUN_TIME_SECONDS: int = 2592000  # 1 month
+SAVE_INTERVAL_SECONDS: int = 86400  # 1 day
 
 
 # ----------------------------------------------------------------------------
