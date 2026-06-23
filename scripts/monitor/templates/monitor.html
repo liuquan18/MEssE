@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MEssE v1.0 - Monitoring</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px 30px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            font-size: 32px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #4ade80;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .panel-title {
+            font-size: 22px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon {
+            font-size: 24px;
+        }
+
+        .info-grid {
+            display: grid;
+            gap: 15px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .info-row:hover {
+            background: #f3f4f6;
+            transform: translateX(5px);
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #6b7280;
+            font-size: 14px;
+        }
+
+        .info-value {
+            font-weight: 500;
+            color: #111827;
+            font-size: 15px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+
+        .metric-label {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .metric-value {
+            font-size: 32px;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+
+        .waiting-state {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+        }
+
+        .waiting-state .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #e5e7eb;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .timestamp {
+            font-size: 12px;
+            color: #9ca3af;
+            text-align: right;
+            margin-top: 10px;
+        }
+
+        @media (max-width: 1024px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">MEssE v1.0</div>
+        <div class="status-indicator">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connecting...</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Left Panel: ICON Simulation Info -->
+        <div class="panel">
+            <div class="panel-title">
+                <span class="icon">🌍</span>
+                ICON Simulation Status
+            </div>
+            <div id="simulationContent">
+                <div class="waiting-state">
+                    <div class="spinner"></div>
+                    <p>Waiting for simulation data...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel: Training Loss -->
+        <div class="panel">
+            <div class="panel-title">
+                <span class="icon">🧠</span>
+                Neural Network Training
+            </div>
+            <div id="trainingContent">
+                <div class="waiting-state">
+                    <div class="spinner"></div>
+                    <p>Waiting for training data...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let lossChart = null;
+        
+        function updateStatus() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'running') {
+                        document.getElementById('statusText').textContent = 'Live';
+                        document.getElementById('statusDot').style.background = '#4ade80';
+                        
+                        updateSimulationPanel(data.simulation);
+                        updateTrainingPanel(data.training, data.losses);
+                    } else {
+                        document.getElementById('statusText').textContent = 'Waiting';
+                        document.getElementById('statusDot').style.background = '#fbbf24';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching status:', error);
+                    document.getElementById('statusText').textContent = 'Disconnected';
+                    document.getElementById('statusDot').style.background = '#ef4444';
+                });
+        }
+
+        function updateSimulationPanel(sim) {
+            if (!sim) return;
+            
+            const html = `
+                <div class="info-grid">
+                    <div class="info-row">
+                        <span class="info-label">Start Time</span>
+                        <span class="info-value">${sim.start_time || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Current Time</span>
+                        <span class="info-value">${sim.current_time || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Elapsed Time</span>
+                        <span class="info-value">${sim.elapsed_time || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Number of Domains</span>
+                        <span class="info-value">${sim.n_domains || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Total Grid Points</span>
+                        <span class="info-value">${sim.total_points || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Output Timesteps</span>
+                        <span class="info-value">${sim.output_count || 'N/A'}</span>
+                    </div>
+                </div>
+                <div class="timestamp">Last updated: ${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            document.getElementById('simulationContent').innerHTML = html;
+        }
+
+        function updateTrainingPanel(training, losses) {
+            if (!training) return;
+            
+            const currentLoss = losses.length > 0 ? losses[losses.length - 1].toExponential(4) : 'N/A';
+            const avgLoss = losses.length > 0 
+                ? (losses.reduce((a, b) => a + b, 0) / losses.length).toExponential(4) 
+                : 'N/A';
+            const minLoss = losses.length > 0 ? Math.min(...losses).toExponential(4) : 'N/A';
+            const maxLoss = losses.length > 0 ? Math.max(...losses).toExponential(4) : 'N/A';
+            
+            const html = `
+                <div class="chart-container">
+                    <canvas id="lossChart"></canvas>
+                </div>
+                
+                <div class="metric-card">
+                    <div class="metric-label">Current Loss</div>
+                    <div class="metric-value">${currentLoss}</div>
+                </div>
+                
+                <div class="info-grid">
+                    <div class="info-row">
+                        <span class="info-label">Model Type</span>
+                        <span class="info-value">${training.model_type || 'Unknown'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Total Batches Trained</span>
+                        <span class="info-value">${training.total_batches || losses.length}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Batches/Timestep</span>
+                        <span class="info-value">${training.batches_per_timestep || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Average Loss</span>
+                        <span class="info-value">${avgLoss}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Minimum Loss</span>
+                        <span class="info-value">${minLoss}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Maximum Loss</span>
+                        <span class="info-value">${maxLoss}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Learning Rate</span>
+                        <span class="info-value">${training.learning_rate || '0.01'}</span>
+                    </div>
+                </div>
+                
+                <div class="timestamp">Last updated: ${new Date().toLocaleTimeString()}</div>
+            `;
+            
+            document.getElementById('trainingContent').innerHTML = html;
+            
+            // Update chart
+            updateLossChart(losses);
+        }
+
+        function updateLossChart(losses) {
+            const ctx = document.getElementById('lossChart');
+            if (!ctx) return;
+            
+            if (lossChart) {
+                lossChart.destroy();
+            }
+            
+            lossChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: losses.map((_, i) => i + 1),
+                    datasets: [{
+                        label: 'Training Loss',
+                        data: losses,
+                        borderColor: '#667eea',
+                        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0,
+                        pointHoverRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Batch Number'
+                            },
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Loss Value'
+                            },
+                            beginAtZero: false
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update every 2 seconds
+        updateStatus();
+        setInterval(updateStatus, 2000);
+    </script>
+</body>
+</html>
