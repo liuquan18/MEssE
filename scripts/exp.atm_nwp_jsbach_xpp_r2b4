@@ -85,21 +85,21 @@ atmo_dyn_grids="'${grid_name}.nc',"
 
 # date+time
 start_date=1979-01-01T00:00:00Z
-  end_date=1989-01-01T00:00:00Z
+  end_date=1980-01-01T00:00:00Z
 
 # restart intervals
 checkpoint_interval=P1Y
    restart_interval=P1Y
 
 # output intervals
-output_interval_2d="P1M"      
+output_interval_2d="P1H"      
 output_interval_3d="P1M"      
 output_interval_pl="P1M"      
 
-#start_date_hfreq="1979-02-01T00:00:00"
-#end_date_hfreq="1979-03-01T00:00:00"
+start_date_hfreq="1979-02-01T00:00:00"
+end_date_hfreq="1980-01-01T00:00:00"
 
-file_interval="P1Y"            # one day
+file_interval="P1D"            # one day
 file_interval_hfreq="P1M"
 
 
@@ -136,19 +136,19 @@ fi
 # - files are produced for every output date for single variables or variable groups, as specified
 # - the amount of variables depends on the model configuration
 output_atm_vgrid=on         # 1 file/variable             , start date
-output_atm_state_3d_ini=on  # 1 file/variable             , start_date
-output_atm_state_3d_sim=on  # 1 file/all variables        , first_output_date to last__output_date
+output_atm_state_3d_ini=off  # 1 file/variable             , start_date
+output_atm_state_3d_sim=off  # 1 file/all variables        , first_output_date to last__output_date
 output_atm_state_2d_sim=on  # 1 file/all variables        , first_output_date to last__output_date
 output_atm_tend_3d=off      # 1 file/variable/date        , first_output_date to last__output_date ! not created
 output_atm_flux_2d=off       # 1 file/(variable group)/date, first_output_date to last__output_date ! not created
 output_atm_rad_3d=off        # 1 file/ rad var lowest and highest level, instantaneous 
-output_lnd=on
-output_atm_mon=on            # 1 file/ global monthly mean values 
+output_lnd=off
+output_atm_mon=off            # 1 file/ global monthly mean values 
 output_atm_hfreq=off
 
 
 # output processes
-num_io_procs=8
+num_io_procs=1
 
 
 #--------------------------------------------------------------------------------------------------
@@ -211,7 +211,14 @@ fi # ${iforcing}
 atmo_namelist=NAMELIST_atmo_${EXPNAME} # also used in exec.iconrun
 #
 cat > ${atmo_namelist} << EOF
-!
+&comin_nml
+  plugin_list(1)%name           = "aes_amip_plugin"
+  plugin_list(1)%plugin_library = "/work/mh0033/m300883/Project_week_global/MEssE/build_nwp/messe_env/build_dir/icon-model/externals/comin/build/plugins/python_adapter/libpython_adapter.so"
+  plugin_list(1)%options        = "/work/mh0033/m300883/Project_week_global/MEssE/comin_plugin_torch/unet_plugin.py"
+/
+&coupling_mode_nml
+  coupled_to_output = .TRUE.
+/
 &parallel_nml
  nproma            = ${nproma}
  nblocks_c         = ${nblocks_c}
@@ -427,7 +434,7 @@ cat >> ${atmo_namelist} << EOF
  direct_albedo_water = 3 ! neu ab L130_030 nach Trang
  albedo_whitecap     = 1 ! neu ab L130_030 nach Trang
  albedo_type         = 1 ! 2: Modis albedo
- irad_aero           = 18
+ irad_aero           = 15    ! 15=iRadAeroKinneVolc: transient year-dep Kinne + volcanic
  irad_o3             = 5
  irad_co2            = 4           ! 4: from greenhouse gas scenario
  irad_ch4            = 4           ! 4: from greenhouse gas scenario
@@ -437,6 +444,7 @@ cat >> ${atmo_namelist} << EOF
  decorr_pole         = 780.
  decorr_equator      = 2950.
  ecrad_llw_cloud_scat = .true.     !
+ ecrad_isolver       = ${radiation_ecrad_isolver}   ! 2: ISolverMcICAACC (GPU)
 /
 &ccycle_nml
  ccycle_config%iccycle  = 2
@@ -644,7 +652,7 @@ do
 
     # year dependent volcanoes
     datadir=/pool/data/icon-xpp/common/aerosol_volcanic_cmip7
-    add_link_file ${datadir}/bc_aeropt_cmip7_volc_lw_b16_sw_b14_${year}.nc ./bc_aeropt_volc_lw_b14_${year}.nc
+    add_link_file ${datadir}/bc_aeropt_cmip7_volc_lw_b16_sw_b14_${year}.nc ./bc_aeropt_volc_lw_b16_sw_b14_${year}.nc
 
     # year dependent bc_land_frac_11pfts files
     datadir=/pool/data/icon-xpp/0012/aerosol_kinne/r0001
@@ -844,18 +852,17 @@ cat >> ${atmo_namelist} <<EOF
  dom                    =  1      ! write all domains
  output_start           = "${start_date_hfreq}"
  output_end             = "${end_date_hfreq}"
- output_interval        = "PT6H"
+ output_interval        = "PT1H"
  !steps_per_file         =  1
  include_last           = .FALSE.
- file_interval          = "P1M"
+ file_interval          = "P1D"
  !steps_per_file_inclfirst  = .FALSE.
  mode                   =  1      ! 1: forecast mode (relative t-axis)
                                   ! 2: climate mode (absolute t-axis)
  output_filename        = '${EXPNAME}_atm_3d_hfreq'
  filename_format        = '<output_filename>_<levtype_l>_<datetime2>'
  !ready_file             = '${EXPNAME}_atm_3d_hfreq_ml_<datetime2>.ready'
- ml_varlist             = 'pres', 'geopot', 'rho', 'temp', 'u', 'v', 'w', 'qv', 'clc', 
-                          'qi', 'qr', 'qs', 'pres_sfc'               
+ ml_varlist             = 'u'            
  output_grid            =  .false.
  remap                  =  0
 /
@@ -864,10 +871,10 @@ cat >> ${atmo_namelist} <<EOF
  dom                    =  1      ! write all domains
  output_start           = "${start_date}"
  output_end             = "${end_date}"
- output_interval        = "PT6H"
+ output_interval        = "PT1H"
  !steps_per_file         =  1
  include_last           = .FALSE.
- file_interval          = "P1M"
+ file_interval          = "P1D"
  !steps_per_file_inclfirst  = .FALSE.
  mode                   =  1      ! 1: forecast mode (relative t-axis)
                                   ! 2: climate mode (absolute t-axis)
@@ -929,23 +936,20 @@ cat >> ${atmo_namelist} << EOF
  dom                    =  1      ! write all domains
  output_start           = "${start_date}"
  output_end             = "${end_date}"
- output_interval        = "${output_interval_3d}"
+ output_interval        = "${output_interval_2d}"
  !steps_per_file         =  1
  file_interval          = "${file_interval}"
  include_last           = .FALSE.
  !steps_per_file_inclfirst  = .FALSE.
- mode                   =  1      ! 1: forecast mode (relative t-axis)
+ mode                   =  2      ! 1: forecast mode (relative t-axis)
                                   ! 2: climate mode (absolute t-axis)
  operation              = 'mean'
  output_filename        = '${EXPNAME}_atm_2d'
  filename_format        = '<output_filename>_<levtype_l>_<datetime2>'
  !ready_file             = '${EXPNAME}_atm_2d_ml_<datetime2>.ready'
- ml_varlist             = 'pres_msl', 'pres_sfc', 'umfl_s', 'vmfl_s', 'sp_10m', 't_2m', 't_s', 't_seasfc',
-                          'tot_prec_rate', 'clct', 'tqv_dia', 'tqc_dia', 'tqi_dia', 'sou_t', 'twater',
-                          'sob_t', 'thb_t', 'sob_s', 'thb_s', 'shfl_s', 'lhfl_s', 'qhfl_s',
-                          'fr_land', 'fr_seaice'
+ ml_varlist             = 'u_10m', 'var_predict'
  output_grid            =  .false.
- remap                  =  0
+ remap                  =  1       ! reg. lat-lon
 /
 EOF
 #
