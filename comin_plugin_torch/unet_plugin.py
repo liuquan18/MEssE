@@ -56,7 +56,7 @@ if _PLUGIN_DIR not in sys.path:
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
 HPX_LEVEL = int(os.environ.get("MESSE_HPX_LEVEL", "6"))
-MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "10"))  # steps
+MAX_FORECAST_HORIZON = int(os.environ.get("MESSE_FORECAST_HORIZON", "4"))  # steps
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 

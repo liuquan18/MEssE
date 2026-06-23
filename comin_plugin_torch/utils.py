@@ -213,7 +213,7 @@ def parse_icon_datetime(iso_str: str) -> datetime.datetime:
     return dt.replace(tzinfo=datetime.timezone.utc)
 
 # Grid helpers
-def _extract_icon_cells(data_array, nc: int) -> xp.ndarray:
+def extract_icon_cells(data_array, nc: int) -> xp.ndarray:
     """Return per-level data for this rank's owned ICON cells (halos excluded)."""
     data_xp = xp.asarray(data_array)
     # Drop trailing singleton dimensions added by COMIN
