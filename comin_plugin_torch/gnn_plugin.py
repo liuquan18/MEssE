@@ -49,7 +49,7 @@ SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "gnn_online.pt")
-DRY_RUN_TIME_SECONDS: int = 2592000  # 1 month
+DRY_RUN_TIME_SECONDS: int = 86400  # 2592000  # 1 month
 SAVE_INTERVAL_SECONDS: int = 86400  # 1 day
 
 
