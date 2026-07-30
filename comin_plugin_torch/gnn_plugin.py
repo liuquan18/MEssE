@@ -103,10 +103,22 @@ num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
 domain = comin.descrdata_get_domain(DOMAIN_ID)
 
 _graph = None  # built lazily in sec_ctor / setup_graph, once nproma is known
+_owned_idx_np: Optional[np.ndarray] = None  # flat cell ids of owned (non-halo) nodes
 if has_gpu:
     _graph = build_local_graph(
         domain, nproma=glob.nproma, device=torch.device("cuda", 0)
     )
+    # NOTE: `glob.nproma` is only the block length; it is *not* the number of
+    # local (owned + halo) cells. The per-rank local node array has size
+    # `_graph.n_nodes == domain.cells.nblks * nproma`, which is the padded
+    # flat (idx, blk) address space (owned + halo + unused block padding).
+    # The actual owned+halo cell count is `domain.cells.ncells`
+    # (== `_graph.n_valid`), which is <= `_graph.n_nodes`. Only owned cells
+    # (`domain.cells.decomp_domain == 0`, i.e. `_graph.owned_mask`) should
+    # ever be used as model *output*; halo cells are kept as graph nodes
+    # purely so message passing has correct neighbor information near the
+    # patch boundary (see graph_utils.py).
+    _owned_idx_np = np.nonzero(_graph.owned_mask.cpu().numpy())[0]
     comin.print_info(
         f"[rank={rank}] local graph: nodes={_graph.n_nodes} "
         f"(valid={_graph.n_valid}, owned={int(_graph.owned_mask.sum())}), "
@@ -377,8 +389,18 @@ def training():
     # same grid, no reverse YAC coupling needed.
     pred = trainer.predict(snapshot, n_steps=1)  # (n_nodes, nlev) normalized
     pred_denorm = pred * std + mean
-    pred_valid_np = pred_denorm[: domain.cells.ncells].cpu().numpy()
-    insert_icon_cells(pred_valid_np.astype(np.float64), _state.AI_var)
+    # Only write back predictions for owned (non-halo) cells: halo nodes are
+    # only present in the graph so message passing near the patch boundary
+    # sees correct neighbor information (see graph_utils.py); their
+    # predictions are derived from an incomplete local neighborhood (their
+    # own halo ring is not shipped to this rank) and must not be treated as
+    # this rank's output. Halo cells keep whatever value ICON already holds
+    # in var_predict (it will be refreshed from the owning rank's own
+    # prediction through ICON's normal halo exchange).
+    pred_owned_np = pred_denorm[_owned_idx_np].cpu().numpy()
+    insert_icon_cells(
+        pred_owned_np.astype(np.float64), _state.AI_var, indices=_owned_idx_np
+    )
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
