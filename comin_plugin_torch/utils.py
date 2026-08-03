@@ -1,5 +1,5 @@
 import datetime
-from pyparsing import Optional
+from typing import Optional
 import torch
 import numpy as np
 import cupy as xp
@@ -214,7 +214,18 @@ def parse_icon_datetime(iso_str: str) -> datetime.datetime:
 
 # Grid helpers
 def extract_icon_cells(data_array, nc: int) -> xp.ndarray:
-    """Return per-level data for this rank's owned ICON cells (halos excluded)."""
+    """Return per-level data for this rank's local ICON cells (owned + halo).
+
+    ``nc`` (typically ``domain.cells.ncells``) is the number of cells this
+    rank actually holds data for, i.e. owned ("prognostic") cells *and* the
+    halo ring mirrored from neighboring ranks; it does **not** exclude
+    halos. Truncating to ``nc`` only drops the unused padding cells beyond
+    ``nc`` (up to ``nproma * nblks``). Callers that must not use/emit halo
+    values (e.g. final predictions written back to ICON) need to further
+    filter by ``domain.cells.decomp_domain == 0`` (see
+    :func:`insert_icon_cells`'s ``indices`` argument and
+    ``graph_utils.LocalGraph.owned_mask``).
+    """
     data_xp = xp.asarray(data_array)
     # Drop trailing singleton dimensions added by COMIN
     while data_xp.ndim > 3 and data_xp.shape[-1] == 1:
@@ -225,20 +236,34 @@ def extract_icon_cells(data_array, nc: int) -> xp.ndarray:
     return data_xp.transpose(0, 2, 1).reshape(-1, nlev, order="F")[:nc]
 
 
-def insert_icon_cells(pred_cells: np.ndarray, buffer) -> None:
-    """Scatter (ncells, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
+def insert_icon_cells(pred_cells: np.ndarray, buffer, indices: Optional[np.ndarray] = None) -> None:
+    """Scatter a (n, nlev) float64 array into COMIN (nproma, nlev, nblk) buffer in-place.
 
-    Inverse of _extract_icon_cells: uses Fortran-order unraveling to match _extract_icon_cells.
+    Inverse of extract_icon_cells: uses Fortran-order unraveling to match extract_icon_cells.
     Fortran order: cell c in flattened array maps to buf[c % nproma, :, c // nproma].
+
+    Parameters
+    ----------
+    pred_cells:
+        (n, nlev) array of values to scatter.
+    buffer:
+        COMIN (nproma, nlev, nblk)-shaped buffer to write into.
+    indices:
+        Optional flat cell ids (same 0-based Fortran-order convention as
+        extract_icon_cells) that each row of ``pred_cells`` should be
+        written to. Defaults to ``np.arange(n)``, i.e. the first ``n``
+        cells (owned + halo, no reordering). Pass e.g. the owned-cell ids
+        from ``graph_utils.LocalGraph.owned_mask`` to only write
+        predictions for owned cells and leave halo cells untouched.
     """
-    nc, nlev = pred_cells.shape
+    n, nlev = pred_cells.shape
     buf = xp.asarray(buffer)
     while buf.ndim > 3 and buf.shape[-1] == 1:
         buf = buf[..., 0]
     nproma_val = buf.shape[0]
-    c = np.arange(nc)
+    c = np.arange(n) if indices is None else np.asarray(indices)
     # Invert Fortran-order reshape: unravel index c in Fortran order
-    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(nc, nlev)
+    buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(n, nlev)
 
 
 # ----------------------------------------------------------------------------
