@@ -341,10 +341,7 @@ def training():
             comin.print_info(f"[rank={rank}] Checkpoint saved at step={current_step}")
 
     icon_var_nodes = extract_icon_cells(_state.icon_var, domain.cells.ncells)
-    icon_var_nodes_np = (
-        icon_var_nodes.get() if hasattr(icon_var_nodes, "get") else icon_var_nodes
-    )
-    var_t = torch.as_tensor(xp.asarray(icon_var_nodes_np), device="cuda").float()
+    var_t = torch.as_tensor(xp.asarray(icon_var_nodes), device="cuda").float()
     if var_t.ndim == 1:
         var_t = var_t.unsqueeze(-1)
 
