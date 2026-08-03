@@ -33,11 +33,6 @@ if _PLUGIN_DIR not in sys.path:
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
-#
-# No YAC and no HEALPix here: the model consumes/produces the ICON native
-# grid directly, so there is no regridding target resolution to configure.
-# Each rank's own domain-decomposed patch (owned cells + halo ring) *is*
-# the training sample/graph — see graph_utils.py for the rationale.
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
@@ -83,16 +78,14 @@ else:
 
 
 # ----------------------------------------------------------------------------
-# MPI and PyTorch distributed setup
+# MPI and PyTorch distributed setup (DDP)
 # ----------------------------------------------------------------------------
 
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 size = comm.Get_size()
 rank = comm.Get_rank()
 
-# GPU ranks. Each GPU-bearing rank owns exactly one local patch (its ICON
-# domain-decomposed cells) — this *is* the DDP world: one graph sample per
-# device, gradients synchronized across ranks by DDP after each rollout.
+# GPU ranks and DDP world
 compute_comm, compute_rank, compute_size, has_gpu = setup_mpi_dist(comm)
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
 
@@ -108,16 +101,7 @@ if has_gpu:
     _graph = build_local_graph(
         domain, nproma=glob.nproma, device=torch.device("cuda", 0)
     )
-    # NOTE: `glob.nproma` is only the block length; it is *not* the number of
-    # local (owned + halo) cells. The per-rank local node array has size
-    # `_graph.n_nodes == domain.cells.nblks * nproma`, which is the padded
-    # flat (idx, blk) address space (owned + halo + unused block padding).
-    # The actual owned+halo cell count is `domain.cells.ncells`
-    # (== `_graph.n_valid`), which is <= `_graph.n_nodes`. Only owned cells
-    # (`domain.cells.decomp_domain == 0`, i.e. `_graph.owned_mask`) should
-    # ever be used as model *output*; halo cells are kept as graph nodes
-    # purely so message passing has correct neighbor information near the
-    # patch boundary (see graph_utils.py).
+    # NOTE: owned_cells + HALO cells are presented in local graph, but only owned cells are valid for writing back to ICON.
     _owned_idx_np = np.nonzero(_graph.owned_mask.cpu().numpy())[0]
     comin.print_info(
         f"[rank={rank}] local graph: nodes={_graph.n_nodes} "
@@ -388,12 +372,7 @@ def training():
     pred_denorm = pred * std + mean
     # Only write back predictions for owned (non-halo) cells: halo nodes are
     # only present in the graph so message passing near the patch boundary
-    # sees correct neighbor information (see graph_utils.py); their
-    # predictions are derived from an incomplete local neighborhood (their
-    # own halo ring is not shipped to this rank) and must not be treated as
-    # this rank's output. Halo cells keep whatever value ICON already holds
-    # in var_predict (it will be refreshed from the owning rank's own
-    # prediction through ICON's normal halo exchange).
+    # sees correct neighbor information (see graph_utils.py); 
     pred_owned_np = pred_denorm[_owned_idx_np].cpu().numpy()
     insert_icon_cells(
         pred_owned_np.astype(np.float64), _state.AI_var, indices=_owned_idx_np
