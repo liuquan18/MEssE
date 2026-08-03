@@ -42,6 +42,9 @@ Run ICON with the plugin like so: `./scripts/run_icon_gpu.sh $ICON_BUILD_DIR $CO
 > `COMIN_PLUGIN_PATH` is `$(pwd)/comin_plugin_pytorch/project_Z_pytorch.py`  
 > `LEVANTE_ACCOUNT` is your levante project id
 
+LOG file can be found in `${ICON_BUILD_DIR}/run/exp.atm_nwp_jsbach_xpp_r2b4*`
+
+
 ## Online interface 
 
 ```bash
