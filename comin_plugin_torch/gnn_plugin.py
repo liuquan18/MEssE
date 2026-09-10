@@ -17,21 +17,10 @@ except NameError:
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-# MEssE.utils.* is a real package (MEssE/__init__.py, MEssE/utils/__init__.py),
-# so importing it needs the repo root (two directories up from this file:
-# .../Project_week_global/MEssE/comin_plugin_torch -> .../Project_week_global)
-# on sys.path — derived from _PLUGIN_DIR above, so it inherits the same
-# __file__-may-be-undefined fallback. If COMIN execs this file with neither a
-# usable __file__ nor MESSE_PLUGIN_DIR set, _PLUGIN_DIR falls back to
-# os.getcwd(), which may not be two levels under the repo root; set
-# MESSE_PLUGIN_DIR explicitly in that case.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-# graph_utils/gnn_online are plain sibling modules in this same directory,
-# imported by bare name (not through the MEssE package) — matches how COMIN
-# itself loads this plugin file (flat, no package machinery).
 from graph_utils import build_local_graph
 from gnn_online import GNNSnapshot, OnlineGNNTrainer
 from MEssE.utils.icon_online_helper import (
@@ -154,7 +143,7 @@ class _State:
         self.AI_var = None
 
         self.normalizer: Optional[RunningMeanStd] = None
-        self.rollout: RolloutBuffer = RolloutBuffer(ROLLOUT_STEPS)
+        self.rollout_pair: RolloutBuffer = RolloutBuffer(ROLLOUT_STEPS)
         self.trainer: Optional[OnlineGNNTrainer] = None
 
 
@@ -320,7 +309,7 @@ def training():
     trainer = _get_trainer(nlev=_state.nlev)
     snapshot = trainer.prepare_snapshot(var_norm, _icon_time_unix_seconds())
 
-    ready = _state.rollout.push(snapshot)
+    ready = _state.rollout_pair.push(snapshot)
     if ready is not None:
         source, target = ready
         result = trainer.train_rollout_step(source, target, n_steps=ROLLOUT_STEPS)
