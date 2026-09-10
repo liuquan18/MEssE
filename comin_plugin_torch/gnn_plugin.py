@@ -1,23 +1,11 @@
 import comin
 import os
 import sys
-from collections import deque
-from typing import Deque, Optional
+from typing import Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
-
-from graph_utils import build_local_graph
-from gnn_online import GNNSnapshot, OnlineGNNTrainer
-from utils import (
-    setup_mpi_dist,
-    parse_icon_datetime,
-    save_checkpoint,
-    rollback_checkpoint,
-    extract_icon_cells,
-    insert_icon_cells,
-)
 
 from mpi4py import MPI
 
@@ -29,6 +17,34 @@ except NameError:
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
+# MEssE.utils.* is a real package (MEssE/__init__.py, MEssE/utils/__init__.py),
+# so importing it needs the repo root (two directories up from this file:
+# .../Project_week_global/MEssE/comin_plugin_torch -> .../Project_week_global)
+# on sys.path — derived from _PLUGIN_DIR above, so it inherits the same
+# __file__-may-be-undefined fallback. If COMIN execs this file with neither a
+# usable __file__ nor MESSE_PLUGIN_DIR set, _PLUGIN_DIR falls back to
+# os.getcwd(), which may not be two levels under the repo root; set
+# MESSE_PLUGIN_DIR explicitly in that case.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+# graph_utils/gnn_online are plain sibling modules in this same directory,
+# imported by bare name (not through the MEssE package) — matches how COMIN
+# itself loads this plugin file (flat, no package machinery).
+from graph_utils import build_local_graph
+from gnn_online import GNNSnapshot, OnlineGNNTrainer
+from MEssE.utils.icon_online_helper import (
+    RunningMeanStd,
+    RolloutBuffer,
+    setup_mpi_dist,
+    parse_icon_datetime,
+    save_checkpoint,
+    rollback_checkpoint,
+    extract_icon_cells,
+    insert_icon_cells,
+)
+
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -36,7 +52,7 @@ if _PLUGIN_DIR not in sys.path:
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
-ROLLOUT_STEPS = int(os.environ.get("MESSE_GNN_ROLLOUT_STEPS", "4"))  # rollout length R
+ROLLOUT_STEPS = int(os.environ.get("MESSE_GNN_ROLLOUT_STEPS", "4"))  # forecast horizon, in steps
 HIDDEN_DIM = int(os.environ.get("MESSE_GNN_HIDDEN_DIM", "128"))
 PROCESSOR_LAYERS = int(os.environ.get("MESSE_GNN_PROCESSOR_LAYERS", "6"))
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
@@ -121,17 +137,11 @@ class _State:
         # data
         "icon_var",
         "AI_var",
-        # dry run for normalization
-        "dryrun_time",
-        "dryrun_done",
-        "accum_count",
-        "accum_sum",
-        "accum_sumsq",
-        "accum_mean",
-        "accum_std",
-        # rollout buffer: source snapshot + up to ROLLOUT_STEPS targets
-        "rollout_source",
-        "rollout_targets",
+        # dry run for normalization (see online_training.RunningMeanStd)
+        "normalizer",
+        # source snapshot + fixed-horizon scheduling (ROLLOUT_STEPS steps
+        # ahead); see online_training.RolloutBuffer
+        "rollout",
         "trainer",
     )
 
@@ -143,16 +153,8 @@ class _State:
         self.icon_var = None
         self.AI_var = None
 
-        self.dryrun_time: Optional[int] = None
-        self.dryrun_done: bool = False
-        self.accum_count: int = 0
-        self.accum_sum: Optional[torch.Tensor] = None
-        self.accum_sumsq: Optional[torch.Tensor] = None
-        self.accum_mean: Optional[torch.Tensor] = None
-        self.accum_std: Optional[torch.Tensor] = None
-
-        self.rollout_source: Optional[GNNSnapshot] = None
-        self.rollout_targets: Deque[GNNSnapshot] = deque(maxlen=ROLLOUT_STEPS)
+        self.normalizer: Optional[RunningMeanStd] = None
+        self.rollout: RolloutBuffer = RolloutBuffer(ROLLOUT_STEPS)
         self.trainer: Optional[OnlineGNNTrainer] = None
 
 
@@ -207,11 +209,6 @@ def _get_trainer(nlev: int) -> OnlineGNNTrainer:
     return _state.trainer
 
 
-def _reset_rollout() -> None:
-    _state.rollout_source = None
-    _state.rollout_targets.clear()
-
-
 # ----------------------------------------------------------------------------
 # COMIN callbacks
 # ----------------------------------------------------------------------------
@@ -235,144 +232,117 @@ def sec_ctor():
     )
 
 
+def _extract_padded(comin_var) -> torch.Tensor:
+    """Extract this rank's ICON cells for `comin_var` and zero-pad to the
+    full local graph node count (`_graph.n_nodes`, includes halos/unused
+    padding), so downstream tensor shapes always match the graph regardless
+    of how many cells ICON actually returned.
+    """
+    cells = extract_icon_cells(comin_var, domain.cells.ncells)  # (ncells, nlev) or (ncells,)
+    t = torch.as_tensor(xp.asarray(cells), device="cuda").float()
+    if t.ndim == 1:
+        t = t.unsqueeze(-1)
+    full = torch.zeros(_graph.n_nodes, t.shape[1], device="cuda")
+    full[: t.shape[0]] = t
+    return full
+
+
+def _maybe_save_checkpoint(current_step: int) -> None:
+    if _state.trainer is None or _state.step_len_seconds is None or current_step == 0:
+        return
+    steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
+    if current_step % steps_per_save == 0:
+        save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step)
+        comin.print_info(f"[rank={rank}] Checkpoint saved at step={current_step}")
+
+
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def dry_run():
-    """Dry run to accumulate per-node mean/std over the first
+    """Dry run to estimate per-node mean/std over the first
     `DRY_RUN_TIME_SECONDS` seconds, directly on the ICON native grid
-    (no HEALPix reshaping needed)."""
+    (no HEALPix reshaping needed). See online_training.RunningMeanStd."""
 
     _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
 
     if not has_gpu:
         return
-    if _state.dryrun_done:
+    if _state.normalizer is not None and _state.normalizer.done:
         return
 
     dry_run_steps = DRY_RUN_TIME_SECONDS // _state.step_len_seconds
-    current_step = _state.current_step
+    full = _extract_padded(_state.icon_var)
 
-    if current_step < dry_run_steps:
-        icon_var_nodes = extract_icon_cells(
-            _state.icon_var, domain.cells.ncells
-        )  # (ncells, nlev) or (ncells,)
-        var_t = torch.as_tensor(xp.asarray(icon_var_nodes), device="cuda").float()
-        if var_t.ndim == 1:
-            var_t = var_t.unsqueeze(-1)
-
-        if _state.nlev is None:
-            _state.nlev = int(var_t.shape[1])
-
-        # Pad up to the full local node count (including halos/padding)
-        # so downstream tensor shapes always match graph.n_nodes.
-        full = torch.zeros(_graph.n_nodes, var_t.shape[1], device="cuda")
-        full[: var_t.shape[0]] = var_t
-        full_d = full.double()
-
-        if _state.accum_sum is None:
-            _state.accum_sum = torch.zeros_like(full_d)
-            _state.accum_sumsq = torch.zeros_like(full_d)
-
-        _state.accum_sum += full_d
-        _state.accum_sumsq += full_d**2
-
-        _state.accum_count += 1
-        _state.current_step += 1
-
-        comin.print_info(
-            f"[rank={rank}] Dry run step {current_step + 1}/{dry_run_steps}"
+    if _state.nlev is None:
+        _state.nlev = int(full.shape[1])
+    if _state.normalizer is None:
+        _state.normalizer = RunningMeanStd(
+            shape=full.shape, n_samples=dry_run_steps, device=torch.device("cuda", 0)
         )
-        return
 
-    mean = (_state.accum_sum / _state.accum_count).float()
-    e_x2 = (_state.accum_sumsq / _state.accum_count).float()
-    var = torch.clamp(e_x2 - mean**2, min=1e-6)
-    std = torch.sqrt(var)
+    step = _state.current_step
+    done = _state.normalizer.update(full)
+    _state.current_step += 1
 
-    _state.accum_mean = mean  # (n_nodes, nlev) float32 CUDA tensor
-    _state.accum_std = std
-    _state.dryrun_done = True
-
-    comin.print_info(
-        f"[rank={rank}] Dry run complete after {_state.accum_count} steps: "
-        f"mean range=[{float(mean.min())}, {float(mean.max())}], "
-        f"std range=[{float(std.min())}, {float(std.max())}]"
-    )
+    if done:
+        stats = _state.normalizer.stats
+        comin.print_info(
+            f"[rank={rank}] Dry run complete after {_state.normalizer.count} steps: "
+            f"mean range=[{float(stats.mean.min())}, {float(stats.mean.max())}], "
+            f"std range=[{float(stats.std.min())}, {float(stats.std.max())}]"
+        )
+    else:
+        comin.print_info(f"[rank={rank}] Dry run step {step + 1}/{dry_run_steps}")
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online rollout-based GNN training callback, called by ICON at each
-    time step. Every `ROLLOUT_STEPS` steps we run one autoregressive
-    rollout-training update (see gnn_online.OnlineGNNTrainer.train_rollout_step)."""
+    time step. Every `ROLLOUT_STEPS` steps we run one training update:
+    the model rolls forward `ROLLOUT_STEPS` autoregressive steps from a
+    source snapshot, and the loss is evaluated once against the single
+    real snapshot observed that many steps later (see
+    gnn_online.OnlineGNNTrainer.train_rollout_step and
+    online_training.RolloutBuffer for the fixed-horizon scheduling)."""
 
     if not has_gpu:
         return
-    if not _state.dryrun_done:
+    if _state.normalizer is None or not _state.normalizer.done:
         comin.print_info(f"[rank={rank}] Dry run not complete, skipping training")
         return
 
     current_step = _state.current_step
     _state.current_step += 1
+    _maybe_save_checkpoint(current_step)
 
-    if (
-        _state.trainer is not None
-        and _state.step_len_seconds is not None
-        and current_step > 0
-    ):
-        steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
-        if current_step % steps_per_save == 0:
-            save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step)
-            comin.print_info(f"[rank={rank}] Checkpoint saved at step={current_step}")
+    full = _extract_padded(_state.icon_var)
+    var_norm = _state.normalizer.normalize(full)
 
-    icon_var_nodes = extract_icon_cells(_state.icon_var, domain.cells.ncells)
-    var_t = torch.as_tensor(xp.asarray(icon_var_nodes), device="cuda").float()
-    if var_t.ndim == 1:
-        var_t = var_t.unsqueeze(-1)
-
-    full = torch.zeros(_graph.n_nodes, var_t.shape[1], device="cuda")
-    full[: var_t.shape[0]] = var_t
-
-    mean = _state.accum_mean
-    std = _state.accum_std
-    var_norm = (full - mean) / std
-
-    unix_seconds = _icon_time_unix_seconds()
     trainer = _get_trainer(nlev=_state.nlev)
-    snapshot = trainer.prepare_snapshot(var_norm, unix_seconds)
+    snapshot = trainer.prepare_snapshot(var_norm, _icon_time_unix_seconds())
 
-    if _state.rollout_source is None:
-        # First snapshot in a new rollout window: this is the source state.
-        _state.rollout_source = snapshot
-        _state.rollout_targets.clear()
-    else:
-        _state.rollout_targets.append(snapshot)
-        if len(_state.rollout_targets) == ROLLOUT_STEPS:
-            result = trainer.train_rollout_step(
-                _state.rollout_source, list(_state.rollout_targets)
-            )
+    ready = _state.rollout.push(snapshot)
+    if ready is not None:
+        source, target = ready
+        result = trainer.train_rollout_step(source, target, n_steps=ROLLOUT_STEPS)
+        comin.print_info(
+            f"[rank={rank}] step={current_step} rollout_loss={result['loss']:.6f} "
+            f"grad_norm={result.get('grad_norm', 0.0):.4f} "
+            f"skipped={result.get('skipped', False)}"
+        )
+        if result.get("needs_rollback"):
             comin.print_info(
-                f"[rank={rank}] step={current_step} rollout_loss={result['loss']:.6f} "
-                f"grad_norm={result.get('grad_norm', 0.0):.4f} "
-                f"skipped={result.get('skipped', False)}"
+                f"[rank={rank}] step={current_step} NaN detected — "
+                "rolling back to last checkpoint"
             )
-            if result.get("needs_rollback"):
-                comin.print_info(
-                    f"[rank={rank}] step={current_step} NaN detected — "
-                    "rolling back to last checkpoint"
-                )
-                rollback_checkpoint(_state.trainer, CHECKPOINT_PATH)
-            # Slide the rollout window forward: the most recent snapshot
-            # becomes the source of the next window.
-            _state.rollout_source = snapshot
-            _state.rollout_targets.clear()
+            rollback_checkpoint(_state.trainer, CHECKPOINT_PATH)
 
     # Run 1-step-ahead inference and write the prediction back to ICON —
     # same grid, no reverse YAC coupling needed.
     pred = trainer.predict(snapshot, n_steps=1)  # (n_nodes, nlev) normalized
-    pred_denorm = pred * std + mean
+    pred_denorm = _state.normalizer.denormalize(pred)
     # Only write back predictions for owned (non-halo) cells: halo nodes are
     # only present in the graph so message passing near the patch boundary
-    # sees correct neighbor information (see graph_utils.py); 
+    # sees correct neighbor information (see graph_utils.py).
     pred_owned_np = pred_denorm[_owned_idx_np].cpu().numpy()
     insert_icon_cells(
         pred_owned_np.astype(np.float64), _state.AI_var, indices=_owned_idx_np

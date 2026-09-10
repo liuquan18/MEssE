@@ -31,6 +31,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from graph_utils import LocalGraph
 
+# Online normalization (RunningMeanStd) and fixed-horizon scheduling
+# (RolloutBuffer) are generic, model-agnostic bookkeeping — not specific to
+# this GNN — and live in online_training.py, shared with unet_plugin.py and
+# the eventual FieldSpaceNN plugin. gnn_plugin.py imports them from there
+# directly, not from this module.
+
 
 def _mlp(in_dim: int, hidden_dim: int, out_dim: int, n_hidden: int = 1) -> nn.Sequential:
     layers: List[nn.Module] = [nn.Linear(in_dim, hidden_dim), nn.SiLU()]
@@ -194,13 +200,16 @@ class OnlineGNNTrainer:
     def train_rollout_step(
         self,
         source: GNNSnapshot,
-        targets: List[GNNSnapshot],
+        target: GNNSnapshot,
+        n_steps: int,
     ) -> Dict[str, Any]:
-        """Autoregressive rollout training over ``len(targets)`` steps.
-
-        Feeds the model's own prediction back in as the next input
-        (teacher forcing is *not* used), matching the online rollout
-        training approach requested for eventual km-scale extension.
+        """Roll the model forward autoregressively for ``n_steps`` steps
+        from ``source`` (feeding each step's own prediction back in as the
+        next input — teacher forcing is *not* used), then evaluate the loss
+        once against ``target``, the single ground-truth snapshot observed
+        ``n_steps`` steps after ``source``. Only the final step is compared
+        against real data; the intermediate ``n_steps - 1`` forward passes
+        run on the model's own predictions with no supervision.
         Loss and reported metrics only consider owned (non-halo) nodes so
         that cells duplicated across neighboring ranks' halos are not
         double-counted in the (DDP-averaged) global loss.
@@ -208,20 +217,17 @@ class OnlineGNNTrainer:
         if not torch.isfinite(source.x).all():
             self.log_fn("[trainer] NaN/Inf in source — skipping rollout step")
             return self._skip_result()
-        for t in targets:
-            if not torch.isfinite(t.x).all():
-                self.log_fn("[trainer] NaN/Inf in target — skipping rollout step")
-                return self._skip_result()
+        if not torch.isfinite(target.x).all():
+            self.log_fn("[trainer] NaN/Inf in target — skipping rollout step")
+            return self._skip_result()
 
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
         x = source.x
-        losses = []
-        for target in targets:
+        for _ in range(n_steps):
             x = self._forward(x)
-            losses.append(self._masked_mse(x, target.x))
-        loss = torch.stack(losses).mean()
+        loss = self._masked_mse(x, target.x)
 
         if not torch.isfinite(loss):
             self.log_fn(
@@ -257,7 +263,7 @@ class OnlineGNNTrainer:
 
         return {
             "loss": loss.item(),
-            "loss_dict": {f"train/MSE_step{i}": l.item() for i, l in enumerate(losses)},
+            "loss_dict": {"train/MSE": loss.item()},
             "skipped": False,
             "needs_rollback": False,
             "grad_norm": grad_norm,

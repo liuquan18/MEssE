@@ -9,23 +9,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from unet_online import UNetSnapshot, OnlineUNetTrainer
-from utils import (
-    setup_mpi_dist,
-    setup_icon_grid,
-    setup_hpx_grid,
-    parse_icon_datetime,
-    to_hpx_faces,
-    from_hpx_faces,
-    save_checkpoint,
-    rollback_checkpoint,
-    sample_horizon,
-    extract_icon_cells,
-    insert_icon_cells,
-    enqueue_snapshot,
-    ForecastExample,
-)
-
 from mpi4py import MPI
 
 import healpy
@@ -47,6 +30,40 @@ except NameError:
     _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
+
+# MEssE.utils.* is a real package (MEssE/__init__.py, MEssE/utils/__init__.py),
+# so importing it needs the repo root (two directories up from this file:
+# .../Project_week_global/MEssE/comin_plugin_torch -> .../Project_week_global)
+# on sys.path — derived from _PLUGIN_DIR above, so it inherits the same
+# __file__-may-be-undefined fallback. If COMIN execs this file with neither a
+# usable __file__ nor MESSE_PLUGIN_DIR set, _PLUGIN_DIR falls back to
+# os.getcwd(), which may not be two levels under the repo root; set
+# MESSE_PLUGIN_DIR explicitly in that case.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+# unet_online is a plain sibling module in this same directory, imported by
+# bare name (not through the MEssE package) — matches how COMIN itself loads
+# this plugin file (flat, no package machinery).
+from unet_online import UNetSnapshot, OnlineUNetTrainer
+from MEssE.utils.icon_online_helper import (
+    setup_mpi_dist,
+    parse_icon_datetime,
+    save_checkpoint,
+    rollback_checkpoint,
+    extract_icon_cells,
+    insert_icon_cells,
+    sample_horizon,
+    enqueue_snapshot,
+    ForecastExample,
+)
+from MEssE.utils.healpix_grids import (
+    setup_icon_grid,
+    setup_hpx_grid,
+    to_hpx_faces,
+    from_hpx_faces,
+)
 
 
 # ----------------------------------------------------------------------------

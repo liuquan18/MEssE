@@ -52,6 +52,16 @@ sed -i "s|^#SBATCH --account=.*|#SBATCH --account=${LEVANTE_ACCOUNT}|" "$ICON_RU
 sed -i "s|^#SBATCH --nodes=.*|#SBATCH --nodes=${NUM_NODES}|" "$ICON_RUN_SCRIPT"
 sed -i "s|^#SBATCH --job-name=.*|#SBATCH --job-name=${EXPERIMENT_NAME}|" "$ICON_RUN_SCRIPT"
 sed -i "s|^export EXPNAME=.*|export EXPNAME=\"${EXPERIMENT_NAME}\"|" "$ICON_RUN_SCRIPT"
+# COMIN execs the plugin script directly (not `import`), and on this build
+# that appears to leave `__file__` undefined inside it — the plugin falls
+# back to $MESSE_PLUGIN_DIR (or os.getcwd(), which is wrong: this runscript's
+# #SBATCH --chdir pins cwd to the ICON build's run/ directory for the whole
+# job, not the plugin's own directory) to find its own directory and, from
+# there, the repo root for `MEssE.*` imports. Set it explicitly so that
+# fallback is always correct, regardless of whether __file__ ends up defined.
+MESSE_PLUGIN_DIR_ABS="$(cd "$(dirname "$COMIN_PLUGIN_SCRIPT")" && pwd)"
+sed -i "/^export MESSE_PLUGIN_DIR=/d" "$ICON_RUN_SCRIPT"
+sed -i "/^export EXPNAME=/a export MESSE_PLUGIN_DIR=\"${MESSE_PLUGIN_DIR_ABS}\"" "$ICON_RUN_SCRIPT"
 sed -i "s|^job_name=.*|job_name=\"exp.${EXPERIMENT_NAME}.run\"|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%plugin_library[[:space:]]*=.*|  plugin_list(1)%plugin_library = \"${PYTHON_ADAPTER_LIB}\"|" "$ICON_RUN_SCRIPT"
 sed -i "s|^[[:space:]]*plugin_list(1)%options[[:space:]]*=.*|  plugin_list(1)%options        = \"${COMIN_PLUGIN_SCRIPT}\"|" "$ICON_RUN_SCRIPT"
