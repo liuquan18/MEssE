@@ -44,17 +44,7 @@ ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
 ROLLOUT_STEPS = int(os.environ.get("MESSE_FS_ROLLOUT_STEPS", "4"))  # forecast horizon, in steps
 ATT_DIM = int(os.environ.get("MESSE_FS_ATT_DIM", "32"))
 N_HEAD_CHANNELS = int(os.environ.get("MESSE_FS_N_HEAD_CHANNELS", "8"))
-# Paired by construction (the coarse file must be this fine file's actual
-# grid-generator parent, via parent_cell_index -- see icon_mgrid_utils.py
-# and the plan document's "Key finding" section); update together.
-COARSE_GRID_PATH = os.environ.get(
-    "MESSE_FS_COARSE_GRID_PATH",
-    "/pool/data/ICON/grids/public/edzw/icon_grid_0011_R02B03_R.nc",
-)
-FINE_GRID_PATH = os.environ.get(
-    "MESSE_FS_FINE_GRID_PATH",
-    "/pool/data/ICON/grids/public/edzw/icon_grid_0012_R02B04_G.nc",
-)
+
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 
@@ -63,6 +53,15 @@ CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspace_online.pt")
 DRY_RUN_TIME_SECONDS: int = 86400  # 1 day
 SAVE_INTERVAL_SECONDS: int = 86400  # 1 day
 
+# Paths to the coarse and fine grids
+COARSE_GRID_PATH = os.environ.get(
+    "MESSE_FS_COARSE_GRID_PATH",
+    "/pool/data/ICON/grids/public/edzw/icon_grid_0011_R02B03_R.nc",
+)
+FINE_GRID_PATH = os.environ.get(
+    "MESSE_FS_FINE_GRID_PATH",
+    "/pool/data/ICON/grids/public/edzw/icon_grid_0012_R02B04_G.nc",
+)
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -112,8 +111,7 @@ num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
 domain = comin.descrdata_get_domain(DOMAIN_ID)
 comin.print_info(
     f"[rank={rank}] domain.grid_filename={getattr(domain, 'grid_filename', '<unavailable>')} "
-    f"(expected to match FINE_GRID_PATH={FINE_GRID_PATH} -- parent_cell_index lookups "
-    f"below assume it does; see the plan document's open item on this check)"
+    f"(expected to match FINE_GRID_PATH={FINE_GRID_PATH})"
 )
 
 _coarse_grid = None

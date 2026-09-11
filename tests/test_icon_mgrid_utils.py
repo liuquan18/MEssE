@@ -22,7 +22,7 @@ same-rank, different-token neighbor rather than masking it), a cycle within
 parent 2's partial group with one dangling "neighbor not shipped" slot
 (exercises the missing-neighbor fallback), and no other links.
 """
-
+#%%
 from types import SimpleNamespace
 
 import numpy as np
@@ -31,7 +31,7 @@ import torch
 
 from icon_mgrid_utils import CoarseGrid, build_local_mgrid, pool_fine_to_coarse
 
-
+#%%
 def _make_domain():
     nproma, nblks, n_nbr = 11, 1, 3
 
@@ -111,7 +111,7 @@ def _make_parent_index_global():
     # 8-11 -> parent 2.
     return np.array([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2], dtype=np.int64)
 
-
+#%%
 def test_only_complete_groups_are_kept():
     domain = _make_domain()
     mgrid = build_local_mgrid(
