@@ -42,6 +42,12 @@ from typing import Optional
 import numpy as np
 import torch
 
+# Callers (gnn_plugin.py, and MEssE/tests/conftest.py for unit tests) already
+# put the project root on sys.path before importing this module — see their
+# own _PLUGIN_DIR/_PROJECT_ROOT bootstrap — so a plain dotted import is safe
+# here without repeating that bootstrap.
+from MEssE.utils.icon_online_helper import flat_index as _flat_index
+
 
 @dataclass
 class LocalGraph:
@@ -54,17 +60,6 @@ class LocalGraph:
     clon: torch.Tensor  # (n_nodes,) float32, radians
     clat: torch.Tensor  # (n_nodes,) float32, radians
     edge_attr: torch.Tensor  # (E, 3) float32: [dlon, dlat, great_circle_dist]
-
-
-def _flat_index(idx: np.ndarray, blk: np.ndarray, nproma: int) -> np.ndarray:
-    """Convert 1-based (idx, blk) COMIN indices to a 0-based flat cell id.
-
-    Matches the flattening convention used by
-    ``utils.extract_icon_cells``/``utils.insert_icon_cells`` and by
-    ``utils.setup_icon_grid`` when building the YAC connectivity, i.e.
-    ``c = (blk - 1) * nproma + (idx - 1)``.
-    """
-    return (blk.astype(np.int64) - 1) * nproma + (idx.astype(np.int64) - 1)
 
 
 def _great_circle(lon1, lat1, lon2, lat2):
