@@ -143,12 +143,19 @@ def _local_cell_basics(domain, nproma: int):
     n_valid = int(domain.cells.ncells)
     n_nodes = int(domain.cells.nblks) * nproma
 
-    clon_full = np.ravel(np.asarray(domain.cells.clon)).astype(np.float64)
-    clat_full = np.ravel(np.asarray(domain.cells.clat)).astype(np.float64)
+    # order="F": domain.cells.* arrays are (nproma, nblks) with idx (nproma)
+    # the fast-varying axis, matching flat_index's own convention
+    # (c = (blk-1)*nproma + (idx-1)) -- the default order="C" would instead
+    # vary blk fastest, silently permuting which physical cell ends up at
+    # flat position c whenever nblks > 1 (a real bug, though currently
+    # dormant: every GPU run so far uses nblocks_c=1, under which "C" and
+    # "F" order coincide since there's only one block to begin with).
+    clon_full = np.ravel(np.asarray(domain.cells.clon), order="F").astype(np.float64)
+    clat_full = np.ravel(np.asarray(domain.cells.clat), order="F").astype(np.float64)
     # decomp_domain == 0 marks prognostic ("owned") cells; > 0 marks halo
     # cells at increasing distance from the owned region; < 0 is unused
     # padding at the end of the last block.
-    decomp = np.ravel(np.asarray(domain.cells.decomp_domain)).astype(np.int64)
+    decomp = np.ravel(np.asarray(domain.cells.decomp_domain), order="F").astype(np.int64)
     owned = decomp == 0
 
     return n_nodes, n_valid, owned, clon_full, clat_full
@@ -170,12 +177,21 @@ def build_fine_adjacency(domain, nproma: int) -> FineAdjacency:
     nproma_ids, blk_ids = np.meshgrid(
         np.arange(1, nproma + 1), np.arange(1, neighbor_idx.shape[1] + 1), indexing="ij"
     )
-    self_flat = flat_index(nproma_ids, blk_ids, nproma).reshape(n_nodes)
-    nbr_flat = flat_index(neighbor_idx, neighbor_blk, nproma).reshape(n_nodes, n_nbr)
+    # order="F" here too, for the same reason as _local_cell_basics above:
+    # these reshapes must put flat position c at (idx=c%nproma, blk=c//nproma)
+    # to agree with clon_full/clat_full/owned's own flattening and with
+    # extract_icon_cells' Fortran-order convention elsewhere in this
+    # project -- the default "C" order would instead vary blk fastest,
+    # silently misaligning adjc's rows with every other array indexed by
+    # flat cell id whenever nblks_c > 1 (verified by hand-checking the
+    # index arithmetic; dormant today only because nblocks_c=1 on every
+    # real GPU run so far).
+    self_flat = flat_index(nproma_ids, blk_ids, nproma).reshape(n_nodes, order="F")
+    nbr_flat = flat_index(neighbor_idx, neighbor_blk, nproma).reshape(n_nodes, n_nbr, order="F")
 
     valid = (
-        (neighbor_idx.reshape(n_nodes, n_nbr) > 0)
-        & (neighbor_blk.reshape(n_nodes, n_nbr) > 0)
+        (neighbor_idx.reshape(n_nodes, n_nbr, order="F") > 0)
+        & (neighbor_blk.reshape(n_nodes, n_nbr, order="F") > 0)
         & (nbr_flat >= 0)
         & (nbr_flat < n_nodes)
     )

@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 import torch
 
-from icon_mgrid_utils import CoarseGrid, build_local_mgrid, pool_fine_to_coarse
+from icon_mgrid_utils import CoarseGrid, build_fine_adjacency, build_local_mgrid, pool_fine_to_coarse
 
 #%%
 def _make_domain():
@@ -249,3 +249,61 @@ def test_fine_adjc_mask_never_masks_gridlayer_polar_fix_columns():
     # (columns 3, 5, 8 are untouched by the fix and should still show some
     # masking), so the assertions above are not vacuously true.
     assert mgrid.fine_adjc_mask[:, [1, 3, 4, 5, 7, 8]].any()
+
+
+def test_build_fine_adjacency_multi_block_uses_correct_cell_ordering():
+    """Regression test (Codex review finding, 2026-09-14): domain.cells.*
+    arrays are (nproma, nblks) with idx (nproma) the fast-varying axis --
+    matching flat_index's own convention, c = (blk-1)*nproma + (idx-1).
+    Flattening/reshaping them with numpy's default order="C" instead
+    varies blk fastest, silently permuting which physical cell ends up at
+    flat position c whenever nblks > 1. Every synthetic domain elsewhere in
+    this file uses nblks=1 (matching every real GPU run so far, which
+    always sets nblocks_c=1), under which "C" and "F" order coincide -- so
+    this is the one test here that actually exercises nblks > 1 and would
+    have caught the bug (self-column values and clon would both have come
+    out permuted under the old order="C" reshapes).
+    """
+    nproma, nblks, n_nbr = 4, 2, 3
+    n_nodes = nproma * nblks
+
+    # clon[idx-1, blk-1] = (idx-1) + (blk-1)*10 -- distinguishable per-cell
+    # value so a wrong flattening order is easy to detect positionally.
+    clon = np.zeros((nproma, nblks))
+    for p in range(nproma):
+        for b in range(nblks):
+            clon[p, b] = p + b * 10
+    clat = np.zeros((nproma, nblks))
+    decomp_domain = np.zeros((nproma, nblks), dtype=np.int64)  # all owned
+
+    neighbor_idx = np.zeros((nproma, nblks, n_nbr), dtype=np.int64)
+    neighbor_blk = np.zeros((nproma, nblks, n_nbr), dtype=np.int64)
+    # One real cross-block link: flat cell 0 (idx=1,blk=1) -> flat cell 5
+    # (idx=2,blk=2), via slot 0. Everything else stays (0,0)/invalid.
+    neighbor_idx[0, 0, 0] = 2
+    neighbor_blk[0, 0, 0] = 2
+
+    cells = SimpleNamespace(
+        ncells=n_nodes,
+        nblks=nblks,
+        clon=clon,
+        clat=clat,
+        decomp_domain=decomp_domain,
+        neighbor_idx=neighbor_idx,
+        neighbor_blk=neighbor_blk,
+    )
+    domain = SimpleNamespace(cells=cells)
+
+    fine = build_fine_adjacency(domain, nproma=nproma)
+
+    # Positional check: flat cell c must have clon (c % nproma) + (c // nproma) * 10.
+    expected_clon = [p + b * 10 for b in range(nblks) for p in range(nproma)]
+    assert fine.clon.tolist() == pytest.approx(expected_clon)
+
+    # Self-column check: adjc[c, 0] must be c itself, for every c.
+    assert fine.adjc[:, 0].tolist() == list(range(n_nodes))
+
+    # Cross-block neighbor check: flat cell 0's slot-0 neighbor (tile
+    # column 1) must resolve to flat cell 5, unmasked.
+    assert fine.adjc[0, 1] == 5
+    assert not fine.adjc_mask[0, 1]
