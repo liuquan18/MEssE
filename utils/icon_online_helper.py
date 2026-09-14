@@ -311,6 +311,18 @@ def enqueue_snapshot(
 # ----------------------------------------------------------------------------
 
 
+def flat_index(idx: np.ndarray, blk: np.ndarray, nproma: int) -> np.ndarray:
+    """Convert 1-based (idx, blk) COMIN indices to a 0-based flat cell id.
+
+    ``c = (blk - 1) * nproma + (idx - 1)``. This is the flattening convention
+    used throughout this module (:func:`extract_icon_cells`/
+    :func:`insert_icon_cells`) and by every local-patch grid/graph builder
+    that addresses cells in COMIN's native (nproma, nblks) layout
+    (``graph_utils.build_local_graph``, ``icon_mgrid_utils``).
+    """
+    return (blk.astype(np.int64) - 1) * nproma + (idx.astype(np.int64) - 1)
+
+
 def parse_icon_datetime(iso_str: str) -> datetime.datetime:
     """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
     clean = str(iso_str).split(".")[0].rstrip("Z")

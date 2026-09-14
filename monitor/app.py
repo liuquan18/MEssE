@@ -26,7 +26,7 @@ def parse_log():
                 if m:
                     step_times[int(m.group(1))] = m.group(2)
                     continue
-                m = re.search(r"\[rank=0\] step=(\d+) loss=([\d.]+)", line)
+                m = re.search(r"\[rank=0\] step=(\d+) (?:rollout_)?loss=([\d.]+)", line)
                 if m:
                     losses.append((int(m.group(1)), float(m.group(2))))
     except FileNotFoundError:
