@@ -56,8 +56,6 @@ import xarray as xr
 
 from fieldspacenn.src.modules.grids.grid_utils import icon_neighbor_cell_index_to_adjc
 
-from graph_utils import build_local_graph
-
 # Callers (fieldspace_plugin.py, and MEssE/tests/conftest.py for unit tests)
 # already put the project root on sys.path before importing this module --
 # see their own _PLUGIN_DIR/_PROJECT_ROOT bootstrap -- so a plain dotted
@@ -133,14 +131,36 @@ class LocalMGrid:
     parent_group_size_histogram: Dict[int, int] = field(default_factory=dict)
 
 
+def _local_cell_basics(domain, nproma: int):
+    """The handful of per-cell fields every local-grid builder in this
+    project needs (n_nodes, n_valid, owned_mask, clon, clat), computed
+    directly from COMIN's `domain.cells`. Deliberately not shared with
+    `graph_utils.build_local_graph` (which duplicates this same
+    computation for its own edge-list construction) -- kept as two
+    independent, self-contained modules rather than have one import the
+    other for a handful of fields.
+    """
+    n_valid = int(domain.cells.ncells)
+    n_nodes = int(domain.cells.nblks) * nproma
+
+    clon_full = np.ravel(np.asarray(domain.cells.clon)).astype(np.float64)
+    clat_full = np.ravel(np.asarray(domain.cells.clat)).astype(np.float64)
+    # decomp_domain == 0 marks prognostic ("owned") cells; > 0 marks halo
+    # cells at increasing distance from the owned region; < 0 is unused
+    # padding at the end of the last block.
+    decomp = np.ravel(np.asarray(domain.cells.decomp_domain)).astype(np.int64)
+    owned = decomp == 0
+
+    return n_nodes, n_valid, owned, clon_full, clat_full
+
+
 def build_fine_adjacency(domain, nproma: int) -> FineAdjacency:
     """Build the local fine-zoom (adjc, adjc_mask) directly from COMIN's
     domain.cells.neighbor_idx/neighbor_blk, with real missing-neighbor
     handling (a rank's local patch is not a closed grid, unlike the
     disk-based icon_neighbor_cell_index_to_adjc's assumption).
     """
-    graph = build_local_graph(domain, nproma=nproma, device=None)
-    n_nodes = graph.n_nodes
+    n_nodes, n_valid, owned, clon_full, clat_full = _local_cell_basics(domain, nproma)
 
     neighbor_idx = np.asarray(domain.cells.neighbor_idx)  # (nproma, nblks_c, 3)
     neighbor_blk = np.asarray(domain.cells.neighbor_blk)
@@ -171,12 +191,12 @@ def build_fine_adjacency(domain, nproma: int) -> FineAdjacency:
 
     return FineAdjacency(
         n_nodes=n_nodes,
-        n_valid=graph.n_valid,
+        n_valid=n_valid,
         adjc=adjc.astype(np.int64),
         adjc_mask=adjc_mask,
-        owned_mask=graph.owned_mask.cpu().numpy(),
-        clon=graph.clon.double().cpu().numpy(),
-        clat=graph.clat.double().cpu().numpy(),
+        owned_mask=owned,
+        clon=clon_full,
+        clat=clat_full,
     )
 
 
