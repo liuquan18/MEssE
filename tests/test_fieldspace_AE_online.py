@@ -1,4 +1,4 @@
-"""Unit tests for fieldspace_compress.py: LatentReservoir,
+"""Unit tests for fieldspace_AE_online.py: LatentReservoir,
 FieldSpaceAEForecaster and OnlineFieldSpaceAETrainer.
 
 CPU only, on the same small hand-built LocalMGrid as test_fieldspace_online.py
@@ -10,7 +10,7 @@ import math
 import pytest
 import torch
 
-from fieldspace_compress import LatentReservoir, OnlineFieldSpaceAETrainer
+from fieldspace_AE_online import LatentReservoir, OnlineFieldSpaceAETrainer
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms
 from test_fieldspace_online import _tiny_mgrid
 

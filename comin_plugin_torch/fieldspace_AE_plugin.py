@@ -1,6 +1,7 @@
 import comin
 import os
 import sys
+import time
 from typing import Optional
 
 import numpy as np
@@ -21,7 +22,13 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from icon_mgrid_utils import LocalMGrid, build_local_mgrid, load_coarse_grid, load_parent_index
+from icon_mgrid_utils import (
+    LocalMGrid,
+    build_local_mgrid,
+    check_grid_files,
+    load_coarse_grid,
+    load_parent_index,
+)
 from MEssE.comin_plugin_torch.fieldspace_AE_online import OnlineFieldSpaceAETrainer
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
@@ -39,10 +46,11 @@ from MEssE.utils.icon_online_helper import (
 # ----------------------------------------------------------------------------
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
-ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "u_10m")
+# "uas" in AES physics; the NWP physics name for the same field is "u_10m".
+ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "uas")
 N_HISTORY = int(os.environ.get("MESSE_AE_N_HISTORY", "4"))  # cached latents per prediction
 ROLLOUT_STEPS = int(os.environ.get("MESSE_AE_ROLLOUT_STEPS", "1"))  # training horizon, in steps
-LATENT_CHANNELS = int(os.environ.get("MESSE_AE_LATENT_CHANNELS", "4"))  # latent size = C/4 of R2B4
+LATENT_CHANNELS = int(os.environ.get("MESSE_AE_LATENT_CHANNELS", "4"))  # latent size = C/4 of native
 N_BLOCKS = int(os.environ.get("MESSE_AE_N_BLOCKS", "1"))  # attention blocks per encoder/decoder stage
 N_PROCESSOR_BLOCKS = int(os.environ.get("MESSE_AE_N_PROCESSOR_BLOCKS", "2"))
 RECON_WEIGHT = float(os.environ.get("MESSE_AE_RECON_WEIGHT", "1.0"))
@@ -55,17 +63,22 @@ SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 # Not fieldspace_online.pt: the two models' state dicts are incompatible.
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspace_ae_online.pt")
-DRY_RUN_TIME_SECONDS: int = 86400  # 1 day
-SAVE_INTERVAL_SECONDS: int = 86400  # 1 day
+DRY_RUN_TIME_SECONDS = int(os.environ.get("MESSE_AE_DRY_RUN_SECONDS", "3600"))  # 1 hour
+SAVE_INTERVAL_SECONDS = int(os.environ.get("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))  # 1 day
 
-# Paths to the coarse and fine grids (shared with fieldspace_plugin.py)
+# Grid files (env var names shared with fieldspace_plugin.py). The fine grid must
+# be the grid ICON runs on, the coarse grid its parent one level up. Defaults:
+# R2B8/R2B7; Earth_IcosS_0010km.nc has the same cell ordering, neighbors and
+# parent_cell_index as icon_grid_0054_R02B08_G.nc. For the R2B4 NWP runscript use
+# /pool/data/ICON/grids/public/edzw/icon_grid_0012_R02B04_G.nc (fine) and
+# .../icon_grid_0011_R02B03_R.nc (coarse).
 COARSE_GRID_PATH = os.environ.get(
     "MESSE_FS_COARSE_GRID_PATH",
-    "/pool/data/ICON/grids/public/edzw/icon_grid_0011_R02B03_R.nc",
+    "/pool/data/ICON/grids/mpim/Earth_IcosS_0020km.nc",
 )
 FINE_GRID_PATH = os.environ.get(
     "MESSE_FS_FINE_GRID_PATH",
-    "/pool/data/ICON/grids/public/edzw/icon_grid_0012_R02B04_G.nc",
+    "/pool/data/ICON/grids/mpim/Earth_IcosS_0010km.nc",
 )
 
 # ----------------------------------------------------------------------------
@@ -108,6 +121,14 @@ rank = comm.Get_rank()
 # GPU ranks and DDP world
 compute_comm, compute_rank, compute_size, has_gpu = setup_mpi_dist(comm)
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
+# The plugin only runs on ICON work ranks, and each of them should own a GPU. A
+# work rank without one (SLURM_LOCALID >= 4) shares a GPU with another ICON rank
+# and never trains, so its cells get no prediction: the task layout is wrong.
+if num_calculate_processes != size:
+    comin.print_info(
+        f"WARNING: only {num_calculate_processes} of {size} ICON work ranks have their own GPU; "
+        "check the runscript's MPI rank layout"
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -125,6 +146,10 @@ _mgrid: Optional[LocalMGrid] = None
 if has_gpu:
     _coarse_grid = load_coarse_grid(COARSE_GRID_PATH)
     _parent_index_global = load_parent_index(FINE_GRID_PATH)
+    try:
+        check_grid_files(_parent_index_global, _coarse_grid, domain.cells.ncells_global)
+    except ValueError as e:
+        raise ValueError(f"{e} (FINE_GRID_PATH={FINE_GRID_PATH}, COARSE_GRID_PATH={COARSE_GRID_PATH})") from e
     _mgrid = build_local_mgrid(
         domain,
         nproma=glob.nproma,
@@ -153,7 +178,7 @@ class _State:
         "AI_var",
         # dry run for normalization (see icon_online_helper.RunningMeanStd)
         "normalizer",
-        # model + latent reservoir (see fieldspace_compress.OnlineFieldSpaceAETrainer)
+        # model + latent reservoir (see fieldspace_AE_online.OnlineFieldSpaceAETrainer)
         "trainer",
     )
 
@@ -329,7 +354,7 @@ def training():
     the processor rolls `ROLLOUT_STEPS` steps forward from the `N_HISTORY`
     latents ending that many steps ago, and the decoded result is compared
     with the current field, together with a reconstruction loss (see
-    fieldspace_compress.OnlineFieldSpaceAETrainer.train_step). The model time
+    fieldspace_AE_online.OnlineFieldSpaceAETrainer.train_step). The model time
     conditions every attention block through FieldSpaceNN's TimeEmbedder.
 
     The 1-step-ahead prediction from the newest `N_HISTORY` latents is written
@@ -356,18 +381,28 @@ def training():
     trainer = _get_trainer(nlev=_state.nlev)
     snapshot = trainer.prepare_snapshot(compact_norm, _icon_time_unix_seconds())
 
+    torch.cuda.synchronize()
+    train_seconds = time.perf_counter()
     result = trainer.train_step(snapshot)
+    torch.cuda.synchronize()
+    train_seconds = time.perf_counter() - train_seconds
+    # PyTorch's own peak, and what is left on the device next to ICON.
+    gpu_free_bytes, _ = torch.cuda.mem_get_info()
+    cost = (
+        f"train_s={train_seconds:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f} "
+        f"gpu_free_GiB={gpu_free_bytes / 2**30:.1f}"
+    )
     reservoir = f"reservoir={len(trainer.reservoir)}/{trainer.reservoir.capacity}"
     if result.get("skipped", False) and not result.get("needs_rollback", False):
         # Reservoir warm-up, or a skipped input (the trainer logs why).
-        comin.print_info(f"[rank={rank}] step={current_step} no update, {reservoir}")
+        comin.print_info(f"[rank={rank}] step={current_step} no update, {reservoir} {cost}")
     else:
         comin.print_info(
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
             f"pred_mse={result['loss_dict'].get('train/MSE_pred', float('nan')):.6f} "
             f"recon_mse={result['loss_dict'].get('train/MSE_recon', float('nan')):.6f} "
             f"grad_norm={result.get('grad_norm', 0.0):.4f} "
-            f"skipped={result.get('skipped', False)} {reservoir}"
+            f"skipped={result.get('skipped', False)} {reservoir} {cost}"
         )
     if result.get("needs_rollback"):
         comin.print_info(

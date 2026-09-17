@@ -29,7 +29,13 @@ import numpy as np
 import pytest
 import torch
 
-from icon_mgrid_utils import CoarseGrid, build_fine_adjacency, build_local_mgrid, pool_fine_to_coarse
+from icon_mgrid_utils import (
+    CoarseGrid,
+    build_fine_adjacency,
+    build_local_mgrid,
+    check_grid_files,
+    pool_fine_to_coarse,
+)
 
 #%%
 def _make_domain():
@@ -307,3 +313,27 @@ def test_build_fine_adjacency_multi_block_uses_correct_cell_ordering():
     # column 1) must resolve to flat cell 5, unmasked.
     assert fine.adjc[0, 1] == 5
     assert not fine.adjc_mask[0, 1]
+
+
+def test_check_grid_files_accepts_matching_pair():
+    check_grid_files(_make_parent_index_global(), _make_coarse_grid(), ncells_global=12)
+
+
+def test_check_grid_files_rejects_fine_grid_of_another_resolution():
+    # e.g. R2B4 grid files on an R2B8 run
+    with pytest.raises(ValueError, match="ICON runs on 48"):
+        check_grid_files(_make_parent_index_global(), _make_coarse_grid(), ncells_global=48)
+
+
+def test_check_grid_files_rejects_coarse_grid_not_one_level_up():
+    coarse = _make_coarse_grid()
+    coarse_two_levels_up = CoarseGrid(n_cells=12, adjc=coarse.adjc, adjc_mask=coarse.adjc_mask)
+    with pytest.raises(ValueError, match="expected 3"):
+        check_grid_files(_make_parent_index_global(), coarse_two_levels_up, ncells_global=12)
+
+
+def test_check_grid_files_rejects_parent_index_outside_coarse_grid():
+    parent = _make_parent_index_global()
+    parent[-1] = 3
+    with pytest.raises(ValueError, match="outside the coarse grid"):
+        check_grid_files(parent, _make_coarse_grid(), ncells_global=12)

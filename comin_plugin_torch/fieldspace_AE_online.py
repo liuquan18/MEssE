@@ -21,22 +21,30 @@ compression/decompression block exactly as in FieldSpaceNN's shipped
 `configs/model/mg_autoencoder.yaml`; the processor is an `MG_Transformer`.
 
 Mapping the design sketch (`.claude/compression.png`, drawn for R2B8 with
-pyramid {3, 6, 7, 8}) onto the current R2B3/R2B4 example
------------------------------------------------------------------------
-With only two zooms there is a single compression stage, and its target is
-the coarsest level itself: the patch per R2B3 cell is its own mean plus its 4
-R2B4 residual children (``1 + 4 = 5`` values, paper eq 5), mapped to
+pyramid {3, 6, 7, 8}) onto the two-zoom multi-grid
+------------------------------------------------------------------------
+`icon_mgrid_utils` builds two zooms: the grid ICON runs on (fine, e.g. R2B4
+or R2B8) and the grid one refinement level up (coarse, R2B3 or R2B7). With
+only two zooms there is a single compression stage, and its target is the
+coarse level itself: the patch per coarse cell is its own mean plus its 4
+fine residual children (``1 + 4 = 5`` values, paper eq 5), mapped to
 ``latent_channels`` values (paper eq 6). The latent is one zoom-0 tensor, so
 per timestep it holds ``latent_channels / 4`` as many values as the native
-R2B4 field:
+field:
 
     latent_channels = 4  -> 1x   (5 -> 4: exactly the pyramid's free DOF,
                                   so reconstruction can be lossless)
     latent_channels = 2  -> 1/2
     latent_channels = 1  -> 1/4
 
-The sketch's R2B8 memory saving (0.26x) comes from having more levels to fold
-away, which needs a deeper multi-grid than `icon_mgrid_utils` builds today.
+The sketch's R2B8 memory saving (0.26x) comes from folding R2B8 all the way
+down to R2B3, which needs a deeper multi-grid than `icon_mgrid_utils` builds
+today.
+
+Every attention block attends over all coarse cells of the rank's patch at
+once (``zoom_patch_sample=-1``). PyTorch's SDPA keeps the memory linear in
+that count, but compute grows with its square: about 1.3k cells per rank for
+R2B4 on 4 GPUs, about 82k for R2B8 on 16 GPUs.
 Two FieldSpaceNN constraints matter when going there: `MG_base_model` keys
 `GridLayer`s by *list position*, so every intermediate refinement level must
 be present in the mgrid list (zoom labels must be consecutive); and the legacy
