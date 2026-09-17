@@ -22,7 +22,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from icon_mgrid_utils import LocalMGrid, build_local_mgrid, load_coarse_grid, load_parent_index
-from fieldspace_compress import OnlineFieldSpaceAETrainer
+from MEssE.comin_plugin_torch.fieldspace_AE_online import OnlineFieldSpaceAETrainer
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
     setup_mpi_dist,
