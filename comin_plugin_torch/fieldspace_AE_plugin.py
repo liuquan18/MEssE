@@ -1,3 +1,14 @@
+"""ComIn plugin: online training of the multi-level Field-Space autoencoder
+forecaster (fieldspace_AE_online.py) inside a running ICON simulation.
+
+Every ICON work rank must own a GPU. At startup each rank reads the grid files
+of all levels from the backbone to ICON's own grid, the backbone cells are
+assigned to ranks, and each rank builds its model patch and the cell exchange
+(icon_nested_mgrid.py). Every step, all ranks move ICON's owned cell values to
+the patches, train and predict on their patch, and move the predictions back
+for write-back into ``var_predict``.
+"""
+
 import comin
 import os
 import sys
@@ -22,12 +33,15 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from icon_mgrid_utils import (
-    LocalMGrid,
-    build_local_mgrid,
-    check_grid_files,
-    load_coarse_grid,
-    load_parent_index,
+from icon_nested_mgrid import (
+    MIN_BACKBONE_CELLS,
+    CellExchange,
+    assign_backbone_owners,
+    backbone_counts,
+    build_nested_mgrid,
+    check_cell_centers,
+    load_level_grids,
+    mpim_grid_paths,
 )
 from MEssE.comin_plugin_torch.fieldspace_AE_online import OnlineFieldSpaceAETrainer
 from MEssE.utils.icon_online_helper import (
@@ -48,14 +62,21 @@ from MEssE.utils.icon_online_helper import (
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 # "uas" in AES physics; the NWP physics name for the same field is "u_10m".
 ICON_VARIABLE_NAME = os.environ.get("MESSE_ICON_VAR", "uas")
+# R2B levels: backbone first, then residual levels; the finest must be ICON's grid.
+MODEL_LEVELS = sorted(int(v) for v in os.environ.get("MESSE_AE_LEVELS", "4,6,7,8").split(","))
+# Residual levels finer than this are folded into it (see fieldspace_AE_online).
+LATENT_LEVEL = int(os.environ.get("MESSE_AE_LATENT_LEVEL", "6"))
+# Directory with the MPI-M Earth_IcosS_* grid file of every level from backbone to fine.
+GRID_DIR = os.environ.get("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
 N_HISTORY = int(os.environ.get("MESSE_AE_N_HISTORY", "4"))  # cached latents per prediction
 ROLLOUT_STEPS = int(os.environ.get("MESSE_AE_ROLLOUT_STEPS", "1"))  # training horizon, in steps
-LATENT_CHANNELS = int(os.environ.get("MESSE_AE_LATENT_CHANNELS", "4"))  # latent size = C/4 of native
+LATENT_CHANNELS = int(os.environ.get("MESSE_AE_LATENT_CHANNELS", "4"))  # channels per latent-level cell
 N_BLOCKS = int(os.environ.get("MESSE_AE_N_BLOCKS", "1"))  # attention blocks per encoder/decoder stage
 N_PROCESSOR_BLOCKS = int(os.environ.get("MESSE_AE_N_PROCESSOR_BLOCKS", "2"))
 RECON_WEIGHT = float(os.environ.get("MESSE_AE_RECON_WEIGHT", "1.0"))
 ATT_DIM = int(os.environ.get("MESSE_AE_ATT_DIM", "32"))
 N_HEAD_CHANNELS = int(os.environ.get("MESSE_AE_N_HEAD_CHANNELS", "8"))
+HIDDEN_DIM = int(os.environ.get("MESSE_AE_HIDDEN_DIM", "64"))  # compression MLP width
 
 EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
@@ -65,21 +86,6 @@ os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspace_ae_online.pt")
 DRY_RUN_TIME_SECONDS = int(os.environ.get("MESSE_AE_DRY_RUN_SECONDS", "3600"))  # 1 hour
 SAVE_INTERVAL_SECONDS = int(os.environ.get("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))  # 1 day
-
-# Grid files (env var names shared with fieldspace_plugin.py). The fine grid must
-# be the grid ICON runs on, the coarse grid its parent one level up. Defaults:
-# R2B8/R2B7; Earth_IcosS_0010km.nc has the same cell ordering, neighbors and
-# parent_cell_index as icon_grid_0054_R02B08_G.nc. For the R2B4 NWP runscript use
-# /pool/data/ICON/grids/public/edzw/icon_grid_0012_R02B04_G.nc (fine) and
-# .../icon_grid_0011_R02B03_R.nc (coarse).
-COARSE_GRID_PATH = os.environ.get(
-    "MESSE_FS_COARSE_GRID_PATH",
-    "/pool/data/ICON/grids/mpim/Earth_IcosS_0020km.nc",
-)
-FINE_GRID_PATH = os.environ.get(
-    "MESSE_FS_FINE_GRID_PATH",
-    "/pool/data/ICON/grids/mpim/Earth_IcosS_0010km.nc",
-)
 
 # ----------------------------------------------------------------------------
 # GPU / array backend selection
@@ -118,51 +124,68 @@ comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 size = comm.Get_size()
 rank = comm.Get_rank()
 
-# GPU ranks and DDP world
 compute_comm, compute_rank, compute_size, has_gpu = setup_mpi_dist(comm)
 num_calculate_processes = comm.allreduce(1 if has_gpu else 0, op=MPI.SUM)
-# The plugin only runs on ICON work ranks, and each of them should own a GPU. A
-# work rank without one (SLURM_LOCALID >= 4) shares a GPU with another ICON rank
-# and never trains, so its cells get no prediction: the task layout is wrong.
+# The plugin runs on every ICON work rank, and the cell exchange needs all of
+# them: a work rank without its own GPU (SLURM_LOCALID >= 4) means a wrong task
+# layout in the runscript. The count is the same on every rank, so all raise.
 if num_calculate_processes != size:
-    comin.print_info(
-        f"WARNING: only {num_calculate_processes} of {size} ICON work ranks have their own GPU; "
-        "check the runscript's MPI rank layout"
+    raise RuntimeError(
+        f"only {num_calculate_processes} of {size} ICON work ranks have their own GPU; "
+        "every work rank needs one (check the runscript's MPI rank layout)"
     )
 
 
 # ----------------------------------------------------------------------------
-# Native ICON grid + local two-zoom multi-grid (no YAC, no HEALPix)
+# Grids, backbone ownership, model patch and cell exchange (no YAC, no HEALPix)
 # ----------------------------------------------------------------------------
 domain = comin.descrdata_get_domain(DOMAIN_ID)
-comin.print_info(
-    f"[rank={rank}] domain.grid_filename={getattr(domain, 'grid_filename', '<unavailable>')} "
-    f"(expected to match FINE_GRID_PATH={FINE_GRID_PATH})"
-)
+BASE_LEVEL, FINE_LEVEL = MODEL_LEVELS[0], MODEL_LEVELS[-1]
+REFINEMENT = 4 ** (FINE_LEVEL - BASE_LEVEL)  # fine cells per backbone cell
 
-_coarse_grid = None
-_parent_index_global: Optional[np.ndarray] = None
-_mgrid: Optional[LocalMGrid] = None
-if has_gpu:
-    _coarse_grid = load_coarse_grid(COARSE_GRID_PATH)
-    _parent_index_global = load_parent_index(FINE_GRID_PATH)
-    try:
-        check_grid_files(_parent_index_global, _coarse_grid, domain.cells.ncells_global)
-    except ValueError as e:
-        raise ValueError(f"{e} (FINE_GRID_PATH={FINE_GRID_PATH}, COARSE_GRID_PATH={COARSE_GRID_PATH})") from e
-    _mgrid = build_local_mgrid(
-        domain,
-        nproma=glob.nproma,
-        coarse_grid=_coarse_grid,
-        parent_index_global=_parent_index_global,
-        device=torch.device("cuda", 0),
+
+def _setup_patch():
+    grids = load_level_grids(
+        mpim_grid_paths(GRID_DIR, BASE_LEVEL, FINE_LEVEL), ncells_global=domain.cells.ncells_global
     )
+    n_local = int(domain.cells.ncells)
+    # Flat local cell id c = (blk-1)*nproma + (idx-1), Fortran order, as in
+    # extract_icon_cells/insert_icon_cells. glb_index is already 1D.
+    decomp = np.ravel(np.asarray(domain.cells.decomp_domain), order="F")[:n_local]
+    glb = np.ravel(np.asarray(domain.cells.glb_index)).astype(np.int64)[:n_local] - 1
+    owned_local = np.flatnonzero(decomp == 0)
+    owned_glb = glb[owned_local]
+    clon = np.ravel(np.asarray(domain.cells.clon), order="F")[:n_local]
+    clat = np.ravel(np.asarray(domain.cells.clat), order="F")[:n_local]
+    check_cell_centers(grids[FINE_LEVEL], owned_glb, clon[owned_local], clat[owned_local])
+
+    n_backbone_global = grids[BASE_LEVEL].n_cells
+    counts = np.empty((compute_size, n_backbone_global), dtype=np.int64)
+    compute_comm.Allgather(backbone_counts(owned_glb, n_backbone_global, REFINEMENT), counts)
+    owner = assign_backbone_owners(counts, REFINEMENT)  # same result, or same error, on every rank
+    backbone_per_rank = np.bincount(owner, minlength=compute_size)
+    if backbone_per_rank.min() < MIN_BACKBONE_CELLS:
+        raise ValueError(
+            f"a rank got only {backbone_per_rank.min()} R2B{BASE_LEVEL} backbone cells, need "
+            f"{MIN_BACKBONE_CELLS}: use a coarser backbone level or fewer GPUs"
+        )
+    my_backbone = np.flatnonzero(owner == compute_rank)
+    exchange = CellExchange.build(compute_comm, owned_local, owned_glb, owner, my_backbone, REFINEMENT)
+    mgrid = build_nested_mgrid(grids, my_backbone, device=torch.device("cuda", 0))
+
+    owned_per_rank = counts.sum(axis=1)
     comin.print_info(
-        f"[rank={rank}] local mgrid: n_valid_fine={_mgrid.n_valid_fine} "
-        f"n_fine_kept={_mgrid.n_fine_kept} n_coarse={_mgrid.n_coarse} "
-        f"kept_fraction={_mgrid.n_fine_kept / max(_mgrid.n_valid_fine, 1):.3f} "
-        f"group_sizes={_mgrid.parent_group_size_histogram}"
+        f"model patches: levels={MODEL_LEVELS}, latent_level={LATENT_LEVEL}; per rank: "
+        f"R2B{BASE_LEVEL} backbone cells {backbone_per_rank.min()}-{backbone_per_rank.max()}, "
+        f"R2B{FINE_LEVEL} patch cells {backbone_per_rank.min() * REFINEMENT}-"
+        f"{backbone_per_rank.max() * REFINEMENT}, ICON-owned cells "
+        f"{owned_per_rank.min()}-{owned_per_rank.max()}; rank {rank} keeps "
+        f"{int(exchange.send_counts[compute_rank])} of its {owned_glb.size} owned cells"
     )
+    return mgrid, exchange
+
+
+_mgrid, _exchange = _setup_patch()
 
 
 # ----------------------------------------------------------------------------
@@ -176,6 +199,11 @@ class _State:
         # data
         "icon_var",
         "AI_var",
+        "patch",
+        "patch_time",
+        # forecast waiting for its valid time before it goes to var_predict
+        "forecast",
+        "forecast_seconds",
         # dry run for normalization (see icon_online_helper.RunningMeanStd)
         "normalizer",
         # model + latent reservoir (see fieldspace_AE_online.OnlineFieldSpaceAETrainer)
@@ -189,6 +217,10 @@ class _State:
 
         self.icon_var = None
         self.AI_var = None
+        self.patch: Optional[torch.Tensor] = None
+        self.patch_time: Optional[str] = None
+        self.forecast: Optional[np.ndarray] = None  # (n_fine, nlev) denormalized, patch order
+        self.forecast_seconds: Optional[float] = None  # its valid time, unix seconds
 
         self.normalizer: Optional[RunningMeanStd] = None
         self.trainer: Optional[OnlineFieldSpaceAETrainer] = None
@@ -206,13 +238,31 @@ def _icon_time_unix_seconds() -> float:
     return float(parse_icon_datetime(comin.current_get_datetime()).timestamp())
 
 
+def _current_patch() -> torch.Tensor:
+    """Collective: this rank's model patch of the ICON variable at the
+    current model time, (n_fine, nlev) float32 on the GPU in nested patch
+    order. Exchanged once per model time and reused by both callbacks."""
+    now = comin.current_get_datetime()
+    if _state.patch_time != now:
+        cells = extract_icon_cells(_state.icon_var, domain.cells.ncells)  # (ncells, nlev) or (ncells,)
+        host = cells.get() if hasattr(cells, "get") else np.asarray(cells)
+        if host.ndim == 1:
+            host = host[:, None]
+        patch = _exchange.to_patch(compute_comm, host)
+        _state.patch = torch.from_numpy(patch).to(torch.device("cuda", 0))
+        _state.patch_time = now
+    return _state.patch
+
+
 def _get_trainer(nlev: int) -> OnlineFieldSpaceAETrainer:
     if _state.trainer is not None:
         return _state.trainer
 
-    _trainer_kwargs = dict(
+    _state.trainer = OnlineFieldSpaceAETrainer(
         nlev=nlev,
         mgrid=_mgrid,
+        levels=MODEL_LEVELS,
+        latent_level=LATENT_LEVEL,
         n_history=N_HISTORY,
         rollout_steps=ROLLOUT_STEPS,
         latent_channels=LATENT_CHANNELS,
@@ -222,6 +272,7 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceAETrainer:
         lr=float(os.environ.get("MESSE_AE_LR", "2e-4")),
         att_dim=ATT_DIM,
         n_head_channels=N_HEAD_CHANNELS,
+        hidden_dim=HIDDEN_DIM,
         grad_clip=1.0,
         use_ddp=dist.is_initialized(),
         device=torch.device("cuda", 0),
@@ -230,27 +281,17 @@ def _get_trainer(nlev: int) -> OnlineFieldSpaceAETrainer:
     )
 
     if os.path.exists(CHECKPOINT_PATH):
-        _state.trainer = OnlineFieldSpaceAETrainer(**_trainer_kwargs)
-        if _state.trainer.model is not None:
-            ckpt = torch.load(
-                CHECKPOINT_PATH,
-                map_location=torch.device("cuda", 0),
-                weights_only=False,
-            )
-            _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
-            _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            saved_step = ckpt.get("step", "unknown")
-            _state.current_step = int(saved_step) if isinstance(saved_step, int) else 0
-            comin.print_info(
-                f"[rank={rank}] Restored FieldSpace AE model from checkpoint {CHECKPOINT_PATH} "
-                f"(step={saved_step}), resuming from step={_state.current_step}; the latent "
-                f"reservoir is not checkpointed and refills over the next "
-                f"{_state.trainer.reservoir.capacity} steps"
-            )
-    else:
-        _state.trainer = OnlineFieldSpaceAETrainer(**_trainer_kwargs)
-        comin.print_info(f"[rank={rank}] FieldSpace AE trainer initialized fresh: nlev={nlev}")
-
+        ckpt = torch.load(CHECKPOINT_PATH, map_location=torch.device("cuda", 0), weights_only=False)
+        _state.trainer.model.load_state_dict(ckpt["model_state_dict"])
+        _state.trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        saved_step = ckpt.get("step", "unknown")
+        _state.current_step = int(saved_step) if isinstance(saved_step, int) else 0
+        comin.print_info(
+            f"[rank={rank}] Restored FieldSpace AE model from checkpoint {CHECKPOINT_PATH} "
+            f"(step={saved_step}), resuming from step={_state.current_step}; the latent "
+            f"reservoir is not checkpointed and refills over the next "
+            f"{_state.trainer.reservoir.capacity} steps"
+        )
     return _state.trainer
 
 
@@ -277,23 +318,8 @@ def sec_ctor():
     )
 
 
-def _extract_compact(comin_var) -> torch.Tensor:
-    """Extract this rank's ICON cells for `comin_var`, zero-pad to the full
-    local fine-node count, then gather down to the compact
-    (4*n_coarse, nlev) space this plugin actually trains on -- only cells
-    that are part of a complete coarse quad-group (see icon_mgrid_utils.py).
-    """
-    cells = extract_icon_cells(comin_var, domain.cells.ncells)  # (ncells, nlev) or (ncells,)
-    t = torch.as_tensor(xp.asarray(cells), device="cuda").float()
-    if t.ndim == 1:
-        t = t.unsqueeze(-1)
-    full = torch.zeros(_mgrid.n_nodes_fine, t.shape[1], device="cuda")
-    full[: t.shape[0]] = t
-    return full[_mgrid.fine_local_ids_kept]  # (4*n_coarse, nlev)
-
-
 def _maybe_save_checkpoint(current_step: int) -> None:
-    if _state.trainer is None or _state.trainer.model is None:
+    if _state.trainer is None:
         return
     if _state.step_len_seconds is None or current_step == 0:
         return
@@ -305,31 +331,25 @@ def _maybe_save_checkpoint(current_step: int) -> None:
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def dry_run():
-    """Dry run to estimate per-cell mean/std over the first
-    `DRY_RUN_TIME_SECONDS` seconds, over the compact (4*n_coarse, nlev)
-    space this plugin trains on. See icon_online_helper.RunningMeanStd."""
+    """Dry run to estimate per-cell mean/std of the patch over the first
+    `DRY_RUN_TIME_SECONDS` seconds. See icon_online_helper.RunningMeanStd."""
 
-    _state.step_len_seconds = int(comin.descrdata_get_timesteplength(1))
-
-    if not has_gpu:
-        return
-    if _mgrid.n_coarse == 0:
-        return
+    _state.step_len_seconds = int(comin.descrdata_get_timesteplength(DOMAIN_ID))
     if _state.normalizer is not None and _state.normalizer.done:
         return
 
-    dry_run_steps = DRY_RUN_TIME_SECONDS // _state.step_len_seconds
-    compact = _extract_compact(_state.icon_var)
+    dry_run_steps = max(1, DRY_RUN_TIME_SECONDS // _state.step_len_seconds)
+    patch = _current_patch()
 
     if _state.nlev is None:
-        _state.nlev = int(compact.shape[1])
+        _state.nlev = int(patch.shape[1])
     if _state.normalizer is None:
         _state.normalizer = RunningMeanStd(
-            shape=compact.shape, n_samples=dry_run_steps, device=torch.device("cuda", 0)
+            shape=patch.shape, n_samples=dry_run_steps, device=torch.device("cuda", 0)
         )
 
     step = _state.current_step
-    done = _state.normalizer.update(compact)
+    done = _state.normalizer.update(patch)
     _state.current_step += 1
 
     if done:
@@ -345,28 +365,22 @@ def dry_run():
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    """Online Field-Space Autoencoder training callback, called by ICON at
-    each time step.
+    """Online training callback, called by ICON at each time step.
 
     Every step, the current field is compressed and its latent cached, with
     its ICON model time, in the trainer's reservoir. Once the reservoir holds
-    `N_HISTORY + ROLLOUT_STEPS - 1` earlier latents, every step also trains:
-    the processor rolls `ROLLOUT_STEPS` steps forward from the `N_HISTORY`
-    latents ending that many steps ago, and the decoded result is compared
-    with the current field, together with a reconstruction loss (see
-    fieldspace_AE_online.OnlineFieldSpaceAETrainer.train_step). The model time
-    conditions every attention block through FieldSpaceNN's TimeEmbedder.
+    `N_HISTORY + ROLLOUT_STEPS - 1` earlier latents, every step also trains
+    (see fieldspace_AE_online.OnlineFieldSpaceAETrainer.train_step).
 
-    The 1-step-ahead prediction from the newest `N_HISTORY` latents is written
-    back only for owned fine cells in complete coarse quad-groups (same rule
-    as fieldspace_plugin.py), and only once that many latents exist.
+    `var_predict` at model time t holds the forecast *valid at t*, made one
+    step earlier from data up to t - dt (the forecast the loss scores at t),
+    so it can be compared directly with the ICON variable in the same output
+    snapshot. Each step's new 1-step-ahead forecast is kept until the next
+    step, then sent to the rank owning each cell and written. Every rank takes
+    the same branches on the same steps, as the collective exchange and DDP
+    require.
     """
 
-    if not has_gpu:
-        return
-    if _mgrid.n_coarse == 0:
-        comin.print_info(f"[rank={rank}] n_coarse == 0 on this rank, skipping training entirely")
-        return
     if _state.normalizer is None or not _state.normalizer.done:
         comin.print_info(f"[rank={rank}] Dry run not complete, skipping training")
         return
@@ -375,11 +389,18 @@ def training():
     _state.current_step += 1
     _maybe_save_checkpoint(current_step)
 
-    compact = _extract_compact(_state.icon_var)
-    compact_norm = _state.normalizer.normalize(compact)
+    patch_norm = _state.normalizer.normalize(_current_patch())
 
     trainer = _get_trainer(nlev=_state.nlev)
-    snapshot = trainer.prepare_snapshot(compact_norm, _icon_time_unix_seconds())
+    now_seconds = _icon_time_unix_seconds()
+    snapshot = trainer.prepare_snapshot(patch_norm, now_seconds)
+
+    # Collective: the forecast made last step for this model time goes to the
+    # ranks owning its cells. Times are identical on all ranks.
+    if _state.forecast is not None and _state.forecast_seconds == now_seconds:
+        owned_forecast = _exchange.from_patch(compute_comm, _state.forecast)
+        insert_icon_cells(owned_forecast.astype(np.float64), _state.AI_var, indices=_exchange.send_local_ids)
+    _state.forecast = None
 
     torch.cuda.synchronize()
     train_seconds = time.perf_counter()
@@ -413,23 +434,16 @@ def training():
         # the model being discarded.
         rollback_checkpoint(_state.trainer, CHECKPOINT_PATH)
 
-    pred = trainer.predict(n_steps=1)  # (4*n_coarse, nlev) normalized, or None
-    if pred is None:
-        return
-    pred_denorm = _state.normalizer.denormalize(pred)
-    # Only write back owned cells that are also part of a complete coarse
-    # quad-group: halo cells (never written back, as in gnn_plugin.py) and
-    # orphan cells (excluded from the compact space entirely, see
-    # icon_mgrid_utils.py) both get no write-back.
-    compact_owned = _mgrid.fine_compact_owned_mask
-    kept_full_ids = _mgrid.fine_local_ids_kept[compact_owned].cpu().numpy()
-    pred_owned_np = pred_denorm[compact_owned].cpu().numpy()
-    insert_icon_cells(pred_owned_np.astype(np.float64), _state.AI_var, indices=kept_full_ids)
+    pred = trainer.predict(n_steps=1)  # (n_fine, nlev) normalized, or None
+    if pred is not None:
+        # Written to var_predict next step, when its valid time is reached.
+        _state.forecast = _state.normalizer.denormalize(pred).cpu().numpy()
+        _state.forecast_seconds = trainer.reservoir.latest_seconds + trainer.step_seconds
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
 def destructor():
     """Cleanly tear down PyTorch distributed before MPI_Finalize."""
-    if has_gpu and dist.is_initialized():
+    if dist.is_initialized():
         dist.destroy_process_group()
         comin.print_info(f"[rank={rank}] PyTorch distributed destroyed")

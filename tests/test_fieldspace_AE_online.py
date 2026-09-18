@@ -1,36 +1,49 @@
 """Unit tests for fieldspace_AE_online.py: LatentReservoir,
 FieldSpaceAEForecaster and OnlineFieldSpaceAETrainer.
 
-CPU only, on the same small hand-built LocalMGrid as test_fieldspace_online.py
--- no comin, no MPI, no GPU, no live ICON simulation.
+CPU only, on a small synthetic nested patch (test_icon_nested_mgrid's grids)
+with levels 0..3: backbone 0, residual levels 2 and 3 (level 1 has a grid
+layer but no data), latent level 2 -- one compression stage and a skipped
+level. No comin, no MPI, no GPU.
 """
 
 import math
 
+import numpy as np
 import pytest
 import torch
 
-from fieldspace_AE_online import LatentReservoir, OnlineFieldSpaceAETrainer
+from fieldspace_AE_online import LatentReservoir, OnlineFieldSpaceAETrainer, compression_stages
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms
-from test_fieldspace_online import _tiny_mgrid
+from icon_nested_mgrid import build_nested_mgrid
+from test_icon_nested_mgrid import _synthetic_grids
 
 NLEV = 2
 N_HISTORY = 3
 ROLLOUT_STEPS = 2
 STEP_SECONDS = 600.0
 T0 = 1_780_000_000.0  # unix seconds, mid-2026
+LEVELS = [0, 2, 3]
+LATENT_LEVEL = 2
 
 
-def _tiny_trainer(n_coarse: int = 10, latent_channels: int = 4, **kwargs) -> OnlineFieldSpaceAETrainer:
+def _tiny_mgrid(n_backbone: int = 10, n_levels: int = 4):
+    return build_nested_mgrid(_synthetic_grids(n_levels=n_levels), np.arange(n_backbone))
+
+
+def _tiny_trainer(levels=LEVELS, latent_level=LATENT_LEVEL, latent_channels: int = 4, n_backbone: int = 10, **kwargs):
     torch.manual_seed(0)
     config = dict(
         nlev=NLEV,
-        mgrid=_tiny_mgrid(n_coarse=n_coarse),
+        mgrid=_tiny_mgrid(n_backbone=n_backbone, n_levels=max(levels) + 1),
+        levels=levels,
+        latent_level=latent_level,
         n_history=N_HISTORY,
         rollout_steps=ROLLOUT_STEPS,
         latent_channels=latent_channels,
         att_dim=8,
         n_head_channels=4,
+        hidden_dim=16,
         time_embed_dim=8,
         use_ddp=False,
         device=torch.device("cpu"),
@@ -43,8 +56,15 @@ def _tiny_trainer(n_coarse: int = 10, latent_channels: int = 4, **kwargs) -> Onl
 
 def _snapshot(trainer, step: int):
     torch.manual_seed(step)
-    x = torch.randn(trainer.mgrid.n_fine_kept, NLEV) * 0.1
+    x = torch.randn(trainer.mgrid.n_fine, NLEV) * 0.1
     return trainer.prepare_snapshot(x, T0 + step * STEP_SECONDS)
+
+
+def _random_window(model):
+    return {
+        zoom: torch.randn(1, 1, N_HISTORY, model.mgrid.n_cells(zoom), NLEV, model.latent_features[zoom])
+        for zoom in model.latent_zooms
+    }
 
 
 def _latent(value: float, n: int = 5):
@@ -118,44 +138,71 @@ def test_reservoir_numel_and_clear():
 # --------------------------------------------------------------------------
 
 
-def test_pyramid_is_mean_plus_zero_mean_residual_and_decodes_exactly():
+def test_compression_stages_fold_finest_first_down_to_latent_level():
+    assert compression_stages([4, 6, 7, 8], 6) == [(8, 7), (7, 6)]
+    assert compression_stages([4, 6, 7, 8], 7) == [(8, 7)]
+    assert compression_stages([4, 6, 7, 8], 8) == []
+    assert compression_stages([4, 6, 8], 6) == [(8, 6)]
+
+
+def test_model_rejects_inconsistent_levels():
+    with pytest.raises(ValueError, match="latent_level"):
+        _tiny_trainer(latent_level=0)
+    with pytest.raises(ValueError, match="must start at"):
+        _tiny_trainer(levels=[1, 2, 3], latent_level=2)
+
+
+def test_pyramid_is_backbone_mean_plus_zero_mean_residuals_and_decodes_exactly():
     model = _tiny_trainer().model
-    x = torch.randn(model.mgrid.n_fine_kept, NLEV)
+    x = torch.randn(model.mgrid.n_fine, NLEV)
     pyr = model.to_pyramid(x)
+    assert sorted(pyr) == LEVELS
 
-    n_coarse = model.mgrid.n_coarse
-    group_mean = pyr[1].reshape(n_coarse, 4, NLEV).mean(dim=1)
-    torch.testing.assert_close(group_mean, torch.zeros_like(group_mean), atol=1e-6, rtol=0)
+    n_backbone = model.mgrid.n_backbone
+    torch.testing.assert_close(
+        pyr[0].reshape(n_backbone, NLEV), x.reshape(n_backbone, 64, NLEV).mean(dim=1), atol=1e-6, rtol=0
+    )
+    # Each residual level averages to zero over the children of its model parent.
+    for zoom, parent in ((2, 0), (3, 2)):
+        group_mean = pyr[zoom].reshape(n_backbone * 4**parent, 4 ** (zoom - parent), NLEV).mean(dim=1)
+        torch.testing.assert_close(group_mean, torch.zeros_like(group_mean), atol=1e-6, rtol=0)
 
-    back = decode_zooms(pyr, model._sample_configs_step, out_zoom=1)[1]
-    torch.testing.assert_close(back.reshape(-1, NLEV), x, atol=1e-6, rtol=0)
+    back = decode_zooms(pyr, model._sample_configs_step, out_zoom=3)[3]
+    torch.testing.assert_close(back.reshape(-1, NLEV), x, atol=1e-5, rtol=0)
 
 
 def test_to_pyramid_does_not_modify_its_input():
     model = _tiny_trainer().model
-    x = torch.randn(model.mgrid.n_fine_kept, NLEV)
+    x = torch.randn(model.mgrid.n_fine, NLEV)
     x_before = x.clone()
     model.to_pyramid(x)
     assert torch.equal(x, x_before)
 
 
-def test_latent_lives_on_the_coarse_zoom_with_latent_channels():
-    model = _tiny_trainer(latent_channels=2).model
-    x = torch.randn(model.mgrid.n_fine_kept, NLEV)
+@pytest.mark.parametrize(
+    "levels, latent_level, latent_features",
+    [([0, 2, 3], 2, {0: 1, 2: 2}), ([0, 1, 2, 3], 1, {0: 1, 1: 2}), ([0, 2, 3], 3, {0: 1, 2: 1, 3: 1})],
+)
+def test_latent_zooms_channels_and_size(levels, latent_level, latent_features):
+    model = _tiny_trainer(levels=levels, latent_level=latent_level, latent_channels=2).model
+    x = torch.randn(model.mgrid.n_fine, NLEV)
     latent = model.encode(x, T0)
-    assert list(latent.keys()) == [0]
-    assert latent[0].shape == (1, 1, 1, model.mgrid.n_coarse, NLEV, 2)
-    assert latent[0].numel() / x.numel() == pytest.approx(2 / 4)
+    assert model.latent_features == latent_features
+    assert sorted(latent) == model.latent_zooms == sorted(latent_features)
+    for zoom, features in latent_features.items():
+        assert latent[zoom].shape == (1, 1, 1, model.mgrid.n_cells(zoom), NLEV, features)
+    assert sum(t.numel() for t in latent.values()) == model.latent_numel()
     assert model.decode(latent, T0).shape == x.shape
 
 
 def test_untrained_processor_is_persistence_of_the_latest_latent():
     model = _tiny_trainer().model
     torch.manual_seed(1)
-    window = {0: torch.randn(1, 1, N_HISTORY, model.mgrid.n_coarse, NLEV, 4)}
+    window = _random_window(model)
     seconds = [T0 + i * STEP_SECONDS for i in range(N_HISTORY)]
     nxt = model.step(window, seconds, seconds[-1] + STEP_SECONDS)
-    torch.testing.assert_close(nxt[0], window[0][:, :, -1:], atol=1e-6, rtol=0)
+    for zoom in model.latent_zooms:
+        torch.testing.assert_close(nxt[zoom], window[zoom][:, :, -1:], atol=1e-6, rtol=0)
 
 
 def test_model_time_changes_the_output():
@@ -166,21 +213,22 @@ def test_model_time_changes_the_output():
     with torch.no_grad():
         for p in model.parameters():
             p.add_(0.3 * torch.randn_like(p))
-    x = torch.randn(model.mgrid.n_fine_kept, NLEV)
+    x = torch.randn(model.mgrid.n_fine, NLEV)
     noon, midnight = T0 + 0.5 * 86400.0, T0
-    assert not torch.allclose(model.encode(x, noon)[0], model.encode(x, midnight)[0])
+    assert not torch.allclose(model.encode(x, noon)[2], model.encode(x, midnight)[2])
 
-    window = {0: torch.randn(1, 1, N_HISTORY, model.mgrid.n_coarse, NLEV, 4)}
+    window = _random_window(model)
     a = model.rollout(window, [noon + i for i in range(N_HISTORY)], 1, 1.0)
     b = model.rollout(window, [midnight + i for i in range(N_HISTORY)], 1, 1.0)
-    assert not torch.allclose(a[0], b[0])
+    assert not torch.allclose(a[2], b[2])
 
 
-def test_every_parameter_gets_a_gradient_in_one_training_pass():
+@pytest.mark.parametrize("levels, latent_level", [([0, 2, 3], 2), ([0, 1, 2, 3], 1)])
+def test_every_parameter_gets_a_gradient_in_one_training_pass(levels, latent_level):
     """DDP is built with find_unused_parameters=False, which requires this."""
-    model = _tiny_trainer().model
-    x = torch.randn(model.mgrid.n_fine_kept, NLEV)
-    window = {0: torch.randn(1, 1, N_HISTORY, model.mgrid.n_coarse, NLEV, 4)}
+    model = _tiny_trainer(levels=levels, latent_level=latent_level).model
+    x = torch.randn(model.mgrid.n_fine, NLEV)
+    window = _random_window(model)
     seconds = [T0 + i * STEP_SECONDS for i in range(N_HISTORY)]
     now = seconds[-1] + ROLLOUT_STEPS * STEP_SECONDS
     recon, pred, _ = model(x, now, window, seconds, ROLLOUT_STEPS, STEP_SECONDS)
@@ -265,7 +313,7 @@ def test_nan_snapshot_is_not_cached_and_restarts_history():
     trainer = _tiny_trainer()
     for step in range(2):
         trainer.train_step(_snapshot(trainer, step))
-    bad = trainer.prepare_snapshot(torch.full((trainer.mgrid.n_fine_kept, NLEV), float("nan")), T0)
+    bad = trainer.prepare_snapshot(torch.full((trainer.mgrid.n_fine, NLEV), float("nan")), T0)
     result = trainer.train_step(bad)
     assert result["skipped"] is True
     assert math.isnan(result["loss"])
@@ -279,34 +327,17 @@ def test_predict_needs_n_history_latents():
         assert trainer.predict() is None
     trainer.train_step(_snapshot(trainer, N_HISTORY - 1))
     pred = trainer.predict(n_steps=2)
-    assert pred.shape == (trainer.mgrid.n_fine_kept, NLEV)
+    assert pred.shape == (trainer.mgrid.n_fine, NLEV)
     assert torch.isfinite(pred).all()
 
 
-def test_masked_mse_ignores_halo_cells():
-    trainer = _tiny_trainer()
-    owned = trainer.mgrid.fine_compact_owned_mask
-    assert owned.any() and not owned.all()
-    pred = torch.zeros(trainer.mgrid.n_fine_kept, NLEV)
-    target = torch.zeros_like(pred)
-    target[~owned] = 100.0
-    assert trainer._masked_mse(pred, target).item() == pytest.approx(0.0, abs=1e-6)
-    target[torch.nonzero(owned)[0].item()] = 1.0
-    assert trainer._masked_mse(pred, target).item() > 0.0
-
-
-def test_unusable_trainer_never_builds_model_and_skips_everything():
-    trainer = _tiny_trainer(n_coarse=3)  # below _MIN_ZOOM_CELLS=9
-    assert trainer._usable is False
-    assert trainer.model is None and trainer.forward_model is None and trainer.optimizer is None
-    snap = trainer.prepare_snapshot(torch.zeros(trainer.mgrid.n_fine_kept, NLEV), T0)
-    assert trainer.train_step(snap)["skipped"] is True
-    assert trainer.predict() is None
-    assert len(trainer.reservoir) == 0
+def test_rejects_patch_below_gridlayer_minimum():
+    with pytest.raises(ValueError, match="at least 9"):
+        _tiny_trainer(n_backbone=8)
 
 
 def test_rejects_non_positive_history_or_rollout():
     with pytest.raises(ValueError):
-        OnlineFieldSpaceAETrainer(nlev=NLEV, mgrid=_tiny_mgrid(), n_history=0, device=torch.device("cpu"))
+        _tiny_trainer(n_history=0)
     with pytest.raises(ValueError):
-        OnlineFieldSpaceAETrainer(nlev=NLEV, mgrid=_tiny_mgrid(), rollout_steps=0, device=torch.device("cpu"))
+        _tiny_trainer(rollout_steps=0)

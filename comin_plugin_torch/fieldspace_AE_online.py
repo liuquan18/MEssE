@@ -1,116 +1,83 @@
-"""Online Field-Space *Autoencoder* forecaster: compress each ICON timestep,
-cache the compressed states in a reservoir, and predict the next timestep
-from a *sequence* of cached compressed states.
+"""Online Field-Space *Autoencoder* forecaster: compress each ICON timestep
+into a multi-level latent, cache the latents in a reservoir, and predict the
+next timestep from a *sequence* of cached latents.
 
-Sibling of :mod:`fieldspace_online` (same two-zoom local multi-grid from
-:mod:`icon_mgrid_utils`, same plugin-facing shape: `prepare_snapshot`,
-`train_step`/`predict`, `_wrap_ddp`), so `fieldspace_AE_plugin.py` can
-follow `fieldspace_plugin.py`'s control flow. The difference is the model:
+Model levels and staged compression (`.claude/compression.png`)
+---------------------------------------------------------------
+``levels`` are R2B levels: the first is the *backbone*, kept as a field, and
+the others are *residual* levels, e.g. ``levels = [4, 6, 7, 8]`` on an R2B8
+run. Each timestep is split into the backbone mean and zero-mean residuals by
+FieldSpaceNN's `encode_zooms` (paper eq 5). The encoder then folds the
+finest residual level into the next coarser one, stage by stage, until
+``latent_level`` is the finest level left; each stage is one
+`FieldSpaceLayerConfig(type="mlp")` mapping a parent cell's own value plus
+its 4 children to ``latent_channels`` values (paper eq 6), with ``n_blocks``
+field-space attention blocks before and after:
 
-    x_t (fine) --mg-tokenize--> {x_coarse, r_fine}          (encode_zooms)
-               --FSA x k--> --compress--> --FSA x k--> z_t  (encoder)
-    z_{t-H..t-1} (reservoir) --temporal FSA--> z_t          (processor)
-    z_t        --FSA x k--> --decompress--> --FSA x k-->
-               {x_coarse, r_fine} --decode_zooms--> x_t     (decoder)
+    {x4, r6, r7, r8} --FSA--> --r8 into r7'--> {x4, r6, r7'} --FSA-->
+    --r7' into r6'--> {x4, r6'} --FSA-->  latent                (latent_level=6)
 
-Every layer is FieldSpaceNN's own, imported not copied (`FieldSpaceNN/` is
-not modified by this project): the encoder/decoder is `MG_AutoEncoder`, the
-model class of Meuer et al. 2026 ("Field-space autoencoder for scalable
-climate emulators"), with `FieldSpaceLayerConfig(type="mlp")` as the
-compression/decompression block exactly as in FieldSpaceNN's shipped
-`configs/model/mg_autoencoder.yaml`; the processor is an `MG_Transformer`.
+The latent holds ``n_cells(latent_level) * latent_channels + n_cells(backbone)``
+values, 0.254 of the native R2B8 field for the example with 4 channels. The
+decoder mirrors the stages and `decode_zooms` sums the levels back to the fine
+grid. Every layer is FieldSpaceNN's own (`MG_AutoEncoder`, attention blocks);
+`FieldSpaceNN/` is not modified by this project.
 
-Mapping the design sketch (`.claude/compression.png`, drawn for R2B8 with
-pyramid {3, 6, 7, 8}) onto the two-zoom multi-grid
-------------------------------------------------------------------------
-`icon_mgrid_utils` builds two zooms: the grid ICON runs on (fine, e.g. R2B4
-or R2B8) and the grid one refinement level up (coarse, R2B3 or R2B7). With
-only two zooms there is a single compression stage, and its target is the
-coarse level itself: the patch per coarse cell is its own mean plus its 4
-fine residual children (``1 + 4 = 5`` values, paper eq 5), mapped to
-``latent_channels`` values (paper eq 6). The latent is one zoom-0 tensor, so
-per timestep it holds ``latent_channels / 4`` as many values as the native
-field:
-
-    latent_channels = 4  -> 1x   (5 -> 4: exactly the pyramid's free DOF,
-                                  so reconstruction can be lossless)
-    latent_channels = 2  -> 1/2
-    latent_channels = 1  -> 1/4
-
-The sketch's R2B8 memory saving (0.26x) comes from folding R2B8 all the way
-down to R2B3, which needs a deeper multi-grid than `icon_mgrid_utils` builds
-today.
-
-Every attention block attends over all coarse cells of the rank's patch at
-once (``zoom_patch_sample=-1``). PyTorch's SDPA keeps the memory linear in
-that count, but compute grows with its square: about 1.3k cells per rank for
-R2B4 on 4 GPUs, about 82k for R2B8 on 16 GPUs.
-Two FieldSpaceNN constraints matter when going there: `MG_base_model` keys
-`GridLayer`s by *list position*, so every intermediate refinement level must
-be present in the mgrid list (zoom labels must be consecutive); and the legacy
-`FieldSpaceAttentionBlock` rejects zooms with different channel counts (e.g.
-{x3: 1, r7': 4}), which needs ``block_type="ext"``.
-
-Why the multi-scale input is residual, not raw
-----------------------------------------------
-The fine zoom is fed as a zero-mean residual against its coarse parent
-(FieldSpaceNN's `encode_zooms`, the same call its dataset pipeline makes), so
-`decode_zooms`' upsample-and-sum reconstructs the field exactly. Feeding the
-raw fine field at zoom 1 instead would make the untrained model output
-``x + mean(x)``.
+FieldSpaceNN constraints this follows: grid layers exist for every level from
+backbone to fine (see :mod:`icon_nested_mgrid`), since they are keyed by list
+position; attention and compression blocks are ``block_type="ext"``, because
+the legacy blocks reject zooms with different channel counts; attention
+tokens live on the backbone level (``token_zoom`` must be the coarsest zoom),
+so one token carries a backbone cell with all its descendants and attention
+runs over backbone cells only (about 640 per rank for R2B4 on 32 GPUs).
 
 Time
 ----
-Every snapshot carries its ICON model time (``comin.current_get_datetime()``,
-as unix seconds), and the reservoir stores it with each latent. Every
-attention block (encoder, decoder, processor) is conditioned on that time
-through FieldSpaceNN's `TimeEmbedder` (Time2Vec-style sin/cos at periods of 1,
-7, 30.4375 and 365.25 days, the values in FieldSpaceNN's
-`configs/embedding/default.yaml`, applied as scale/shift). Each timestep gets
-its own valid time: the encoder uses the snapshot's, the processor window uses
-each cached latent's plus the future slot's, and the decoder uses the time it
-decodes for. The spacing of the future slot is measured from consecutive
-snapshot times, not assumed.
+Every snapshot carries its ICON model time (unix seconds), and the reservoir
+stores it with each latent. Every attention block is conditioned on it through
+FieldSpaceNN's `TimeEmbedder` (sin/cos at periods of 1, 7, 30.4375 and 365.25
+days, as in FieldSpaceNN's `configs/embedding/default.yaml`). The encoder uses
+the snapshot's time, the processor window each cached latent's plus the
+future slot's, and the decoder the time it decodes for. The spacing of the
+future slot is measured from consecutive snapshot times.
 
 The reservoir and the processor
 -------------------------------
 :class:`LatentReservoir` keeps the last ``n_history + rollout_steps - 1``
-compressed states and their times, detached. The processor sees the
-``n_history`` most recent ones stacked on FieldSpaceNN's time axis ``t``, plus
-one future slot filled with a copy of the latest state (FieldSpaceNN's
-``mask_ts_mode="repeat"`` convention for masked future timesteps) and stamped
-with the future valid time. The attention blocks use
-``token_len_time = n_history + 1``, so the whole window becomes one token per
-coarse cell: attention runs over space only, while the projections have
-separate weights per time position. The blocks start near-identity
-(FieldSpaceNN's ~1e-12 gates), so the untrained prediction is persistence of
-the latest latent.
+latents and their times, detached. The processor sees the ``n_history`` most
+recent ones stacked on FieldSpaceNN's time axis ``t``, plus one future slot
+filled with a copy of the latest latent (FieldSpaceNN's
+``mask_ts_mode="repeat"`` convention) and stamped with the future valid time.
+Its attention blocks use ``token_len_time = n_history + 1``, so the whole
+window is one token per backbone cell. Its blocks are built with FieldSpaceNN's
+block factory on the autoencoder's grid layers, because `MG_Transformer`
+accepts only one channel count for all zooms. The blocks start near-identity
+(FieldSpaceNN's ~1e-12 gates), so the untrained prediction is persistence.
 
 What happens at ICON step t (``n_history = H``, ``rollout_steps = 1``)
 --------------------------------------------------------------------
-1. The reservoir holds z_{t-H} .. z_{t-1}, each compressed when its step
-   arrived.
-2. x_t arrives: it is the truth for the prediction made from z_{t-H} .. z_{t-1}.
-   That prediction is recomputed here, with gradient. The weights have not
-   changed since it was made and written to ICON at step t-1, so it is the
-   same number.
+1. The reservoir holds z_{t-H} .. z_{t-1}.
+2. x_t arrives. The prediction of x_t from z_{t-H} .. z_{t-1} is recomputed
+   with gradient; the weights have not changed since it was written to ICON at
+   step t-1, so it is the same number.
 3. Loss = MSE(prediction of x_t, x_t) + ``recon_weight`` * MSE(decode(encode(
    x_t)), x_t), then one optimizer step.
-4. z_t = encode(x_t), from step 3's forward pass, is cached. The ring buffer
-   drops z_{t-H}.
+4. z_t = encode(x_t), from step 3's forward pass, is cached; z_{t-H} drops out.
 5. Predict x_{t+1} from z_{t-H+1} .. z_t and write it to ICON (plugin side).
 
-With ``rollout_steps = n > 1``, step 2 instead rolls the processor n times
-from the window ending at z_{t-n}.
+With ``rollout_steps = n > 1``, step 2 rolls the processor n times from the
+window ending at z_{t-n}.
 
-Why the reconstruction term: cached latents are detached, so the prediction
-loss cannot reach the encoder. Their graphs are gone, and the optimizer has
-since changed the weights they were computed with in place. Without the
-reconstruction loss the encoder would never train. With it, the encoder learns
-from reconstruction as in the paper. A cached latent was produced by the
-encoder as it was when it was cached, at most ``n_history + rollout_steps - 1``
-optimizer steps ago. That staleness is the price of never keeping past *fine*
-fields in memory.
+The reconstruction term is required: cached latents are detached, so the
+prediction loss cannot reach the encoder. A cached latent was produced by the
+encoder as it was up to ``n_history + rollout_steps - 1`` optimizer steps ago;
+that staleness is the price of never keeping past fine fields in memory.
+
+Patches
+-------
+The trainer works on one rank's patch (:class:`icon_nested_mgrid.NestedMGrid`):
+complete descendant trees of the rank's backbone cells, in nested order.
+Patches of all ranks partition the globe, so the loss uses every cell.
 """
 
 from __future__ import annotations
@@ -126,23 +93,28 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from fieldspacenn.src.models.mg_autoencoder.mg_autoencoder import MG_AutoEncoder
-from fieldspacenn.src.models.mg_transformer.mg_transformer import MG_Transformer
+from fieldspacenn.src.models.mg_transformer.mg_base_model import create_encoder_decoder_block
 from fieldspacenn.src.modules.field_space.field_space_attention import (
     FieldSpaceAttentionConfig,
 )
 from fieldspacenn.src.modules.field_space.field_space_layer import FieldSpaceLayerConfig
-from fieldspacenn.src.modules.grids.grid_utils import decode_zooms, encode_zooms
+from fieldspacenn.src.modules.grids.grid_utils import encode_zooms
 
-from fieldspace_online import _COARSE_ZOOM, _FINE_ZOOM, _MIN_ZOOM_CELLS, FieldSpaceSnapshot
-from icon_mgrid_utils import LocalMGrid, pool_fine_to_coarse
+from icon_nested_mgrid import MIN_BACKBONE_CELLS, NestedMGrid
 
 # A latent (or a window of latents) in FieldSpaceNN's layout:
-# {zoom: (b=1, v=1, t, n_zoom, d=nlev, f=latent_channels)}.
+# {zoom: (b=1, v=1, t, n_zoom, d=nlev, f)}.
 Latent = Dict[int, torch.Tensor]
 
 _SECONDS_PER_DAY = 86400.0
 # TimeEmbedder periods, in days (FieldSpaceNN configs/embedding/default.yaml).
 _TIME_SCALES_DAYS = [1.0, 7.0, 30.4375, 365.25]
+
+
+@dataclass
+class FieldSpaceSnapshot:
+    x_fine: torch.Tensor  # (n_fine, nlev) normalized, nested patch order, float32
+    unix_seconds: float
 
 
 # ----------------------------------------------------------------------------
@@ -157,14 +129,13 @@ class LatentWindow:
 
 
 class LatentReservoir:
-    """Ring buffer of compressed states from previous timesteps, one
+    """Ring buffer of latents from previous timesteps, one
     ``{zoom: (1, 1, 1, n, d, f)}`` dict plus its valid time per timestep,
     oldest first.
 
     Everything is stored detached and copied, so no autograd graph or
-    in-place mutation reaches across timesteps: the buffer holds data, never
-    activations. Not checkpointed. After a restart it refills within
-    ``capacity`` steps.
+    in-place mutation reaches across timesteps. Not checkpointed. After a
+    restart it refills within ``capacity`` steps.
     """
 
     def __init__(self, capacity: int) -> None:
@@ -191,8 +162,7 @@ class LatentReservoir:
 
     def window(self, length: int, lag: int = 0) -> Optional[LatentWindow]:
         """``length`` consecutive states stacked on the time axis (dim 2),
-        oldest first, ending ``lag`` states before the most recent one
-        (``lag=0``: ending at the most recent).
+        oldest first, ending ``lag`` states before the most recent one.
 
         Returns ``None`` until enough states have accumulated. The caller
         skips the step rather than use a short or zero-padded history.
@@ -218,10 +188,44 @@ class LatentReservoir:
 # ----------------------------------------------------------------------------
 
 
+@dataclass
+class _Stage:
+    """One compression stage: level ``fine`` folded into level ``parent``."""
+
+    fine: int  # zoom
+    parent: int  # zoom
+    fine_features: int  # channels of ``fine`` before the stage
+
+
+def compression_stages(levels: Sequence[int], latent_level: int) -> List[Tuple[int, int]]:
+    """``(fine_level, parent_level)`` per stage, finest first: each residual
+    level finer than ``latent_level`` is folded into the next coarser residual
+    level."""
+    residual = sorted(levels)[1:]
+    return [
+        (residual[i], residual[i - 1])
+        for i in range(len(residual) - 1, 0, -1)
+        if residual[i] > latent_level
+    ]
+
+
+class _LatentProcessor(nn.Module):
+    """FieldSpaceNN attention blocks over the latent zooms, built on shared
+    grid layers with per-zoom channel counts."""
+
+    def __init__(self, blocks: Dict[str, nn.Module]) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleDict(blocks)
+
+    def forward(self, x_zooms_groups, emb_groups, sample_configs):
+        for block in self.blocks.values():
+            x_zooms_groups = block(x_zooms_groups, sample_configs=sample_configs, emb_groups=emb_groups)
+        return x_zooms_groups
+
+
 class FieldSpaceAEForecaster(nn.Module):
-    """Encoder/decoder (`MG_AutoEncoder`) plus temporal processor
-    (`MG_Transformer`) over one rank's compact two-zoom local patch, all
-    time-conditioned. See the module docstring for the architecture.
+    """Encoder/decoder (`MG_AutoEncoder`) plus temporal processor over one
+    rank's nested patch, all time-conditioned. See the module docstring.
 
     :meth:`forward` is the single training entry point (one call per
     backward, so DDP's reducer sees every parameter used exactly once per
@@ -231,38 +235,41 @@ class FieldSpaceAEForecaster(nn.Module):
 
     def __init__(
         self,
-        mgrid: LocalMGrid,
+        mgrid: NestedMGrid,
         nlev: int,
+        levels: Sequence[int],
+        latent_level: int,
         n_history: int,
         latent_channels: int = 4,
         n_blocks: int = 1,
         n_processor_blocks: int = 2,
         att_dim: int = 32,
         n_head_channels: int = 8,
+        hidden_dim: int = 64,
         time_embed_dim: int = 64,
     ) -> None:
         super().__init__()
+        levels = sorted(int(level) for level in levels)
+        if len(levels) < 2 or len(set(levels)) != len(levels):
+            raise ValueError(f"need a backbone and at least one residual level, got {levels}")
+        if levels[0] != mgrid.base_level or levels[-1] != mgrid.fine_level:
+            raise ValueError(
+                f"levels {levels} must start at the patch's base level R2B{mgrid.base_level} "
+                f"and end at its fine level R2B{mgrid.fine_level}"
+            )
+        if latent_level not in levels[1:]:
+            raise ValueError(f"latent_level {latent_level} must be one of the residual levels {levels[1:]}")
+
         self.mgrid = mgrid
         self.nlev = int(nlev)
+        self.levels = levels
+        self.latent_level = int(latent_level)
         self.n_history = int(n_history)
         self.latent_channels = int(latent_channels)
-
-        mgrids = [
-            {
-                "coords": mgrid.coarse_coords,
-                "adjc": mgrid.coarse_adjc,
-                "adjc_mask": mgrid.coarse_adjc_mask,
-                "zoom": _COARSE_ZOOM,
-            },
-            {
-                "coords": mgrid.fine_coords,
-                "adjc": mgrid.fine_adjc,
-                "adjc_mask": mgrid.fine_adjc_mask,
-                "zoom": _FINE_ZOOM,
-            },
-        ]
-        both = [_COARSE_ZOOM, _FINE_ZOOM]
-        latent = [_COARSE_ZOOM]
+        self.fine_zoom = mgrid.zoom(mgrid.fine_level)
+        self.all_zooms = list(range(self.fine_zoom + 1))
+        in_zooms = [mgrid.zoom(level) for level in levels]
+        backbone_zoom = in_zooms[0]
 
         time_embed_confs = {
             "embed_names": ["TimeEmbedder"],
@@ -286,113 +293,144 @@ class FieldSpaceAEForecaster(nn.Module):
 
         def attention(zooms: List[int], token_len_time: int = 1) -> FieldSpaceAttentionConfig:
             return FieldSpaceAttentionConfig(
-                token_zoom=_COARSE_ZOOM,
-                q_zooms=zooms,
-                kv_zooms=zooms,
+                token_zoom=backbone_zoom,
+                q_zooms=list(zooms),
+                kv_zooms=list(zooms),
                 att_dim=att_dim,
                 n_head_channels=n_head_channels,
                 token_len_time=token_len_time,
                 embed_confs=time_embed_confs,
+                block_type="ext",
             )
 
+        def field_layer(in_z, target_z, field_z, out_z, target_features) -> FieldSpaceLayerConfig:
+            return FieldSpaceLayerConfig(
+                in_zooms=in_z,
+                target_zooms=target_z,
+                field_zoom=field_z,
+                out_zooms=out_z,
+                target_features=target_features,
+                type="mlp",
+                block_type="ext",
+                hidden_dim=hidden_dim,
+            )
+
+        features = {zoom: 1 for zoom in in_zooms}
+        zooms = list(in_zooms)
+        self.stages: List[_Stage] = []
         encoder_blocks: Dict[str, Any] = {}
         for i in range(n_blocks):
-            encoder_blocks[f"att_{i}"] = attention(both)
-        # Paper eq 6: per coarse cell, [mean, 4 residual children] -> latent_channels.
-        encoder_blocks["compress"] = FieldSpaceLayerConfig(
-            in_zooms=both,
-            target_zooms=latent,
-            field_zoom=_COARSE_ZOOM,
-            out_zooms=latent,
-            target_features=self.latent_channels,
-            type="mlp",
-        )
-        for i in range(n_blocks):
-            encoder_blocks[f"latent_att_{i}"] = attention(latent)
+            encoder_blocks[f"att_in_{i}"] = attention(zooms)
+        for s, (fine_level, parent_level) in enumerate(compression_stages(levels, latent_level)):
+            stage = _Stage(mgrid.zoom(fine_level), mgrid.zoom(parent_level), features[mgrid.zoom(fine_level)])
+            self.stages.append(stage)
+            zooms = [zoom for zoom in zooms if zoom != stage.fine]
+            encoder_blocks[f"compress_{s}"] = field_layer(
+                [stage.parent, stage.fine], [stage.parent], stage.parent, zooms, self.latent_channels
+            )
+            features[stage.parent] = self.latent_channels
+            del features[stage.fine]
+            for i in range(n_blocks):
+                encoder_blocks[f"att_{s}_{i}"] = attention(zooms)
+
+        self.latent_zooms: List[int] = list(zooms)
+        self.latent_features: Dict[int, int] = dict(features)
 
         decoder_blocks: Dict[str, Any] = {}
         for i in range(n_blocks):
-            decoder_blocks[f"latent_att_{i}"] = attention(latent)
-        # Paper eq 10: the mirror, latent_channels -> [mean, 4 residual children].
-        decoder_blocks["decompress"] = FieldSpaceLayerConfig(
-            in_zooms=latent,
-            target_zooms=both,
-            field_zoom=_COARSE_ZOOM,
-            out_zooms=both,
-            target_features=1,
-            type="mlp",
-        )
-        for i in range(n_blocks):
-            decoder_blocks[f"att_{i}"] = attention(both)
+            decoder_blocks[f"latent_att_{i}"] = attention(zooms)
+        for s in reversed(range(len(self.stages))):
+            stage = self.stages[s]
+            zooms = sorted(zooms + [stage.fine])
+            decoder_blocks[f"decompress_{s}"] = field_layer(
+                [stage.parent], [stage.parent, stage.fine], stage.parent, zooms,
+                {stage.parent: 1, stage.fine: stage.fine_features},
+            )
+            for i in range(n_blocks):
+                decoder_blocks[f"att_{s}_{i}"] = attention(zooms)
 
         self.autoencoder = MG_AutoEncoder(
-            mgrids=mgrids,
-            in_zooms=both,
+            mgrids=mgrid.fieldspace_mgrids(),
+            in_zooms=in_zooms,
             encoder_block_configs=encoder_blocks,
             decoder_block_configs=decoder_blocks,
             in_features=1,
             n_head_channels=n_head_channels,
         )
-        self.latent_zooms: List[int] = list(self.autoencoder.bottleneck_zooms)
+        assert list(self.autoencoder.bottleneck_zooms) == self.latent_zooms
 
-        self.processor = MG_Transformer(
-            mgrids=mgrids,
-            block_configs={
-                f"att_{i}": attention(self.latent_zooms, token_len_time=self.n_history + 1)
+        latent_feature_list = [self.latent_features[zoom] for zoom in self.latent_zooms]
+        self.processor = _LatentProcessor(
+            {
+                f"att_{i}": create_encoder_decoder_block(
+                    attention(self.latent_zooms, token_len_time=self.n_history + 1),
+                    self.latent_zooms,
+                    latent_feature_list,
+                    [1],
+                    grid_layers=self.autoencoder.grid_layers,
+                    n_head_channels=n_head_channels,
+                )
                 for i in range(n_processor_blocks)
-            },
-            in_zooms=self.latent_zooms,
-            in_features=self.latent_channels,
-            n_head_channels=n_head_channels,
+            }
         )
 
-        # Whole local patch as one patch. The past/future counts are only
-        # compared *between* zooms by FieldSpaceNN's time-patch matching, so
-        # they just have to be consistent within each call. They are set to
-        # what each call actually holds: one timestep for encode/decode, and
-        # n_history past + 1 future slot for the processor.
+        # Whole patch as one sample. Past/future counts only have to be
+        # consistent between zooms within a call: one timestep for
+        # encode/decode, n_history past + 1 future slot for the processor.
         self._sample_configs_step = {
             zoom: {"n_past_ts": 1, "n_future_ts": 0, "zoom_patch_sample": -1, "mask_n_last_ts": 0}
-            for zoom in both
+            for zoom in self.all_zooms
         }
         self._sample_configs_window = {
             zoom: {
                 "n_past_ts": self.n_history, "n_future_ts": 1,
                 "zoom_patch_sample": -1, "mask_n_last_ts": 1,
             }
-            for zoom in both
+            for zoom in self.all_zooms
         }
+
+    def latent_numel(self) -> int:
+        """Latent values per timestep."""
+        return sum(
+            self.mgrid.n_cells(self.mgrid.base_level + zoom) * self.nlev * self.latent_features[zoom]
+            for zoom in self.latent_zooms
+        )
 
     def _time_emb(self, unix_seconds: Sequence[float]) -> Dict[str, Any]:
         """FieldSpaceNN embedding input for the given valid times (one per
         timestep on the ``t`` axis): ``{"TimeEmbedder": {zoom: (1, t) days}}``.
 
-        Days since the unix epoch, as float32 like FieldSpaceNN's own dataset
-        times: around 2e4 days that resolves about 2 minutes, well below
-        ICON's time step. A fresh dict every call, because FieldSpaceNN
-        blocks add zoom keys to it in place.
+        Days since the unix epoch as float32, like FieldSpaceNN's dataset
+        times (about 2-minute resolution). A fresh dict every call, because
+        FieldSpaceNN blocks add keys to it in place.
         """
         days = torch.tensor(
             [[float(s) / _SECONDS_PER_DAY for s in unix_seconds]],
             dtype=torch.float32,
-            device=self.processor.zooms.device,
+            device=self.autoencoder.zooms.device,
         )
-        return {"TimeEmbedder": {_COARSE_ZOOM: days, _FINE_ZOOM: days}}
+        return {"TimeEmbedder": {zoom: days for zoom in self.all_zooms}}
 
-    def to_pyramid(self, x_fine_compact: torch.Tensor) -> Latent:
-        """(4*n_coarse, nlev) -> {coarse: mean, fine: zero-mean residual} in
-        (b, v, t, n, d, f) layout, via FieldSpaceNN's own `encode_zooms`."""
-        n_coarse = self.mgrid.n_coarse
-        coarse = pool_fine_to_coarse(x_fine_compact, n_coarse).reshape(1, 1, 1, n_coarse, self.nlev, 1)
-        # reshape(), not view(): the compact tensor may be non-contiguous, and
-        # encode_zooms subtracts in place, so the fine zoom must never alias
-        # the caller's snapshot.
-        fine = x_fine_compact.reshape(1, 1, 1, 4 * n_coarse, self.nlev, 1).clone()
-        return encode_zooms({_COARSE_ZOOM: coarse, _FINE_ZOOM: fine}, self._sample_configs_step, None)
+    def to_pyramid(self, x_fine: torch.Tensor) -> Latent:
+        """(n_fine, nlev) -> {backbone: mean, residual levels: zero-mean
+        residual against the next coarser model level}, in (b, v, t, n, d, f)
+        layout, via FieldSpaceNN's `encode_zooms`."""
+        n_backbone, fine_zoom = self.mgrid.n_backbone, self.fine_zoom
+        x = x_fine.reshape(n_backbone, 4**fine_zoom, self.nlev)
+        means = {}
+        for level in self.levels:
+            zoom = self.mgrid.zoom(level)
+            n = n_backbone * 4**zoom
+            # mean() allocates: encode_zooms subtracts in place and must not
+            # alias the caller's snapshot.
+            means[zoom] = x.reshape(n, 4 ** (fine_zoom - zoom), self.nlev).mean(dim=1).reshape(
+                1, 1, 1, n, self.nlev, 1
+            )
+        return encode_zooms(means, self._sample_configs_step, None)
 
-    def encode(self, x_fine_compact: torch.Tensor, unix_seconds: float) -> Latent:
+    def encode(self, x_fine: torch.Tensor, unix_seconds: float) -> Latent:
         return self.autoencoder.ae_encode(
-            [self.to_pyramid(x_fine_compact)],
+            [self.to_pyramid(x_fine)],
             sample_configs=self._sample_configs_step,
             emb_groups=[self._time_emb([unix_seconds])],
         )[0]
@@ -402,9 +440,9 @@ class FieldSpaceAEForecaster(nn.Module):
             [dict(latent)],
             sample_configs=self._sample_configs_step,
             emb_groups=[self._time_emb([unix_seconds])],
-            out_zoom=_FINE_ZOOM,
-        )[0][_FINE_ZOOM]
-        return out.reshape(self.mgrid.n_fine_kept, self.nlev)
+            out_zoom=self.fine_zoom,
+        )[0][self.fine_zoom]
+        return out.reshape(self.mgrid.n_fine, self.nlev)
 
     def step(self, window: Latent, window_seconds: Sequence[float], next_seconds: float) -> Latent:
         """One processor step: ``n_history`` states at ``window_seconds`` in,
@@ -458,22 +496,22 @@ class FieldSpaceAEForecaster(nn.Module):
 
 class OnlineFieldSpaceAETrainer:
     """DDP-wrapped :class:`FieldSpaceAEForecaster` trainer with a
-    :class:`LatentReservoir`, performing online training on one rank's compact
-    two-zoom local patch.
+    :class:`LatentReservoir`, performing online training on one rank's patch.
 
     Every call to :meth:`train_step` caches the snapshot's latent, and trains
     once the reservoir holds ``n_history + rollout_steps - 1`` earlier
     latents. Every rank pushes the same number of snapshots, so all ranks
     leave warm-up on the same step and call backward together, as DDP
-    requires. As in `fieldspace_online.OnlineFieldSpaceTrainer`, a skip that
-    happens on only some ranks (NaN input, too-small patch) breaks that
-    lockstep. That risk is known and not handled here.
+    requires. A skip on only some ranks (a NaN input) breaks that lockstep.
+    That risk is known and not handled here.
     """
 
     def __init__(
         self,
         nlev: int,
-        mgrid: LocalMGrid,
+        mgrid: NestedMGrid,
+        levels: Sequence[int],
+        latent_level: int,
         n_history: int = 4,
         rollout_steps: int = 1,
         latent_channels: int = 4,
@@ -483,6 +521,7 @@ class OnlineFieldSpaceAETrainer:
         lr: float = 2e-4,
         att_dim: int = 32,
         n_head_channels: int = 8,
+        hidden_dim: int = 64,
         time_embed_dim: int = 64,
         grad_clip: Optional[float] = 1.0,
         use_ddp: Optional[bool] = None,
@@ -493,6 +532,10 @@ class OnlineFieldSpaceAETrainer:
         if n_history < 1 or rollout_steps < 1:
             raise ValueError(
                 f"need n_history >= 1 and rollout_steps >= 1, got {n_history}, {rollout_steps}"
+            )
+        if mgrid.n_backbone < MIN_BACKBONE_CELLS:
+            raise ValueError(
+                f"patch has {mgrid.n_backbone} backbone cells, need at least {MIN_BACKBONE_CELLS}"
             )
         self.nlev = int(nlev)
         self.mgrid = mgrid
@@ -512,45 +555,34 @@ class OnlineFieldSpaceAETrainer:
         # Unknown until the second snapshot.
         self.step_seconds: Optional[float] = None
 
-        # Same GridLayer lower bound as fieldspace_online (see _MIN_ZOOM_CELLS there).
-        self._usable = mgrid.n_coarse >= _MIN_ZOOM_CELLS
-        if not self._usable:
-            self.model = None
-            self.forward_model = None
-            self.optimizer = None
-            self.log_fn(
-                f"[rank={rank}] FieldSpace AE trainer NOT built: n_coarse={mgrid.n_coarse} "
-                f"< {_MIN_ZOOM_CELLS} — this rank will skip training/prediction every step."
-            )
-            return
-
-        # Same default-device guard as fieldspace_online._build_model: FieldSpaceNN
-        # creates device-less tensors inside GridLayer.__init__.
+        # FieldSpaceNN creates device-less tensors inside GridLayer.__init__
+        # and during forward passes; this puts them on the right device.
         with torch.device(self.device):
             self.model = FieldSpaceAEForecaster(
                 mgrid,
                 nlev=self.nlev,
+                levels=levels,
+                latent_level=latent_level,
                 n_history=self.n_history,
                 latent_channels=latent_channels,
                 n_blocks=n_blocks,
                 n_processor_blocks=n_processor_blocks,
                 att_dim=att_dim,
                 n_head_channels=n_head_channels,
+                hidden_dim=hidden_dim,
                 time_embed_dim=time_embed_dim,
             ).to(self.device)
         self.forward_model = self._wrap_ddp(use_ddp)
         self.optimizer = torch.optim.Adam(self.forward_model.parameters(), lr=lr, weight_decay=0.0)
 
         n_params = sum(p.numel() for p in self.model.parameters())
-        latent_numel = self.mgrid.n_coarse * self.nlev * latent_channels
         self.log_fn(
-            f"[rank={rank}] FieldSpace AE trainer initialized: nlev={nlev}, "
-            f"n_history={n_history}, rollout_steps={rollout_steps}, "
-            f"latent_channels={latent_channels} (latent/native size="
-            f"{latent_numel / (self.mgrid.n_fine_kept * self.nlev):.2f}), "
-            f"reservoir_capacity={self.reservoir.capacity}, att_dim={att_dim}, "
-            f"n_coarse={mgrid.n_coarse}, n_fine_kept={mgrid.n_fine_kept}, "
-            f"params={n_params:,}, device={self.device}, "
+            f"[rank={rank}] FieldSpace AE trainer initialized: levels={self.model.levels}, "
+            f"latent_level={latent_level}, latent_zooms={self.model.latent_zooms} "
+            f"(latent/native size={self.model.latent_numel() / (mgrid.n_fine * self.nlev):.3f}), "
+            f"nlev={nlev}, n_history={n_history}, rollout_steps={rollout_steps}, "
+            f"reservoir_capacity={self.reservoir.capacity}, n_backbone={mgrid.n_backbone}, "
+            f"n_fine={mgrid.n_fine}, params={n_params:,}, device={self.device}, "
             f"ddp={isinstance(self.forward_model, DDP)}"
         )
 
@@ -562,6 +594,8 @@ class OnlineFieldSpaceAETrainer:
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         if world_size <= 1:
             return self.model
+        # broadcast_buffers=False: grid-layer buffers differ in shape between
+        # ranks (patch sizes differ) and must not be synchronized.
         return DDP(
             self.model,
             device_ids=[self.device.index or 0],
@@ -573,11 +607,6 @@ class OnlineFieldSpaceAETrainer:
     def prepare_snapshot(self, x_fine: torch.Tensor, unix_seconds: float) -> FieldSpaceSnapshot:
         x_fine = x_fine.to(self.device, dtype=torch.float32, non_blocking=True).detach()
         return FieldSpaceSnapshot(x_fine=x_fine, unix_seconds=float(unix_seconds))
-
-    def _masked_mse(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        mask = self.mgrid.fine_compact_owned_mask.unsqueeze(-1)
-        diff2 = (pred - target) ** 2 * mask
-        return diff2.sum() / (mask.sum() * pred.shape[-1]).clamp(min=1)
 
     @staticmethod
     def _skip_result(needs_rollback: bool = False, loss: float = float("nan")) -> Dict[str, Any]:
@@ -603,18 +632,14 @@ class OnlineFieldSpaceAETrainer:
         cache its latent. See "What happens at ICON step t" in the module
         docstring.
 
-        Loss = masked MSE(prediction, x) + ``recon_weight`` * masked MSE(
-        reconstruction, x), over owned fine cells in complete quad-groups. The
-        prediction is decoded from ``rollout_steps`` processor steps starting
-        at the ``n_history`` cached latents that end ``rollout_steps`` steps
-        before ``snapshot``.
+        Loss = MSE(prediction, x) + ``recon_weight`` * MSE(reconstruction, x)
+        over all patch cells. The prediction is decoded from ``rollout_steps``
+        processor steps starting at the ``n_history`` cached latents that end
+        ``rollout_steps`` steps before ``snapshot``.
 
         A NaN/Inf snapshot is neither trained on nor cached. The reservoir is
         cleared instead, to keep the window contiguous in time.
         """
-        if not self._usable:
-            self.log_fn("[trainer] model not built (n_coarse too small) — skipping step")
-            return self._skip_result()
         if not torch.isfinite(snapshot.x_fine).all():
             self.log_fn("[trainer] NaN/Inf in snapshot — skipping step, clearing reservoir")
             self.reservoir.clear()
@@ -633,14 +658,12 @@ class OnlineFieldSpaceAETrainer:
 
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
-        # Same default-device guard as in __init__, for tensors FieldSpaceNN
-        # creates during the forward pass.
         with torch.device(self.device):
             recon, pred, latent_now = self.forward_model(
                 x, now, window.latent, window.unix_seconds, self.rollout_steps, self.step_seconds
             )
-        loss_pred = self._masked_mse(pred, x)
-        loss_recon = self._masked_mse(recon, x)
+        loss_pred = torch.mean((pred - x) ** 2)
+        loss_recon = torch.mean((recon - x) ** 2)
         loss = loss_pred + self.recon_weight * loss_recon
 
         if not torch.isfinite(loss):
@@ -685,12 +708,11 @@ class OnlineFieldSpaceAETrainer:
         """Forecast the fine field ``n_steps`` steps after the most recently
         cached latent, from the newest ``n_history`` cached latents.
 
-        Returns ``(4*n_coarse, nlev)`` normalized, or ``None`` while the
-        reservoir holds fewer than ``n_history`` latents, before the step
-        length is known (second snapshot), or if this rank's model was never
-        built.
+        Returns ``(n_fine, nlev)`` normalized in nested patch order, or
+        ``None`` while the reservoir holds fewer than ``n_history`` latents
+        or before the step length is known (second snapshot).
         """
-        if not self._usable or self.step_seconds is None:
+        if self.step_seconds is None:
             return None
         window = self.reservoir.window(self.n_history)
         if window is None:
