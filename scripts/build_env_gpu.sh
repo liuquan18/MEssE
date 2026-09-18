@@ -129,9 +129,15 @@ popd
 mkdir -p $YAC_PY_BUILD_DIR
 pushd $YAC_PY_BUILD_DIR
 test -f $YAC_SRC_DIR/configure || (cd $YAC_SRC_DIR && ./autogen.sh)
+# YAC's configure auto-detects LAPACK as a bare "-llapack", which on this system
+# resolves to nvhpc's generic liblapack.so. That library itself depends on
+# libblas_lp64.so.0, but ld refuses to pull in that indirect dependency unless
+# it's listed explicitly ("DSO missing from command line"), so linking the
+# examples/toy_dummy binaries fails. Override with the correctly-suffixed libs.
 $YAC_SRC_DIR/configure \
     CC=${YAC_CC} \
     FC=${YAC_FC} \
+    FORTRAN_LAPACK_CLIBS="-llapack_lp64 -lblas_lp64" \
     --disable-mpi-checks \
     --disable-silent-rules \
     --enable-python-bindings \
@@ -145,8 +151,8 @@ popd
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pushd $ICON_BUILD_DIR
-# copy the exp.aes_amip_messe_test from scripts to the icon build run directory
-cp "$SCRIPTS_DIR/exp.aes_amip_messe_test" ./run/
+# copy the exp.atm_nwp_jsbach_xpp_r2b4 from scripts to the icon build run directory
+cp "$SCRIPTS_DIR/exp.atm_nwp_jsbach_xpp_r2b4" ./run/
 ./make_runscripts --all
 popd
 
