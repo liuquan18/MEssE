@@ -92,7 +92,7 @@ checkpoint_interval=P1Y
    restart_interval=P1Y
 
 # output intervals
-output_interval_2d="P1H"      
+output_interval_2d="PT1H"
 output_interval_3d="P1M"      
 output_interval_pl="P1M"      
 
@@ -327,7 +327,13 @@ cat >> ${atmo_namelist} << EOF
  tracer_names       = 'qv', 'qc', 'qi', 'qr', 'qs'
  ivadv_tracer       = 3,3,3,3,3  ! 3 (default)
  itype_hlimit       = 3,4,4,4,4  ! 4 (default): type of limiter for horizontal transport
- ihadv_tracer       = 32,2,2,2,2 
+ ! ihadv_tracer for qv was 32 (MIURA3_MCYCL), which crashes on this GPU build
+ ! with "data in PRESENT clause was not found on device: name=z_wgt(:)" in
+ ! prep_gauss_quadrature_c_miura3 (mo_advection_quadrature.f90) — a missing
+ ! device copy in ICON's own OpenACC port of the Miura3 quadrature, not a
+ ! MEssE bug. Using scheme 2 (plain Miura, already used for the other
+ ! tracers) avoids that code path. Lower-order qv transport as a result.
+ ihadv_tracer       = 2,2,2,2,2
  iadv_tke           = 0          ! Type of TKE advection; 0: no advection
 /
 EOF
@@ -949,7 +955,12 @@ cat >> ${atmo_namelist} << EOF
  !ready_file             = '${EXPNAME}_atm_2d_ml_<datetime2>.ready'
  ml_varlist             = 'u_10m', 'var_predict'
  output_grid            =  .false.
- remap                  =  1       ! reg. lat-lon
+ ! remap=1 (reg. lat-lon) fails at runtime with "Output name list variable not
+ ! found: latlon_internal_u_10m|...": var_predict is registered dynamically by
+ ! the ComIn plugin with only zaxis_id metadata (no horizontal-interpolation
+ ! metadata), so it isn't set up for lat-lon remapping. The plugin does its own
+ ! grid interpolation via YAC/HEALPix, so this diagnostic file doesn't need it.
+ remap                  =  0       ! native ICON grid
 /
 EOF
 #
