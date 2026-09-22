@@ -46,6 +46,7 @@ from icon_nested_mgrid import (
 from MEssE.comin_plugin_torch.fieldspace_AE_online import OnlineFieldSpaceAETrainer
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
+    sample_interval,
     setup_mpi_dist,
     parse_icon_datetime,
     save_checkpoint,
@@ -68,9 +69,11 @@ MODEL_LEVELS = sorted(int(v) for v in os.environ.get("MESSE_AE_LEVELS", "4,6,7,8
 LATENT_LEVEL = int(os.environ.get("MESSE_AE_LATENT_LEVEL", "6"))
 # Directory with the MPI-M Earth_IcosS_* grid file of every level from backbone to fine.
 GRID_DIR = os.environ.get("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
-# ICON steps between samples: the model trains, caches and forecasts once per
-# stride, so history and forecast lead are stride * dtime (10 steps = 10 min).
-STEP_STRIDE = int(os.environ.get("MESSE_AE_STEP_STRIDE", "10"))
+# Model time between samples, in seconds: the model trains, caches and
+# forecasts once per interval, so this is both the forecast lead and the
+# spacing of the cached latents. Converted to whole ICON steps at runtime from
+# the run's timestep, so it keeps its meaning when the timestep changes.
+SAMPLE_SECONDS = float(os.environ.get("MESSE_AE_SAMPLE_SECONDS", "600"))
 N_HISTORY = int(os.environ.get("MESSE_AE_N_HISTORY", "4"))  # cached latents per prediction
 ROLLOUT_STEPS = int(os.environ.get("MESSE_AE_ROLLOUT_STEPS", "1"))  # training horizon, in steps
 LATENT_CHANNELS = int(os.environ.get("MESSE_AE_LATENT_CHANNELS", "4"))  # channels per latent-level cell
@@ -199,6 +202,7 @@ class _State:
         "current_step",
         "nlev",
         "step_len_seconds",
+        "sample_seconds",
         # data
         "icon_var",
         "AI_var",
@@ -219,6 +223,7 @@ class _State:
         self.current_step: int = 0
         self.nlev: Optional[int] = None
         self.step_len_seconds: Optional[int] = None
+        self.sample_seconds: Optional[int] = None  # resolved on the first sample step
 
         self.icon_var = None
         self.AI_var = None
@@ -245,20 +250,28 @@ def _icon_time_unix_seconds() -> float:
     return float(parse_icon_datetime(comin.current_get_datetime()).timestamp())
 
 
-def _sample_seconds() -> float:
-    """Model time between two samples, i.e. the forecast lead."""
-    return float(_state.step_len_seconds * STEP_STRIDE)
+def _sample_seconds() -> int:
+    """Model time between two samples, i.e. the forecast lead. `SAMPLE_SECONDS`
+    rounded to whole ICON steps (see icon_online_helper.sample_interval)."""
+    if _state.sample_seconds is None:
+        stride, interval = sample_interval(SAMPLE_SECONDS, _state.step_len_seconds)
+        _state.sample_seconds = interval
+        comin.print_info(
+            f"sampling every {stride} ICON steps of {_state.step_len_seconds} s = {interval} s "
+            f"(asked for {SAMPLE_SECONDS:g} s): forecast lead and latent spacing"
+        )
+    return _state.sample_seconds
 
 
 def _is_sample_step() -> bool:
-    """True on every ``STEP_STRIDE``-th ICON step, counted from the first
+    """True once per `_sample_seconds` of model time, counted from the first
     callback: the steps the model trains, caches and forecasts on. The ICON
     time is the same on all ranks, so they all take the same branch, as the
     collective exchange and DDP require."""
     now = _icon_time_unix_seconds()
     if _state.first_seconds is None:
         _state.first_seconds = now
-    return int(round((now - _state.first_seconds) / _state.step_len_seconds)) % STEP_STRIDE == 0
+    return int(round(now - _state.first_seconds)) % _sample_seconds() == 0
 
 
 def _current_patch() -> torch.Tensor:
@@ -346,7 +359,7 @@ def _maybe_save_checkpoint(current_step: int) -> None:
         return
     if _state.step_len_seconds is None or current_step == 0:
         return
-    # current_step counts sample steps, one per STEP_STRIDE ICON steps.
+    # current_step counts sample steps, one per sample interval.
     steps_per_save = max(1, int(SAVE_INTERVAL_SECONDS // _sample_seconds()))
     if current_step % steps_per_save == 0:
         save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step)
@@ -392,8 +405,9 @@ def dry_run():
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
     """Online training callback, called by ICON at each time step; it acts
-    every `STEP_STRIDE`-th step, so the forecast lead and the spacing of the
-    cached latents are `STEP_STRIDE * dtime`.
+    once per `MESSE_AE_SAMPLE_SECONDS` of model time (rounded to whole ICON
+    steps), which is both the forecast lead and the spacing of the cached
+    latents.
 
     On each of those steps the current field is compressed and its latent
     cached, with its ICON model time, in the trainer's reservoir. Once the

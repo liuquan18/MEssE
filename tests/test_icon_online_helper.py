@@ -17,6 +17,7 @@ from MEssE.utils.icon_online_helper import (
     extract_icon_cells,
     insert_icon_cells,
     parse_icon_datetime,
+    sample_interval,
 )
 
 
@@ -220,3 +221,26 @@ def test_rollout_buffer_single_step_horizon():
     assert buf.push("s0") is None
     assert buf.push("t1") == ("s0", "t1")
     assert buf.push("t2") == ("t1", "t2")
+
+
+# --------------------------------------------------------------------------
+# sample_interval
+# --------------------------------------------------------------------------
+
+
+def test_sample_interval_converts_seconds_to_whole_steps():
+    assert sample_interval(600, 60) == (10, 600)     # R2B8 today: 60 s steps
+    assert sample_interval(600, 10) == (60, 600)     # same 10 minutes at 10 s steps
+    assert sample_interval(600, 450) == (1, 450)     # 450 s steps: nearest is one step
+    assert sample_interval(1800, 450) == (4, 1800)
+
+
+def test_sample_interval_rounds_to_the_realizable_interval():
+    stride, interval = sample_interval(600, 45)      # 13.3 steps -> 13
+    assert (stride, interval) == (13, 585)
+
+
+def test_sample_interval_is_at_least_one_step_and_needs_a_positive_timestep():
+    assert sample_interval(5, 60) == (1, 60)         # asked for less than one step
+    with pytest.raises(ValueError):
+        sample_interval(600, 0)

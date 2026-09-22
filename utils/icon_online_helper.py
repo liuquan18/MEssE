@@ -323,6 +323,24 @@ def flat_index(idx: np.ndarray, blk: np.ndarray, nproma: int) -> np.ndarray:
     return (blk.astype(np.int64) - 1) * nproma + (idx.astype(np.int64) - 1)
 
 
+def sample_interval(wanted_seconds: float, step_seconds: float) -> Tuple[int, int]:
+    """Turn a wanted sampling interval in model *seconds* into whole ICON
+    steps, given the run's timestep (``comin.descrdata_get_timesteplength``).
+
+    A plugin that acts every n-th step should be configured in seconds, so the
+    same setting keeps its meaning when the timestep changes with resolution
+    (e.g. 60 s at R2B8 today, 10 s later). Returns ``(stride_steps,
+    interval_seconds)`` with ``interval_seconds = stride_steps *
+    step_seconds``: the interval actually realizable, which differs from
+    ``wanted_seconds`` when that is not a multiple of the timestep. The stride
+    is at least one step.
+    """
+    if step_seconds <= 0:
+        raise ValueError(f"step_seconds must be positive, got {step_seconds}")
+    stride = max(1, int(round(float(wanted_seconds) / float(step_seconds))))
+    return stride, int(round(stride * float(step_seconds)))
+
+
 def parse_icon_datetime(iso_str: str) -> datetime.datetime:
     """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
     clean = str(iso_str).split(".")[0].rstrip("Z")
