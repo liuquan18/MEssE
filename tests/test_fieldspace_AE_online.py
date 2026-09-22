@@ -231,8 +231,10 @@ def test_every_parameter_gets_a_gradient_in_one_training_pass(levels, latent_lev
     window = _random_window(model)
     seconds = [T0 + i * STEP_SECONDS for i in range(N_HISTORY)]
     now = seconds[-1] + ROLLOUT_STEPS * STEP_SECONDS
-    recon, pred, _ = model(x, now, window, seconds, ROLLOUT_STEPS, STEP_SECONDS)
-    ((recon - x) ** 2).mean().add(((pred - x) ** 2).mean()).backward()
+    recon, pred, _, prev_recon = model(x, now, window, seconds, ROLLOUT_STEPS, STEP_SECONDS)
+    # The trainer's loss: reconstruction plus the predicted-change term.
+    x_prev = torch.randn_like(x)
+    ((recon - x) ** 2).mean().add((((pred - prev_recon) - (x - x_prev)) ** 2).mean()).backward()
     missing = [name for name, p in model.named_parameters() if p.grad is None]
     assert missing == []
 
@@ -300,9 +302,9 @@ def test_design_prediction_scored_at_t_is_the_one_written_back_at_t_minus_1():
     real_forward = trainer.model.forward
 
     def capturing_forward(*args, **kwargs):
-        recon, pred, latent = real_forward(*args, **kwargs)
+        recon, pred, latent, prev_recon = real_forward(*args, **kwargs)
         captured["pred"] = pred.detach().clone()
-        return recon, pred, latent
+        return recon, pred, latent, prev_recon
 
     trainer.model.forward = capturing_forward
     assert trainer.train_step(_snapshot(trainer, 3))["skipped"] is False
@@ -343,15 +345,55 @@ def test_rejects_non_positive_history_or_rollout():
         _tiny_trainer(rollout_steps=0)
 
 
-def test_train_step_returns_the_reconstruction_for_increment_forecasts():
-    """fieldspace_AE_plugin builds its forecast as field + (prediction -
-    reconstruction), so train_step has to hand the reconstruction back."""
-    trainer = _tiny_trainer()
-    for step in range(N_HISTORY + ROLLOUT_STEPS - 1):
-        assert trainer.train_step(_snapshot(trainer, step))["recon"] is None
+def test_predict_increment_is_the_forecast_minus_the_latest_reconstruction():
+    """What the plugin writes to var_predict: the predicted change, with both
+    decodes taken at the current weights so the autoencoder error cancels."""
+    trainer = _tiny_trainer(n_history=2, rollout_steps=1)
+    assert trainer.predict_increment() is None  # nothing cached yet
+    for step in range(3):
+        trainer.train_step(_snapshot(trainer, step))
 
-    snapshot = _snapshot(trainer, N_HISTORY + ROLLOUT_STEPS - 1)
-    recon = trainer.train_step(snapshot)["recon"]
-    assert recon.shape == snapshot.x_fine.shape
-    assert not recon.requires_grad
-    assert torch.isfinite(recon).all()
+    increment = trainer.predict_increment(n_steps=1)
+    forecast = trainer.predict(n_steps=1)
+    window = trainer.reservoir.window(trainer.n_history)
+    latest = {zoom: w[:, :, -1:] for zoom, w in window.latent.items()}
+    with torch.no_grad():
+        reference = trainer.model.decode(latest, window.unix_seconds[-1])
+    torch.testing.assert_close(increment, forecast - reference, atol=1e-6, rtol=0)
+
+
+def test_prediction_loss_scores_the_change_not_the_absolute_field():
+    """The reported prediction loss must be the increment MSE the plugin's
+    fc_rmse measures, not the MSE against the absolute field."""
+    trainer = _tiny_trainer(n_history=2, rollout_steps=1)
+    snapshots = [_snapshot(trainer, step) for step in range(4)]
+    for snapshot in snapshots[:3]:
+        trainer.train_step(snapshot)
+
+    captured = {}
+    real_forward = trainer.model.forward
+
+    def capturing_forward(*args, **kwargs):
+        recon, pred, latent, prev_recon = real_forward(*args, **kwargs)
+        captured["pred"] = pred.detach().clone()
+        captured["prev_recon"] = prev_recon.detach().clone()
+        return recon, pred, latent, prev_recon
+
+    trainer.model.forward = capturing_forward
+    result = trainer.train_step(snapshots[3])
+    assert result["skipped"] is False
+
+    x, x_prev = snapshots[3].x_fine, snapshots[2].x_fine  # window ends one step back
+    increment_mse = (((captured["pred"] - captured["prev_recon"]) - (x - x_prev)) ** 2).mean()
+    absolute_mse = ((captured["pred"] - x) ** 2).mean()
+    assert result["loss_dict"]["train/MSE_pred"] == pytest.approx(increment_mse.item(), rel=1e-5)
+    assert result["loss_dict"]["train/MSE_pred"] != pytest.approx(absolute_mse.item(), rel=1e-3)
+
+
+def test_history_fields_are_cleared_with_the_latents():
+    trainer = _tiny_trainer()
+    for step in range(2):
+        trainer.train_step(_snapshot(trainer, step))
+    assert len(trainer._fields) == 2
+    trainer.train_step(trainer.prepare_snapshot(torch.full((trainer.mgrid.n_fine, NLEV), float("nan")), T0))
+    assert len(trainer.reservoir) == 0 and len(trainer._fields) == 0

@@ -60,8 +60,13 @@ What happens at ICON step t (``n_history = H``, ``rollout_steps = 1``)
 2. x_t arrives. The prediction of x_t from z_{t-H} .. z_{t-1} is recomputed
    with gradient; the weights have not changed since it was written to ICON at
    step t-1, so it is the same number.
-3. Loss = MSE(prediction of x_t, x_t) + ``recon_weight`` * MSE(decode(encode(
-   x_t)), x_t), then one optimizer step.
+3. Loss = MSE(predicted change, true change) + ``recon_weight`` * MSE(decode(
+   encode(x_t)), x_t), then one optimizer step. The predicted change is
+   ``decode(forecast latent) - decode(z_{t-1})`` and the true one
+   ``x_t - x_{t-1}``, i.e. exactly what the plugin writes to ICON and scores
+   as ``fc_rmse``. The autoencoder's error sits in both decodes and largely
+   cancels, so this term is about the forecast, not the compression; the
+   reconstruction term is what anchors the absolute field.
 4. z_t = encode(x_t), from step 3's forward pass, is cached; z_{t-H} drops out.
 5. Predict x_{t+1} from z_{t-H+1} .. z_t and write it to ICON (plugin side).
 
@@ -479,14 +484,23 @@ class FieldSpaceAEForecaster(nn.Module):
         window_seconds: Sequence[float],
         n_steps: int,
         step_seconds: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Latent]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Latent, torch.Tensor]:
         """Training pass. Returns ``(reconstruction of x_now, prediction of
-        x_now from the window, latent of x_now)``; the window must end
-        ``n_steps * step_seconds`` before ``now_seconds``."""
+        x_now from the window, latent of x_now, decode of the window's last
+        latent)``; the window must end ``n_steps * step_seconds`` before
+        ``now_seconds``.
+
+        The last return value is the reference the increment loss and the
+        plugin's write-back measure the predicted change against. It is
+        decoded here, inside the one forward pass per iteration, because DDP
+        requires every parameter to be used exactly once per iteration.
+        """
         latent_now = self.encode(x_now, now_seconds)
         recon = self.decode(latent_now, now_seconds)
         pred = self.decode(self.rollout(window, window_seconds, n_steps, step_seconds), now_seconds)
-        return recon, pred, latent_now
+        last = {zoom: w[:, :, -1:] for zoom, w in window.items()}
+        prev_recon = self.decode(last, window_seconds[-1])
+        return recon, pred, latent_now, prev_recon
 
 
 # ----------------------------------------------------------------------------
@@ -551,6 +565,10 @@ class OnlineFieldSpaceAETrainer:
         # the newest cached one (the target is the snapshot being pushed now);
         # prediction needs only the newest n_history.
         self.reservoir = LatentReservoir(capacity=self.n_history + self.rollout_steps - 1)
+        # The fields behind the cached latents, pushed and cleared with them.
+        # The increment loss needs the field at the end of the window, and it
+        # is small next to the patch itself (capacity x n_fine x nlev floats).
+        self._fields: Deque[Tuple[float, torch.Tensor]] = deque(maxlen=self.reservoir.capacity)
         # Time between consecutive snapshots, measured from their ICON times.
         # Unknown until the second snapshot.
         self.step_seconds: Optional[float] = None
@@ -616,34 +634,49 @@ class OnlineFieldSpaceAETrainer:
             "skipped": True,
             "needs_rollback": needs_rollback,
             "grad_norm": 0.0,
-            "recon": None,
         }
 
-    def _cache(self, latent: Latent, unix_seconds: float) -> None:
+    def _cache(self, latent: Latent, unix_seconds: float, x_fine: torch.Tensor) -> None:
         # A non-finite latent means the model itself is broken. Restart the
         # history rather than leave a gap: a gap would silently shift which
         # timesteps the window's positions correspond to.
         if all(torch.isfinite(t).all() for t in latent.values()):
             self.reservoir.push(latent, unix_seconds)
+            self._fields.append((float(unix_seconds), x_fine))
         else:
-            self.reservoir.clear()
+            self._clear_history()
+
+    def _clear_history(self) -> None:
+        """Drop the cached latents and their fields together: they are
+        indexed by the same valid times."""
+        self.reservoir.clear()
+        self._fields.clear()
+
+    def _field_at(self, unix_seconds: float) -> Optional[torch.Tensor]:
+        """The cached field with this valid time, or ``None``."""
+        for seconds, field in reversed(self._fields):
+            if seconds == unix_seconds:
+                return field
+        return None
 
     def train_step(self, snapshot: FieldSpaceSnapshot) -> Dict[str, Any]:
         """Train on ``snapshot`` as target (once the reservoir is warm), then
         cache its latent. See "What happens at ICON step t" in the module
         docstring.
 
-        Loss = MSE(prediction, x) + ``recon_weight`` * MSE(reconstruction, x)
-        over all patch cells. The prediction is decoded from ``rollout_steps``
-        processor steps starting at the ``n_history`` cached latents that end
-        ``rollout_steps`` steps before ``snapshot``.
+        Loss = MSE(predicted change, true change) + ``recon_weight`` *
+        MSE(reconstruction, x) over all patch cells, where the change runs
+        from the end of the window to ``snapshot`` (see the module docstring).
+        The prediction is decoded from ``rollout_steps`` processor steps
+        starting at the ``n_history`` cached latents that end ``rollout_steps``
+        steps before ``snapshot``.
 
         A NaN/Inf snapshot is neither trained on nor cached. The reservoir is
         cleared instead, to keep the window contiguous in time.
         """
         if not torch.isfinite(snapshot.x_fine).all():
             self.log_fn("[trainer] NaN/Inf in snapshot — skipping step, clearing reservoir")
-            self.reservoir.clear()
+            self._clear_history()
             return self._skip_result()
 
         x, now = snapshot.x_fine, snapshot.unix_seconds
@@ -651,19 +684,25 @@ class OnlineFieldSpaceAETrainer:
             self.step_seconds = now - self.reservoir.latest_seconds
 
         window = self.reservoir.window(self.n_history, lag=self.rollout_steps - 1)
-        if window is None:
+        x_prev = None if window is None else self._field_at(window.unix_seconds[-1])
+        if window is None or x_prev is None:
             with torch.no_grad(), torch.device(self.device):
                 self.model.eval()
-                self._cache(self.model.encode(x, now), now)
+                self._cache(self.model.encode(x, now), now, x)
             return self._skip_result()
 
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         with torch.device(self.device):
-            recon, pred, latent_now = self.forward_model(
+            recon, pred, latent_now, prev_recon = self.forward_model(
                 x, now, window.latent, window.unix_seconds, self.rollout_steps, self.step_seconds
             )
-        loss_pred = torch.mean((pred - x) ** 2)
+        # Score the predicted *change* over the window's lead, which is what
+        # the plugin writes to ICON and what its fc_rmse measures. The
+        # autoencoder's error is in both decodes and largely cancels here, so
+        # this term is about the forecast rather than the compression; the
+        # reconstruction term below is what anchors the absolute field.
+        loss_pred = torch.mean(((pred - prev_recon) - (x - x_prev)) ** 2)
         loss_recon = torch.mean((recon - x) ** 2)
         loss = loss_pred + self.recon_weight * loss_recon
 
@@ -671,7 +710,7 @@ class OnlineFieldSpaceAETrainer:
             self.log_fn(
                 f"[trainer] Non-finite loss ({loss.item()}) — model may be corrupted"
             )
-            self.reservoir.clear()
+            self._clear_history()
             return self._skip_result(needs_rollback=True, loss=loss.item())
 
         loss.backward()
@@ -683,7 +722,7 @@ class OnlineFieldSpaceAETrainer:
                 f"[trainer] Non-finite grad_norm ({grad_norm}) — skipping optimizer step"
             )
             self.optimizer.zero_grad(set_to_none=True)
-            self.reservoir.clear()
+            self._clear_history()
             result = self._skip_result(needs_rollback=True, loss=loss.item())
             result["grad_norm"] = grad_norm
             return result
@@ -691,13 +730,9 @@ class OnlineFieldSpaceAETrainer:
         self.optimizer.step()
         # Cached with the encoder as it was before this update. See the module
         # docstring on staleness.
-        self._cache(latent_now, now)
+        self._cache(latent_now, now, x)
 
         return {
-            # decode(encode(x)) of this snapshot, for the caller's increment
-            # forecast: the autoencoder error largely cancels in
-            # prediction - reconstruction (both pass the same decoder).
-            "recon": recon.detach(),
             "loss": loss.item(),
             "loss_dict": {
                 "train/MSE_pred": loss_pred.item(),
@@ -727,3 +762,28 @@ class OnlineFieldSpaceAETrainer:
         with torch.device(self.device):
             latent = self.model.rollout(window.latent, window.unix_seconds, n_steps, self.step_seconds)
             return self.model.decode(latent, valid_seconds)
+
+    @torch.no_grad()
+    def predict_increment(self, n_steps: int = 1) -> Optional[torch.Tensor]:
+        """Predicted *change* of the fine field over ``n_steps`` sample steps,
+        ``decode(forecast latent) - decode(latest cached latent)``.
+
+        This is what the plugin adds to the field ICON holds now, and the same
+        quantity :meth:`train_step` scores. Both decodes use the weights as
+        they are now, so the autoencoder's error cancels between them.
+
+        Returns ``(n_fine, nlev)`` normalized in nested patch order, or
+        ``None`` under the same conditions as :meth:`predict`.
+        """
+        if self.step_seconds is None:
+            return None
+        window = self.reservoir.window(self.n_history)
+        if window is None:
+            return None
+        self.model.eval()
+        latest_seconds = window.unix_seconds[-1]
+        with torch.device(self.device):
+            latent = self.model.rollout(window.latent, window.unix_seconds, n_steps, self.step_seconds)
+            forecast = self.model.decode(latent, latest_seconds + n_steps * self.step_seconds)
+            latest = {zoom: w[:, :, -1:] for zoom, w in window.latent.items()}
+            return forecast - self.model.decode(latest, latest_seconds)

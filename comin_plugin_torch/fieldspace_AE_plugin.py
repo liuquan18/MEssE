@@ -480,10 +480,9 @@ def training():
     # prediction and reconstruction pass through the same decoder, so most of
     # the autoencoder's error cancels in their difference and only the
     # predicted change is added to the field ICON has now.
-    pred = trainer.predict(n_steps=1)  # (n_fine, nlev) normalized, or None
-    recon = result.get("recon")  # decode(encode(x)) of this step, normalized
-    if pred is not None and recon is not None:
-        _state.forecast = patch + (pred - recon) * _state.normalizer.stats.std
+    increment = trainer.predict_increment(n_steps=1)  # (n_fine, nlev) normalized, or None
+    if increment is not None:
+        _state.forecast = patch + increment * _state.normalizer.stats.std
         _state.forecast_seconds = now_seconds + _sample_seconds()
 
 
