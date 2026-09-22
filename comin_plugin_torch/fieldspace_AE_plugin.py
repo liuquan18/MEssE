@@ -68,6 +68,9 @@ MODEL_LEVELS = sorted(int(v) for v in os.environ.get("MESSE_AE_LEVELS", "4,6,7,8
 LATENT_LEVEL = int(os.environ.get("MESSE_AE_LATENT_LEVEL", "6"))
 # Directory with the MPI-M Earth_IcosS_* grid file of every level from backbone to fine.
 GRID_DIR = os.environ.get("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
+# ICON steps between samples: the model trains, caches and forecasts once per
+# stride, so history and forecast lead are stride * dtime (10 steps = 10 min).
+STEP_STRIDE = int(os.environ.get("MESSE_AE_STEP_STRIDE", "10"))
 N_HISTORY = int(os.environ.get("MESSE_AE_N_HISTORY", "4"))  # cached latents per prediction
 ROLLOUT_STEPS = int(os.environ.get("MESSE_AE_ROLLOUT_STEPS", "1"))  # training horizon, in steps
 LATENT_CHANNELS = int(os.environ.get("MESSE_AE_LATENT_CHANNELS", "4"))  # channels per latent-level cell
@@ -201,6 +204,8 @@ class _State:
         "AI_var",
         "patch",
         "patch_time",
+        "prev_patch",
+        "first_seconds",
         # forecast waiting for its valid time before it goes to var_predict
         "forecast",
         "forecast_seconds",
@@ -219,7 +224,9 @@ class _State:
         self.AI_var = None
         self.patch: Optional[torch.Tensor] = None
         self.patch_time: Optional[str] = None
-        self.forecast: Optional[np.ndarray] = None  # (n_fine, nlev) denormalized, patch order
+        self.prev_patch: Optional[torch.Tensor] = None  # patch of the previous sample step
+        self.first_seconds: Optional[float] = None  # model time of the first callback
+        self.forecast: Optional[torch.Tensor] = None  # (n_fine, nlev) physical, patch order
         self.forecast_seconds: Optional[float] = None  # its valid time, unix seconds
 
         self.normalizer: Optional[RunningMeanStd] = None
@@ -236,6 +243,22 @@ _state = _State()
 
 def _icon_time_unix_seconds() -> float:
     return float(parse_icon_datetime(comin.current_get_datetime()).timestamp())
+
+
+def _sample_seconds() -> float:
+    """Model time between two samples, i.e. the forecast lead."""
+    return float(_state.step_len_seconds * STEP_STRIDE)
+
+
+def _is_sample_step() -> bool:
+    """True on every ``STEP_STRIDE``-th ICON step, counted from the first
+    callback: the steps the model trains, caches and forecasts on. The ICON
+    time is the same on all ranks, so they all take the same branch, as the
+    collective exchange and DDP require."""
+    now = _icon_time_unix_seconds()
+    if _state.first_seconds is None:
+        _state.first_seconds = now
+    return int(round((now - _state.first_seconds) / _state.step_len_seconds)) % STEP_STRIDE == 0
 
 
 def _current_patch() -> torch.Tensor:
@@ -323,7 +346,8 @@ def _maybe_save_checkpoint(current_step: int) -> None:
         return
     if _state.step_len_seconds is None or current_step == 0:
         return
-    steps_per_save = max(1, SAVE_INTERVAL_SECONDS // _state.step_len_seconds)
+    # current_step counts sample steps, one per STEP_STRIDE ICON steps.
+    steps_per_save = max(1, int(SAVE_INTERVAL_SECONDS // _sample_seconds()))
     if current_step % steps_per_save == 0:
         save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step)
         comin.print_info(f"[rank={rank}] Checkpoint saved at step={current_step}")
@@ -337,8 +361,10 @@ def dry_run():
     _state.step_len_seconds = int(comin.descrdata_get_timesteplength(DOMAIN_ID))
     if _state.normalizer is not None and _state.normalizer.done:
         return
+    if not _is_sample_step():
+        return
 
-    dry_run_steps = max(1, DRY_RUN_TIME_SECONDS // _state.step_len_seconds)
+    dry_run_steps = max(1, int(DRY_RUN_TIME_SECONDS // _sample_seconds()))
     patch = _current_patch()
 
     if _state.nlev is None:
@@ -365,22 +391,28 @@ def dry_run():
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
 def training():
-    """Online training callback, called by ICON at each time step.
+    """Online training callback, called by ICON at each time step; it acts
+    every `STEP_STRIDE`-th step, so the forecast lead and the spacing of the
+    cached latents are `STEP_STRIDE * dtime`.
 
-    Every step, the current field is compressed and its latent cached, with
-    its ICON model time, in the trainer's reservoir. Once the reservoir holds
-    `N_HISTORY + ROLLOUT_STEPS - 1` earlier latents, every step also trains
-    (see fieldspace_AE_online.OnlineFieldSpaceAETrainer.train_step).
+    On each of those steps the current field is compressed and its latent
+    cached, with its ICON model time, in the trainer's reservoir. Once the
+    reservoir holds `N_HISTORY + ROLLOUT_STEPS - 1` earlier latents, the step
+    also trains (see
+    fieldspace_AE_online.OnlineFieldSpaceAETrainer.train_step).
 
     `var_predict` at model time t holds the forecast *valid at t*, made one
-    step earlier from data up to t - dt (the forecast the loss scores at t),
-    so it can be compared directly with the ICON variable in the same output
-    snapshot. Each step's new 1-step-ahead forecast is kept until the next
-    step, then sent to the rank owning each cell and written. Every rank takes
-    the same branches on the same steps, as the collective exchange and DDP
-    require.
+    sample step earlier, so it compares directly with the ICON variable in the
+    same output snapshot. It is an increment forecast: the field ICON had at
+    t - lead plus the predicted change (prediction minus reconstruction, which
+    cancels most of the autoencoder's error). Its error and persistence over
+    the same lead are logged as `fc_rmse` and `persistence`, both in the
+    variable's own units. Every rank takes the same branches on the same
+    steps, as the collective exchange and DDP require.
     """
 
+    if not _is_sample_step():
+        return
     if _state.normalizer is None or not _state.normalizer.done:
         comin.print_info(f"[rank={rank}] Dry run not complete, skipping training")
         return
@@ -389,18 +421,28 @@ def training():
     _state.current_step += 1
     _maybe_save_checkpoint(current_step)
 
-    patch_norm = _state.normalizer.normalize(_current_patch())
-
-    trainer = _get_trainer(nlev=_state.nlev)
+    patch = _current_patch()  # physical units
     now_seconds = _icon_time_unix_seconds()
-    snapshot = trainer.prepare_snapshot(patch_norm, now_seconds)
 
-    # Collective: the forecast made last step for this model time goes to the
-    # ranks owning its cells. Times are identical on all ranks.
-    if _state.forecast is not None and _state.forecast_seconds == now_seconds:
-        owned_forecast = _exchange.from_patch(compute_comm, _state.forecast)
+    # The forecast made one sample step ago is valid now: score it against the
+    # truth, next to persistence over the same lead, and write it to ICON.
+    # Whether it exists is agreed between ranks, because the write-back is
+    # collective and a NaN step can drop it on one rank only.
+    have_forecast = bool(_state.forecast is not None and _state.forecast_seconds == now_seconds)
+    have_forecast = bool(compute_comm.allreduce(1 if have_forecast else 0, op=MPI.MIN))
+    verification = ""
+    if have_forecast:
+        fc_rmse = float(torch.sqrt(torch.mean((_state.forecast - patch) ** 2)))
+        persistence = float(torch.sqrt(torch.mean((_state.prev_patch - patch) ** 2)))
+        verification = f"fc_rmse={fc_rmse:.4f} persistence={persistence:.4f} "
+        owned_forecast = _exchange.from_patch(compute_comm, _state.forecast.cpu().numpy())
         insert_icon_cells(owned_forecast.astype(np.float64), _state.AI_var, indices=_exchange.send_local_ids)
     _state.forecast = None
+    _state.prev_patch = patch
+
+    patch_norm = _state.normalizer.normalize(patch)
+    trainer = _get_trainer(nlev=_state.nlev)
+    snapshot = trainer.prepare_snapshot(patch_norm, now_seconds)
 
     torch.cuda.synchronize()
     train_seconds = time.perf_counter()
@@ -416,13 +458,13 @@ def training():
     reservoir = f"reservoir={len(trainer.reservoir)}/{trainer.reservoir.capacity}"
     if result.get("skipped", False) and not result.get("needs_rollback", False):
         # Reservoir warm-up, or a skipped input (the trainer logs why).
-        comin.print_info(f"[rank={rank}] step={current_step} no update, {reservoir} {cost}")
+        comin.print_info(f"[rank={rank}] step={current_step} no update, {verification}{reservoir} {cost}")
     else:
         comin.print_info(
             f"[rank={rank}] step={current_step} loss={result['loss']:.6f} "
             f"pred_mse={result['loss_dict'].get('train/MSE_pred', float('nan')):.6f} "
             f"recon_mse={result['loss_dict'].get('train/MSE_recon', float('nan')):.6f} "
-            f"grad_norm={result.get('grad_norm', 0.0):.4f} "
+            f"grad_norm={result.get('grad_norm', 0.0):.4f} {verification}"
             f"skipped={result.get('skipped', False)} {reservoir} {cost}"
         )
     if result.get("needs_rollback"):
@@ -434,11 +476,15 @@ def training():
         # the model being discarded.
         rollback_checkpoint(_state.trainer, CHECKPOINT_PATH)
 
+    # Forecast for the next sample step, as an increment on the current field:
+    # prediction and reconstruction pass through the same decoder, so most of
+    # the autoencoder's error cancels in their difference and only the
+    # predicted change is added to the field ICON has now.
     pred = trainer.predict(n_steps=1)  # (n_fine, nlev) normalized, or None
-    if pred is not None:
-        # Written to var_predict next step, when its valid time is reached.
-        _state.forecast = _state.normalizer.denormalize(pred).cpu().numpy()
-        _state.forecast_seconds = trainer.reservoir.latest_seconds + trainer.step_seconds
+    recon = result.get("recon")  # decode(encode(x)) of this step, normalized
+    if pred is not None and recon is not None:
+        _state.forecast = patch + (pred - recon) * _state.normalizer.stats.std
+        _state.forecast_seconds = now_seconds + _sample_seconds()
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)

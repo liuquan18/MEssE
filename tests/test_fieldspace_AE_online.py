@@ -341,3 +341,17 @@ def test_rejects_non_positive_history_or_rollout():
         _tiny_trainer(n_history=0)
     with pytest.raises(ValueError):
         _tiny_trainer(rollout_steps=0)
+
+
+def test_train_step_returns_the_reconstruction_for_increment_forecasts():
+    """fieldspace_AE_plugin builds its forecast as field + (prediction -
+    reconstruction), so train_step has to hand the reconstruction back."""
+    trainer = _tiny_trainer()
+    for step in range(N_HISTORY + ROLLOUT_STEPS - 1):
+        assert trainer.train_step(_snapshot(trainer, step))["recon"] is None
+
+    snapshot = _snapshot(trainer, N_HISTORY + ROLLOUT_STEPS - 1)
+    recon = trainer.train_step(snapshot)["recon"]
+    assert recon.shape == snapshot.x_fine.shape
+    assert not recon.requires_grad
+    assert torch.isfinite(recon).all()

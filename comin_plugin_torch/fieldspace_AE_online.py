@@ -616,6 +616,7 @@ class OnlineFieldSpaceAETrainer:
             "skipped": True,
             "needs_rollback": needs_rollback,
             "grad_norm": 0.0,
+            "recon": None,
         }
 
     def _cache(self, latent: Latent, unix_seconds: float) -> None:
@@ -693,6 +694,10 @@ class OnlineFieldSpaceAETrainer:
         self._cache(latent_now, now)
 
         return {
+            # decode(encode(x)) of this snapshot, for the caller's increment
+            # forecast: the autoencoder error largely cancels in
+            # prediction - reconstruction (both pass the same decoder).
+            "recon": recon.detach(),
             "loss": loss.item(),
             "loss_dict": {
                 "train/MSE_pred": loss_pred.item(),
