@@ -43,7 +43,10 @@ from icon_nested_mgrid import (
     load_level_grids,
     mpim_grid_paths,
 )
-from MEssE.comin_plugin_torch.fieldspace_AE_online import OnlineFieldSpaceAETrainer
+from MEssE.comin_plugin_torch.fieldspace_AE_online import (
+    LevelVerification,
+    OnlineFieldSpaceAETrainer,
+)
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
     sample_interval,
@@ -91,6 +94,8 @@ os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
 # Not fieldspace_online.pt: the two models' state dicts are incompatible.
 CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "fieldspace_ae_online.pt")
 DRY_RUN_TIME_SECONDS = int(os.environ.get("MESSE_AE_DRY_RUN_SECONDS", "3600"))  # 1 hour
+# Sample steps per per-scale verification line (see LevelVerification.report).
+VERIFY_INTERVAL = int(os.environ.get("MESSE_AE_VERIFY_INTERVAL", "50"))
 SAVE_INTERVAL_SECONDS = int(os.environ.get("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))  # 1 day
 
 # ----------------------------------------------------------------------------
@@ -209,12 +214,15 @@ class _State:
         "patch",
         "patch_time",
         "prev_patch",
+        "prev2_patch",
         "first_seconds",
         # forecast waiting for its valid time before it goes to var_predict
         "forecast",
         "forecast_seconds",
         # dry run for normalization (see icon_online_helper.RunningMeanStd)
         "normalizer",
+        # per-scale verification against persistence and linear extrapolation
+        "verifier",
         # model + latent reservoir (see fieldspace_AE_online.OnlineFieldSpaceAETrainer)
         "trainer",
     )
@@ -230,11 +238,13 @@ class _State:
         self.patch: Optional[torch.Tensor] = None
         self.patch_time: Optional[str] = None
         self.prev_patch: Optional[torch.Tensor] = None  # patch of the previous sample step
+        self.prev2_patch: Optional[torch.Tensor] = None  # and of the one before that
         self.first_seconds: Optional[float] = None  # model time of the first callback
         self.forecast: Optional[torch.Tensor] = None  # (n_fine, nlev) physical, patch order
         self.forecast_seconds: Optional[float] = None  # its valid time, unix seconds
 
         self.normalizer: Optional[RunningMeanStd] = None
+        self.verifier: Optional[LevelVerification] = None
         self.trainer: Optional[OnlineFieldSpaceAETrainer] = None
 
 
@@ -288,6 +298,21 @@ def _current_patch() -> torch.Tensor:
         _state.patch = torch.from_numpy(patch).to(torch.device("cuda", 0))
         _state.patch_time = now
     return _state.patch
+
+
+def _get_verifier() -> LevelVerification:
+    """Per-scale scoring of the written forecast (see LevelVerification).
+
+    Built on the model's own zooms, so the log's levels are exactly the levels
+    the model represents: the backbone plus one residual per further level.
+    """
+    if _state.verifier is None:
+        _state.verifier = LevelVerification(
+            zooms=[_mgrid.zoom(level) for level in MODEL_LEVELS],
+            n_backbone=_mgrid.n_backbone,
+            base_level=BASE_LEVEL,
+        )
+    return _state.verifier
 
 
 def _get_trainer(nlev: int) -> OnlineFieldSpaceAETrainer:
@@ -362,7 +387,15 @@ def _maybe_save_checkpoint(current_step: int) -> None:
     # current_step counts sample steps, one per sample interval.
     steps_per_save = max(1, int(SAVE_INTERVAL_SECONDS // _sample_seconds()))
     if current_step % steps_per_save == 0:
-        save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step)
+        # The per-cell mean/std come from the dry run and are not recoverable
+        # from the weights; without them the checkpoint cannot be used offline.
+        stats = _state.normalizer.stats if _state.normalizer is not None else None
+        extra = (
+            None
+            if stats is None
+            else {"norm_mean": stats.mean.cpu(), "norm_std": stats.std.cpu()}
+        )
+        save_checkpoint(_state.trainer, CHECKPOINT_PATH, compute_rank, current_step, extra=extra)
         comin.print_info(f"[rank={rank}] Checkpoint saved at step={current_step}")
 
 
@@ -446,12 +479,17 @@ def training():
     have_forecast = bool(compute_comm.allreduce(1 if have_forecast else 0, op=MPI.MIN))
     verification = ""
     if have_forecast:
-        fc_rmse = float(torch.sqrt(torch.mean((_state.forecast - patch) ** 2)))
-        persistence = float(torch.sqrt(torch.mean((_state.prev_patch - patch) ** 2)))
-        verification = f"fc_rmse={fc_rmse:.4f} persistence={persistence:.4f} "
+        rmse = _get_verifier().update(
+            patch, _state.prev_patch, _state.prev2_patch, _state.forecast
+        )
+        verification = (
+            f"fc_rmse={rmse['model']:.4f} persistence={rmse['persistence']:.4f} "
+            f"lin_rmse={rmse['linear']:.4f} "
+        )
         owned_forecast = _exchange.from_patch(compute_comm, _state.forecast.cpu().numpy())
         insert_icon_cells(owned_forecast.astype(np.float64), _state.AI_var, indices=_exchange.send_local_ids)
     _state.forecast = None
+    _state.prev2_patch = _state.prev_patch
     _state.prev_patch = patch
 
     patch_norm = _state.normalizer.normalize(patch)
@@ -481,6 +519,11 @@ def training():
             f"grad_norm={result.get('grad_norm', 0.0):.4f} {verification}"
             f"skipped={result.get('skipped', False)} {reservoir} {cost}"
         )
+    if _state.verifier is not None and current_step % VERIFY_INTERVAL == 0:
+        report = _state.verifier.report()
+        if report is not None:
+            comin.print_info(f"[rank={rank}] step={current_step} {report}")
+
     if result.get("needs_rollback"):
         comin.print_info(
             f"[rank={rank}] step={current_step} NaN detected — "

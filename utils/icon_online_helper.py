@@ -46,7 +46,7 @@ import os
 import socket
 import sys
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -406,26 +406,38 @@ def insert_icon_cells(pred_cells: np.ndarray, buffer, indices: Optional[np.ndarr
 # ----------------------------------------------------------------------------
 
 
-def save_checkpoint(trainer: Any, checkpoint_path: str, compute_rank: int, step: int) -> None:
+def save_checkpoint(
+    trainer: Any,
+    checkpoint_path: str,
+    compute_rank: int,
+    step: int,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
     """Save model + optimizer state to ``checkpoint_path``.
 
     ``trainer`` is any object exposing ``.model`` and ``.optimizer``
     (``gnn_online.OnlineGNNTrainer``, ``unet_online.OnlineUNetTrainer``, ...).
     Only compute rank 0 writes to avoid concurrent writes on the shared
     filesystem; all other GPU ranks return immediately.
+
+    ``extra`` is merged into the saved dict, for state a checkpoint is useless
+    without but that does not live on the model - notably the normalization
+    mean/std, which are derived from the dry run and cannot be recovered from
+    the weights. Keys never override the three written here.
     """
     if compute_rank != 0:
         return
-    # Write to a temporary file first, then rename for an atomic replace.
-    tmp_path = checkpoint_path + ".tmp"
-    torch.save(
+    payload = dict(extra or {})
+    payload.update(
         {
             "model_state_dict": trainer.model.state_dict(),
             "optimizer_state_dict": trainer.optimizer.state_dict(),
             "step": step,
-        },
-        tmp_path,
+        }
     )
+    # Write to a temporary file first, then rename for an atomic replace.
+    tmp_path = checkpoint_path + ".tmp"
+    torch.save(payload, tmp_path)
     os.replace(tmp_path, checkpoint_path)
 
 

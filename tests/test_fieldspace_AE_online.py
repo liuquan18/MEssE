@@ -13,7 +13,14 @@ import numpy as np
 import pytest
 import torch
 
-from fieldspace_AE_online import LatentReservoir, OnlineFieldSpaceAETrainer, compression_stages
+from fieldspace_AE_online import (
+    LatentReservoir,
+    LevelVerification,
+    OnlineFieldSpaceAETrainer,
+    compression_stages,
+    join_levels,
+    split_levels,
+)
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms
 from icon_nested_mgrid import build_nested_mgrid
 from test_icon_nested_mgrid import _synthetic_grids
@@ -397,3 +404,88 @@ def test_history_fields_are_cleared_with_the_latents():
     assert len(trainer._fields) == 2
     trainer.train_step(trainer.prepare_snapshot(torch.full((trainer.mgrid.n_fine, NLEV), float("nan")), T0))
     assert len(trainer.reservoir) == 0 and len(trainer._fields) == 0
+
+
+# ----------------------------------------------------------------------------
+# Verification (split_levels / join_levels / LevelVerification)
+# ----------------------------------------------------------------------------
+
+
+def test_split_levels_is_orthogonal_and_join_inverts_it():
+    """The parts sum back to the field and their variances add up, which is
+    what lets the verifier report per-scale MSEs that sum to the whole."""
+    torch.manual_seed(0)
+    zooms, n_backbone, nlev = [0, 2, 3], 7, 2
+    x = torch.randn(n_backbone * 4 ** zooms[-1], nlev)
+
+    parts = split_levels(x, n_backbone, zooms)
+
+    assert {z: tuple(p.shape) for z, p in parts.items()} == {
+        0: (7, nlev), 2: (7 * 16, nlev), 3: (7 * 64, nlev)
+    }
+    torch.testing.assert_close(join_levels(parts, zooms), x)
+    total = sum(float(p.var(unbiased=False)) for p in parts.values())
+    assert abs(total - float(x.var(unbiased=False))) < 1e-4
+    # Every residual is zero-mean inside each parent cell.
+    for parent, zoom in zip(zooms, zooms[1:]):
+        grouped = parts[zoom].reshape(-1, 4 ** (zoom - parent), nlev)
+        torch.testing.assert_close(grouped.mean(dim=1), torch.zeros_like(grouped[:, 0]), atol=1e-5, rtol=0)
+
+
+def test_split_levels_backbone_is_the_patch_mean():
+    zooms, n_backbone = [0, 1], 3
+    x = torch.arange(n_backbone * 4, dtype=torch.float32).reshape(-1, 1)
+    parts = split_levels(x, n_backbone, zooms)
+    torch.testing.assert_close(parts[0], x.reshape(n_backbone, 4, 1).mean(dim=1))
+
+
+def test_level_verification_scores_a_perfect_forecast_as_zero_error():
+    zooms, n_backbone = [0, 1], 4
+    v = LevelVerification(zooms, n_backbone, base_level=4)
+    torch.manual_seed(1)
+    prev2, prev, now = (torch.randn(n_backbone * 4, 1) for _ in range(3))
+
+    rmse = v.update(now, prev, prev2, forecast=now)
+
+    assert rmse["model"] == pytest.approx(0.0, abs=1e-6)
+    assert rmse["persistence"] > 0.0
+    # First scored step has no fitted coefficient yet, so linear == persistence.
+    assert rmse["linear"] == pytest.approx(rmse["persistence"], rel=1e-6)
+
+
+def test_level_verification_linear_baseline_recovers_a_constant_tendency():
+    """A field moving by a fixed increment every step is predicted exactly by
+    the linear baseline once its coefficient has been fitted (a -> 1)."""
+    zooms, n_backbone = [0, 1], 4
+    v = LevelVerification(zooms, n_backbone, base_level=4)
+    torch.manual_seed(2)
+    x0 = torch.randn(n_backbone * 4, 1)
+    step = torch.randn(n_backbone * 4, 1)
+    frames = [x0 + i * step for i in range(6)]
+
+    last = {}
+    for i in range(2, len(frames)):
+        last = v.update(frames[i], frames[i - 1], frames[i - 2], forecast=frames[i - 1])
+
+    assert all(a == pytest.approx(1.0, abs=1e-4) for a in v.coefficients.values())
+    assert last["linear"] == pytest.approx(0.0, abs=1e-4)
+    assert last["persistence"] > 1e-3          # persistence is not perfect here
+    assert last["model"] == pytest.approx(last["persistence"], rel=1e-6)
+
+
+def test_level_verification_report_block_means_and_resets():
+    zooms, n_backbone = [0, 1], 4
+    v = LevelVerification(zooms, n_backbone, base_level=4)
+    assert v.report() is None                   # nothing scored yet
+
+    torch.manual_seed(3)
+    frames = [torch.randn(n_backbone * 4, 1) for _ in range(4)]
+    for i in range(2, len(frames)):
+        v.update(frames[i], frames[i - 1], frames[i - 2], forecast=frames[i - 1])
+
+    report = v.report()
+    assert "R2B4[" in report and "r5[" in report          # backbone vs residual naming
+    assert "expl_mod=" in report and "a=" in report
+    # A persistence-equal forecast explains none of the change.
+    assert "expl_mod=+0.000" in report
+    assert v.report() is None                   # block was reset

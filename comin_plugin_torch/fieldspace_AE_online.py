@@ -787,3 +787,184 @@ class OnlineFieldSpaceAETrainer:
             forecast = self.model.decode(latent, latest_seconds + n_steps * self.step_seconds)
             latest = {zoom: w[:, :, -1:] for zoom, w in window.latent.items()}
             return forecast - self.model.decode(latest, latest_seconds)
+
+
+# ----------------------------------------------------------------------------
+# Verification
+# ----------------------------------------------------------------------------
+
+
+def split_levels(
+    x_fine: torch.Tensor, n_backbone: int, zooms: Sequence[int]
+) -> Dict[int, torch.Tensor]:
+    """Split a patch into the backbone mean plus one zero-mean residual per
+    zoom, each as a flat ``(n_cells_at_zoom, nlev)`` tensor.
+
+    ``zooms`` are the model's own zooms (``level - base_level``), coarsest
+    first, ending at the fine zoom. ``zooms[0]`` maps to the area mean over
+    each backbone cell; every later zoom to that level's mean minus its parent
+    level's mean, so the parts are orthogonal and
+    ``var(x) == sum(var(part))``. :func:`join_levels` is the exact inverse.
+
+    This is the same decomposition :meth:`FieldSpaceAEForecaster.to_pyramid`
+    feeds the model, kept separate and flat so verification never depends on
+    FieldSpaceNN's ``(b, v, t, n, d, f)`` layout.
+    """
+    zooms = list(zooms)
+    fine_zoom, nlev = zooms[-1], x_fine.shape[-1]
+    means = {
+        zoom: x_fine.reshape(n_backbone * 4**zoom, 4 ** (fine_zoom - zoom), nlev).mean(dim=1)
+        for zoom in zooms
+    }
+    parts = {zooms[0]: means[zooms[0]]}
+    for parent, zoom in zip(zooms, zooms[1:]):
+        parts[zoom] = means[zoom] - means[parent].repeat_interleave(4 ** (zoom - parent), dim=0)
+    return parts
+
+
+def join_levels(parts: Dict[int, torch.Tensor], zooms: Sequence[int]) -> torch.Tensor:
+    """Sum the parts of :func:`split_levels` back into a ``(n_fine, nlev)``
+    patch."""
+    zooms = list(zooms)
+    fine_zoom = zooms[-1]
+    out = parts[zooms[0]].repeat_interleave(4 ** (fine_zoom - zooms[0]), dim=0)
+    for zoom in zooms[1:]:
+        out = out + parts[zoom].repeat_interleave(4 ** (fine_zoom - zoom), dim=0)
+    return out
+
+
+class LevelVerification:
+    """Scores the written forecast per scale against two baselines.
+
+    All three forecasts start from the field one sample step ago and differ
+    only in the change they add, so the comparison is purely about predicting
+    that change:
+
+    * **persistence** adds nothing;
+    * **linear** adds ``a`` times the change over the *previous* sample step,
+      with one ``a`` per zoom fitted by least squares on the steps seen so far
+      (causal - the current step is scored before it enters the fit);
+    * **model** adds what the plugin wrote into ``var_predict``.
+
+    Errors are accumulated per zoom and reported as block means, so a report
+    line is the mean over the steps since the previous one and the sequence of
+    lines is a learning curve. Per-zoom MSEs sum to the whole-patch MSE,
+    because the parts of :func:`split_levels` are orthogonal.
+    """
+
+    def __init__(self, zooms: Sequence[int], n_backbone: int, base_level: int) -> None:
+        self.zooms = list(zooms)
+        self.n_backbone = int(n_backbone)
+        self.base_level = int(base_level)
+        # Least-squares fit of a per zoom: a = sum(d_prev . d_now) / sum(d_prev . d_prev).
+        self._num = {zoom: 0.0 for zoom in self.zooms}
+        self._den = {zoom: 0.0 for zoom in self.zooms}
+        self._reset_block()
+
+    def _reset_block(self) -> None:
+        self.count = 0
+        self._sq: Dict[str, Dict[int, float]] = {
+            name: {zoom: 0.0 for zoom in self.zooms} for name in ("model", "persistence", "linear")
+        }
+
+    def level_name(self, zoom: int) -> str:
+        """``R2B4`` for the backbone zoom, ``r6``/``r7``/... for a residual."""
+        level = self.base_level + zoom
+        return f"R2B{level}" if zoom == self.zooms[0] else f"r{level}"
+
+    @property
+    def coefficients(self) -> Dict[int, float]:
+        """Current least-squares ``a`` per zoom; 0.0 until a zoom has data
+        (which makes the linear baseline fall back to persistence)."""
+        return {
+            zoom: (self._num[zoom] / self._den[zoom] if self._den[zoom] > 0.0 else 0.0)
+            for zoom in self.zooms
+        }
+
+    @torch.no_grad()
+    def update(
+        self,
+        x_now: torch.Tensor,
+        x_prev: torch.Tensor,
+        x_prev2: Optional[torch.Tensor],
+        forecast: torch.Tensor,
+    ) -> Dict[str, float]:
+        """Score one verification step and fold it into the block.
+
+        ``x_prev2`` may be ``None`` on the first verified step, when no
+        previous change is known yet; the linear baseline then equals
+        persistence. Returns this step's whole-patch RMSEs, in the field's own
+        units.
+        """
+        now = split_levels(x_now, self.n_backbone, self.zooms)
+        prev = split_levels(x_prev, self.n_backbone, self.zooms)
+        fc = split_levels(forecast, self.n_backbone, self.zooms)
+        prev2 = None if x_prev2 is None else split_levels(x_prev2, self.n_backbone, self.zooms)
+
+        a = self.coefficients
+        for zoom in self.zooms:
+            d_now = now[zoom] - prev[zoom]
+            d_prev = None if prev2 is None else prev[zoom] - prev2[zoom]
+            linear_err = d_now if d_prev is None else a[zoom] * d_prev - d_now
+            self._sq["model"][zoom] += float(torch.mean((fc[zoom] - now[zoom]) ** 2))
+            self._sq["persistence"][zoom] += float(torch.mean(d_now**2))
+            self._sq["linear"][zoom] += float(torch.mean(linear_err**2))
+            if d_prev is not None:
+                # Fit on this step only after scoring against it.
+                self._num[zoom] += float(torch.sum(d_prev * d_now))
+                self._den[zoom] += float(torch.sum(d_prev * d_prev))
+        self.count += 1
+
+        linear_full = join_levels(
+            {
+                zoom: prev[zoom]
+                if prev2 is None
+                else prev[zoom] + a[zoom] * (prev[zoom] - prev2[zoom])
+                for zoom in self.zooms
+            },
+            self.zooms,
+        )
+        return {
+            "model": float(torch.sqrt(torch.mean((forecast - x_now) ** 2))),
+            "persistence": float(torch.sqrt(torch.mean((x_prev - x_now) ** 2))),
+            "linear": float(torch.sqrt(torch.mean((linear_full - x_now) ** 2))),
+        }
+
+    def report(self) -> Optional[str]:
+        """Block-mean RMSE per zoom and whole-patch, then start a new block.
+
+        ``None`` if no step has been scored since the last report. ``explain``
+        is ``1 - (RMSE/persistence)^2``, the fraction of the sample-step change
+        the forecast got right: 0 means no better than assuming no change.
+        """
+        if self.count == 0:
+            return None
+        rmse = {
+            name: {zoom: math.sqrt(sq[zoom] / self.count) for zoom in self.zooms}
+            for name, sq in self._sq.items()
+        }
+        full = {
+            name: math.sqrt(sum(sq[zoom] for zoom in self.zooms) / self.count)
+            for name, sq in self._sq.items()
+        }
+
+        def explain(err: float, persistence: float) -> float:
+            return 1.0 - (err / persistence) ** 2 if persistence > 0.0 else float("nan")
+
+        a = self.coefficients
+        parts = [
+            f"{self.level_name(zoom)}[mod={rmse['model'][zoom]:.4f} "
+            f"pers={rmse['persistence'][zoom]:.4f} lin={rmse['linear'][zoom]:.4f} "
+            f"expl_mod={explain(rmse['model'][zoom], rmse['persistence'][zoom]):+.3f} "
+            f"expl_lin={explain(rmse['linear'][zoom], rmse['persistence'][zoom]):+.3f} "
+            f"a={a[zoom]:.3f}]"
+            for zoom in self.zooms
+        ]
+        head = (
+            f"verify over {self.count} steps: full[mod={full['model']:.4f} "
+            f"pers={full['persistence']:.4f} lin={full['linear']:.4f} "
+            f"expl_mod={explain(full['model'], full['persistence']):+.3f} "
+            f"expl_lin={explain(full['linear'], full['persistence']):+.3f}]"
+        )
+        self._reset_block()
+        return head + " " + " ".join(parts)
