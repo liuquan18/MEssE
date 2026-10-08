@@ -46,7 +46,7 @@ import os
 import socket
 import sys
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -323,6 +323,24 @@ def flat_index(idx: np.ndarray, blk: np.ndarray, nproma: int) -> np.ndarray:
     return (blk.astype(np.int64) - 1) * nproma + (idx.astype(np.int64) - 1)
 
 
+def sample_interval(wanted_seconds: float, step_seconds: float) -> Tuple[int, int]:
+    """Turn a wanted sampling interval in model *seconds* into whole ICON
+    steps, given the run's timestep (``comin.descrdata_get_timesteplength``).
+
+    A plugin that acts every n-th step should be configured in seconds, so the
+    same setting keeps its meaning when the timestep changes with resolution
+    (e.g. 60 s at R2B8 today, 10 s later). Returns ``(stride_steps,
+    interval_seconds)`` with ``interval_seconds = stride_steps *
+    step_seconds``: the interval actually realizable, which differs from
+    ``wanted_seconds`` when that is not a multiple of the timestep. The stride
+    is at least one step.
+    """
+    if step_seconds <= 0:
+        raise ValueError(f"step_seconds must be positive, got {step_seconds}")
+    stride = max(1, int(round(float(wanted_seconds) / float(step_seconds))))
+    return stride, int(round(stride * float(step_seconds)))
+
+
 def parse_icon_datetime(iso_str: str) -> datetime.datetime:
     """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
     clean = str(iso_str).split(".")[0].rstrip("Z")
@@ -388,26 +406,38 @@ def insert_icon_cells(pred_cells: np.ndarray, buffer, indices: Optional[np.ndarr
 # ----------------------------------------------------------------------------
 
 
-def save_checkpoint(trainer: Any, checkpoint_path: str, compute_rank: int, step: int) -> None:
+def save_checkpoint(
+    trainer: Any,
+    checkpoint_path: str,
+    compute_rank: int,
+    step: int,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
     """Save model + optimizer state to ``checkpoint_path``.
 
     ``trainer`` is any object exposing ``.model`` and ``.optimizer``
     (``gnn_online.OnlineGNNTrainer``, ``unet_online.OnlineUNetTrainer``, ...).
     Only compute rank 0 writes to avoid concurrent writes on the shared
     filesystem; all other GPU ranks return immediately.
+
+    ``extra`` is merged into the saved dict, for state a checkpoint is useless
+    without but that does not live on the model - notably the normalization
+    mean/std, which are derived from the dry run and cannot be recovered from
+    the weights. Keys never override the three written here.
     """
     if compute_rank != 0:
         return
-    # Write to a temporary file first, then rename for an atomic replace.
-    tmp_path = checkpoint_path + ".tmp"
-    torch.save(
+    payload = dict(extra or {})
+    payload.update(
         {
             "model_state_dict": trainer.model.state_dict(),
             "optimizer_state_dict": trainer.optimizer.state_dict(),
             "step": step,
-        },
-        tmp_path,
+        }
     )
+    # Write to a temporary file first, then rename for an atomic replace.
+    tmp_path = checkpoint_path + ".tmp"
+    torch.save(payload, tmp_path)
     os.replace(tmp_path, checkpoint_path)
 
 

@@ -1,4 +1,5 @@
-"""Build the local two-zoom (coarse R2B3 + fine R2B4) multi-grid for online
+"""Build the local two-zoom multi-grid (fine = the grid ICON runs on, e.g.
+R2B4 or R2B8; coarse = one refinement level up, e.g. R2B3 or R2B7) for online
 FieldSpaceNN training, directly from COMIN's native ICON grid data plus two
 static grid files read once at startup (never per-timestep).
 
@@ -24,7 +25,7 @@ Two zooms are built:
   that slot -- the same "duplicate -> self, mask it" idiom
   `healpix_get_adjacent_cell_indices` already uses for HEALPix's polar
   gaps.
-* Coarse zoom (zoom index 0): built from a **static R2B3 grid file, read
+* Coarse zoom (zoom index 0): built from a **static coarse grid file, read
   once** at plugin startup -- this is small, fixed grid *topology*, the
   same category of one-time disk read `icon_grid_to_mgrid` already does
   offline, not the "no disk I/O for per-timestep training data" concern
@@ -239,6 +240,36 @@ def load_parent_index(fine_grid_path: str) -> np.ndarray:
     """
     ds = xr.open_dataset(fine_grid_path)
     return ds["parent_cell_index"].values.astype(np.int64) - 1
+
+
+def check_grid_files(
+    parent_index_global: np.ndarray, coarse_grid: CoarseGrid, ncells_global: int
+) -> None:
+    """Raise ``ValueError`` unless the fine grid file describes the grid ICON
+    runs on (``ncells_global``, COMIN's ``domain.cells.ncells_global``) and
+    the coarse grid file is its parent grid, one refinement level up.
+
+    Without this, a file pair for another resolution fails later with an
+    IndexError inside :func:`build_local_mgrid`, or trains on a scrambled
+    grid if the cell counts happen to fit.
+    """
+    n_fine = int(parent_index_global.shape[0])
+    if n_fine != int(ncells_global):
+        raise ValueError(
+            f"fine grid file has {n_fine} cells but ICON runs on {ncells_global}: "
+            "it must be the grid file of the ICON run itself"
+        )
+    if 4 * coarse_grid.n_cells != n_fine:
+        raise ValueError(
+            f"coarse grid file has {coarse_grid.n_cells} cells, expected {n_fine // 4} "
+            f"(one refinement level above the {n_fine}-cell fine grid)"
+        )
+    if parent_index_global.min() < 0 or parent_index_global.max() >= coarse_grid.n_cells:
+        raise ValueError(
+            f"fine grid parent_cell_index spans [{parent_index_global.min() + 1}, "
+            f"{parent_index_global.max() + 1}], outside the coarse grid's "
+            f"{coarse_grid.n_cells} cells"
+        )
 
 
 def build_local_mgrid(
