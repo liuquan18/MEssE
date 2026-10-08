@@ -284,7 +284,9 @@ class OnlineReconstructorForecaster:
         **model_kwargs,
     ):
         self.device, self.grad_clip = device, grad_clip
-        # FieldSpaceNN creates device-less tensors in GridLayer and in forward passes.
+        # FieldSpaceNN creates device-less tensors in GridLayer and in forward
+        # passes; the grids must be on the same device as those.
+        mgrids = [{k: v.to(device) if torch.is_tensor(v) else v for k, v in grid.items()} for grid in mgrids]
         with torch.device(device):
             self.model = ReconstructorForecaster(mgrids, levels, latent_level, nlev, n_history, **model_kwargs)
         self.ddp_model = (
