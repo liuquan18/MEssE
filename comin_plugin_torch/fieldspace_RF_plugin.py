@@ -179,6 +179,8 @@ def sample_step():
         State.first_seconds = now
         stride, State.sample_seconds = sample_interval(SAMPLE_SECONDS, comin.descrdata_get_timesteplength(DOMAIN_ID))
         comin.print_info(f"sampling every {stride} ICON steps = {State.sample_seconds} s")
+        n_dry = int(DRY_RUN_SECONDS // State.sample_seconds)
+        comin.print_info(f"dry run: {n_dry} sample steps = {n_dry * stride} ICON steps = {n_dry * State.sample_seconds:.0f} s")
     if round(now - State.first_seconds) % State.sample_seconds:
         return
     patch = _patch()
