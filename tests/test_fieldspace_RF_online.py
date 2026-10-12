@@ -7,7 +7,7 @@ level 2: two compression stages. CPU only, no comin, no MPI.
 import pytest
 import torch
 
-from fieldspace_RF_online import OnlineReconstructorForecaster, autoencoder_configs, _Blocks
+from fieldspace_RF_online import OnlineReconstructorForecaster, autoencoder_configs, drop_levels, _Blocks
 from icon_nested_mgrid import patch_mgrid
 from test_icon_nested_mgrid import synthetic_global_mgrid
 
@@ -57,7 +57,8 @@ def test_history_fills_before_training_and_forecasting():
         assert trainer.train_step(_field(k), T0 + k * DT) == {}
     assert trainer.predict_increment(T0 + N_HISTORY * DT) is not None
     stats = trainer.train_step(_field(N_HISTORY), T0 + N_HISTORY * DT)
-    assert set(stats) == {"recon", "incre", "oracle", "grad_norm"}
+    assert set(stats) == {"recon", "incre", "oracle", "grad_norm", "dropped"}
+    assert stats["dropped"] is None
     assert sorted(stats["recon"]) == sorted(stats["incre"]) == sorted(stats["oracle"]) == [0, 2, 3, 4]
 
 
@@ -108,9 +109,10 @@ def test_models_are_trained_independently():
     assert all(p.grad is None for p in model.forecaster.parameters())
 
 
-def test_every_trainable_parameter_gets_a_gradient_in_one_pass():
-    """DDP (find_unused_parameters=False) needs this."""
-    trainer = _trainer()
+@pytest.mark.parametrize("p_drop", [(), (0, 0, 1)])
+def test_every_trainable_parameter_gets_a_gradient_in_one_pass(p_drop):
+    """DDP (find_unused_parameters=False) needs this, with and without dropout."""
+    trainer = _trainer(forecast_p_drop=p_drop)
     for k in range(N_HISTORY):
         trainer.train_step(_field(k), T0 + k * DT)
     seen = {}
@@ -131,3 +133,48 @@ def test_frozen_copy_follows_the_reconstructor_slowly():
     assert int(trainer.model.frozen.n_averaged) == 3
     assert not torch.equal(live, frozen)
     assert (live - frozen).abs().max() < 0.1
+
+
+def test_drop_levels_zeroes_the_drawn_level_and_every_finer_one():
+    levels = _trainer().model.to_levels(_field(0))
+    rng = torch.Generator().manual_seed(0)
+    assert drop_levels(levels, {}, rng) == (levels, None)
+    assert drop_levels(levels, {2: 0.0, 3: 0.0, 4: 0.0}, rng) == (levels, None)
+    dropped, zoom = drop_levels(levels, {3: 1.0, 4: 1.0}, rng)
+    assert zoom == 3
+    assert dropped[0] is levels[0] and dropped[2] is levels[2]  # backbone and coarser kept
+    assert not dropped[3].any() and not dropped[4].any()
+    assert levels[3].any() and levels[4].any()  # input untouched
+
+
+def test_drop_levels_draws_coarse_to_fine():
+    levels = _trainer().model.to_levels(_field(0))
+    rng = torch.Generator().manual_seed(0)
+    zooms = [drop_levels(levels, {3: 0.2, 4: 0.5}, rng)[1] for _ in range(4000)]
+    assert zooms.count(3) / 4000 == pytest.approx(0.2, abs=0.03)
+    assert zooms.count(4) / 4000 == pytest.approx(0.8 * 0.5, abs=0.03)
+
+
+def test_zero_dropout_is_identical_to_no_dropout():
+    a, b = _trainer(), _trainer(forecast_p_drop=(0, 0, 0))
+    for k in range(N_HISTORY + 3):
+        sa, sb = a.train_step(_field(k), T0 + k * DT), b.train_step(_field(k), T0 + k * DT)
+        assert sa == sb
+    assert torch.equal(a.predict_increment(T0 + 9 * DT), b.predict_increment(T0 + 9 * DT))
+
+
+def test_history_dropout_changes_only_the_forecaster_input():
+    """A dropped newest state changes the forecast and its loss, not the
+    reconstruction, the oracle, the target or the cached history."""
+    clean, drop = _trainer(), _trainer(forecast_p_drop=(0, 0, 1))
+    for k in range(N_HISTORY):
+        clean.train_step(_field(k), T0 + k * DT)
+        drop.train_step(_field(k), T0 + k * DT)
+    sc = clean.train_step(_field(N_HISTORY), T0 + N_HISTORY * DT)
+    sd = drop.train_step(_field(N_HISTORY), T0 + N_HISTORY * DT)
+    assert sd["dropped"] == 4 and sc["dropped"] is None
+    assert sd["recon"] == sc["recon"] and sd["oracle"] == sc["oracle"]
+    assert sd["incre"] != sc["incre"]
+    for (_, lc, cc), (_, ld, cd) in zip(clean.history, drop.history):
+        assert all(torch.equal(lc[z], ld[z]) for z in lc)
+        assert all(torch.equal(cc[z], cd[z]) for z in cc)

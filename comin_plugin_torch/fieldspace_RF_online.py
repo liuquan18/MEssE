@@ -40,10 +40,19 @@ At sample step t (history full)
    exactly, i.e. how much of the change the frozen autoencoder can represent
    at all. It bounds what the forecaster can reach.
 3. c_t = E_frozen(x_t) is cached, and the plugin asks for the increment to t+1.
+
+Residual dropout (forecaster only)
+----------------------------------
+With probability ``forecast_p_drop[level]`` per sample step, the newest history
+latent is replaced by E_frozen of a coarsened x_{t-1}: that residual level and
+every finer one set to 0 (FieldSpaceNN's per-zoom ``p_drop``, see
+`datasets_base.py`). Target and base stay the full x_t - x_{t-1}, so the
+forecaster has to rebuild the newest fine structure from the older history
+and the coarse state instead of copying it. Prediction is never dropped.
 """
 
 from collections import deque
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.distributed as dist
@@ -69,6 +78,20 @@ def _sample_configs(n_past: int, n_future: int, zooms: Sequence[int]) -> Dict[in
     """Whole patch as one sample, ``n_past`` + ``n_future`` timesteps."""
     conf = {"n_past_ts": n_past, "n_future_ts": n_future, "zoom_patch_sample": -1, "mask_n_last_ts": n_future}
     return {zoom: dict(conf) for zoom in zooms}
+
+
+def drop_levels(levels: Levels, p_drop: Dict[int, float], generator: torch.Generator) -> Tuple[Levels, Optional[int]]:
+    """FieldSpaceNN's per-zoom dropout (`datasets_base.py`, ``p_drop``): the
+    residual zooms are drawn coarse to fine, and the first one drawn is set to
+    0 with every finer one, so the field becomes the upsampled coarser field.
+    The backbone is never dropped. Returns the new levels and the dropped zoom."""
+    dropped = None
+    for z in sorted(levels)[1:]:
+        if dropped is None and p_drop.get(z, 0.0) > 0 and torch.rand((), generator=generator, device="cpu") < p_drop[z]:
+            dropped = z
+    if dropped is None:
+        return levels, None
+    return {z: torch.zeros_like(t) if z >= dropped else t for z, t in levels.items()}, dropped
 
 
 class _Blocks:
@@ -279,6 +302,7 @@ class OnlineReconstructorForecaster:
         n_history: int = 4,
         lr_recon: float = 2e-4,
         lr_forecast: float = 2e-4,
+        forecast_p_drop: Sequence[float] = (),
         grad_clip: float = 1.0,
         device: torch.device = torch.device("cuda", 0),
         **model_kwargs,
@@ -304,6 +328,9 @@ class OnlineReconstructorForecaster:
         self._mean_square: Dict[str, Levels] = {"recon": {}, "incre": {}}
         self._n_targets = 0
         self.history = deque(maxlen=n_history)  # (seconds, levels, frozen latent) per sample step
+        # Probability per residual zoom (levels[1:]); one generator per rank.
+        self.forecast_p_drop = dict(zip(self.model.zooms[1:], forecast_p_drop))
+        self._rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
 
     def _loss(self, name: str, output: Levels, target: Levels):
         """Sum over levels of MSE / running mean square of the target, and the
@@ -350,6 +377,11 @@ class OnlineReconstructorForecaster:
         self._update_mean_square("incre", increment)
 
         stats = {}
+        coarse, stats["dropped"] = drop_levels(prev_levels, self.forecast_p_drop, self._rng)
+        if stats["dropped"] is not None:
+            with torch.no_grad():
+                coarse = self.model.encode_frozen(coarse, prev_seconds)
+            history = {z: torch.cat([h[:, :, :-1], coarse[z]], dim=2) for z, h in history.items()}
         recon, forecast = self.ddp_model(levels, seconds, history, history_seconds)
         with torch.no_grad():
             prev = self.model.decode_frozen(prev_latent, prev_seconds)

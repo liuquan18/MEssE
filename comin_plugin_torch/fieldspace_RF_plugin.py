@@ -64,6 +64,8 @@ MODEL = dict(
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
+    # Residual dropout of the newest history state, one probability per residual level (LEVELS[1:]).
+    forecast_p_drop=[float(p) for p in env("MESSE_AE_FORECAST_P_DROP", "").split(",") if p],
 )
 CHECKPOINT_PATH = os.path.join(os.getcwd(), "saved_models", "fieldspace_rf_online.pt")
 os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
@@ -152,8 +154,12 @@ def _trainer(nlev: int) -> OnlineReconstructorForecaster:
     return trainer
 
 
+def _name(zoom: int) -> str:
+    return f"{'R2B' if zoom == 0 else 'r'}{LEVELS[0] + zoom}"
+
+
 def _levels(values: dict) -> str:
-    return " ".join(f"{'R2B' if z == 0 else 'r'}{LEVELS[0] + z}={v:.3f}" for z, v in values.items())
+    return " ".join(f"{_name(z)}={v:.3f}" for z, v in values.items())
 
 
 # ----------------------------------------------------------------------------
@@ -211,7 +217,7 @@ def sample_step():
 
     if stats:
         comin.print_info(
-            f"step={State.step} {scores}"
+            f"step={State.step} {scores}drop={'-' if stats['dropped'] is None else _name(stats['dropped'])} "
             f"recon[{_levels(stats['recon'])}] incre[{_levels(stats['incre'])}] "
             f"oracle[{_levels(stats['oracle'])}] grad_norm[recon={stats['grad_norm']['recon']:.2f} "
             f"forecast={stats['grad_norm']['forecast']:.2f}] train_s={time.perf_counter() - start:.2f} "
