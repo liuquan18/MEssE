@@ -11,7 +11,8 @@ forecaster plugin (fieldspace_RF_plugin.py) that gives one panel per model:
 * Forecast error: ``fc_rmse`` vs ``persistence`` in the variable's units.
 
 Older plugins' ``loss=`` lines still show in the reconstructor panel. Each
-panel has checkboxes to choose its curves and a log/linear switch.
+panel has checkboxes to choose its curves and a log/linear switch; a
+sample-step window (from/to) limits all panels to part of the run.
 
     bash scripts/monitor.sh LOG_FILE PORT
 """
@@ -65,6 +66,8 @@ HTML = """<!DOCTYPE html>
   h3 { font-size: 1em; color: #666; }
   #stats { font-size: 0.82em; color: #999; margin-bottom: 12px; }
   #controls { font-size: 0.85em; margin-bottom: 14px; }
+  #controls input { font: inherit; width: 7em; }
+  #controls button { font: inherit; padding: 0 6px; cursor: pointer; }
   .panel { max-width: 1100px; margin-bottom: 26px; }
   .panel h4 { font-size: 0.95em; margin-bottom: 2px; }
   .panel p { font-size: 0.78em; color: #888; margin-bottom: 6px; }
@@ -80,7 +83,10 @@ HTML = """<!DOCTYPE html>
 <div id="header"><span id="logo">MEssE</span><h3>{{ job_id }}</h3></div>
 <div id="stats">Loading&hellip;</div>
 <div id="controls">smoothing (running mean over steps):
-  <select id="smooth"><option>1</option><option selected>10</option><option>50</option></select></div>
+  <select id="smooth"><option>1</option><option selected>10</option><option>50</option></select>
+  &nbsp;&nbsp;sample steps from <input id="step-min" type="number" min="0" placeholder="first">
+  to <input id="step-max" type="number" min="0" placeholder="last">
+  <button id="step-all">whole run</button></div>
 
 <div class="panel"><h4>Reconstructor loss</h4>
   <p>Per level: MSE / mean square of that level's target. 0 = perfect, 1 = outputs nothing.</p>
@@ -138,6 +144,24 @@ function style(name, names) {
 
 function redraw() { Object.keys(PANELS).forEach(draw); }
 
+// Sample-step window; an empty box means no limit. Kept across reloads.
+const stepBox = { min: document.getElementById("step-min"), max: document.getElementById("step-max") };
+const savedWindow = stored("messe-window", {});
+Object.entries(stepBox).forEach(([k, box]) => {
+  box.value = savedWindow[k] ?? "";
+  box.onchange = () => { store("messe-window", { min: stepBox.min.value, max: stepBox.max.value }); redraw(); };
+});
+document.getElementById("step-all").onclick = () => {
+  stepBox.min.value = stepBox.max.value = "";
+  store("messe-window", {});
+  redraw();
+};
+function inWindow(step) {
+  const lo = stepBox.min.value === "" ? -Infinity : Number(stepBox.min.value);
+  const hi = stepBox.max.value === "" ? Infinity : Number(stepBox.max.value);
+  return step >= lo && step <= hi;
+}
+
 function setHidden(names, hide) {
   names.forEach(n => hide ? hidden.add(n) : hidden.delete(n));
   store("messe-hidden", [...hidden]);
@@ -178,12 +202,13 @@ function draw(id) {
   const n = parseInt(document.getElementById("smooth").value);
   const datasets = names.map(name => ({
     label: name,
-    data: smooth(points.map(p => p.values[name] ?? null), n).map((y, i) => ({ x: points[i].step, y })),
+    data: smooth(points.map(p => p.values[name] ?? null), n)
+      .map((y, i) => ({ x: points[i].step, y })).filter(d => inWindow(d.x)),
     hidden: hidden.has(name),
     pointRadius: 0, tension: 0, ...style(name, names),
   }));
   if (panel.one && names.length) {
-    datasets.push({ label: "persistence (1)", data: points.map(p => ({ x: p.step, y: 1 })),
+    datasets.push({ label: "persistence (1)", data: points.filter(p => inWindow(p.step)).map(p => ({ x: p.step, y: 1 })),
                     borderColor: "#bbb", borderWidth: 1, pointRadius: 0 });
   }
   const yType = logScale[id] ? "logarithmic" : "linear";
@@ -231,124 +256,6 @@ async function load() {
 }
 
 document.getElementById("smooth").onchange = redraw;
-load();
-setInterval(() => { if (--countdown <= 0) { countdown = 5; load(); } }, 1000);
-</script>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: monospace; background: #fff; color: #333; padding: 20px; }
-  #header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 6px; }
-  #logo { font-size: 1.6em; font-weight: bold; color: #6ab0d4; letter-spacing: 1px; }
-  h3 { font-size: 1em; color: #666; }
-  #stats { font-size: 0.82em; color: #999; margin-bottom: 12px; }
-  #controls { font-size: 0.85em; margin-bottom: 14px; }
-  .panel { max-width: 1100px; margin-bottom: 26px; }
-  .panel h4 { font-size: 0.95em; margin-bottom: 2px; }
-  .panel p { font-size: 0.78em; color: #888; margin-bottom: 6px; }
-  .wrap { height: 340px; }
-  #err { color: #c33; font-size: 0.85em; margin-top: 10px; }
-</style>
-</head>
-<body>
-<div id="header"><span id="logo">MEssE</span><h3>{{ job_id }}</h3></div>
-<div id="stats">Loading&hellip;</div>
-<div id="controls">smoothing (running mean over steps):
-  <select id="smooth"><option>1</option><option selected>10</option><option>50</option></select></div>
-
-<div class="panel"><h4>Reconstructor loss</h4>
-  <p>Per level: MSE / mean square of that level's target. 0 = perfect, 1 = outputs nothing.</p>
-  <div class="wrap"><canvas id="recon"></canvas></div></div>
-<div class="panel"><h4>Forecaster loss</h4>
-  <p>Per level: increment MSE / mean square of the true increment (solid). 1 = persistence.
-     Dashed = oracle, the best any forecaster can reach through the frozen decoder.</p>
-  <div class="wrap"><canvas id="forecast"></canvas></div></div>
-<div class="panel"><h4>Forecast error of var_predict</h4>
-  <p>RMSE over one lead in the variable's units, model vs persistence.</p>
-  <div class="wrap"><canvas id="rmse"></canvas></div></div>
-<div id="err"></div>
-
-<script>
-const LEVEL_COLORS = ["#000000", "#1e88e5", "#fb8c00", "#43a047", "#8e24aa", "#e53935"];
-const PANELS = {
-  recon:    { match: n => n.startsWith("recon/") || n === "loss", log: true },
-  forecast: { match: n => n.startsWith("incre/") || n.startsWith("oracle/"), log: false, one: true },
-  rmse:     { match: n => n === "fc_rmse" || n === "persistence", log: false },
-};
-const charts = {};
-let points = [];
-let countdown = 5;
-
-function smooth(ys, n) {
-  return ys.map((_, i) => {
-    const w = ys.slice(Math.max(0, i - n + 1), i + 1).filter(v => v !== null);
-    return w.length ? w.reduce((a, b) => a + b, 0) / w.length : null;
-  });
-}
-
-function style(name, names) {
-  const [group, key] = name.includes("/") ? name.split("/") : [name, name];
-  const keys = [...new Set(names.map(n => n.split("/").pop()))];
-  const fixed = { fc_rmse: "#1e88e5", persistence: "#e53935", loss: "#000000" };
-  return {
-    borderColor: fixed[name] || LEVEL_COLORS[keys.indexOf(key) % LEVEL_COLORS.length],
-    borderDash: group === "oracle" ? [6, 4] : [],
-    borderWidth: group === "oracle" ? 1.5 : 2,
-  };
-}
-
-function draw(id) {
-  const panel = PANELS[id];
-  const names = [...new Set(points.flatMap(p => Object.keys(p.values)))].filter(panel.match).sort();
-  const n = parseInt(document.getElementById("smooth").value);
-  const datasets = names.map(name => ({
-    label: name,
-    data: smooth(points.map(p => p.values[name] ?? null), n).map((y, i) => ({ x: points[i].step, y })),
-    pointRadius: 0, tension: 0, ...style(name, names),
-  }));
-  if (panel.one && names.length) {
-    datasets.push({ label: "persistence (1)", data: points.map(p => ({ x: p.step, y: 1 })),
-                    borderColor: "#bbb", borderWidth: 1, pointRadius: 0 });
-  }
-  if (charts[id]) {
-    charts[id].data.datasets = datasets;
-    charts[id].update("none");
-    return;
-  }
-  charts[id] = new Chart(document.getElementById(id), {
-    type: "line",
-    data: { datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: false, parsing: true,
-      interaction: { mode: "nearest", axis: "x", intersect: false },
-      plugins: { tooltip: { callbacks: {
-        title: items => {
-          const p = points.find(q => q.step === items[0].raw.x);
-          return "step " + items[0].raw.x + (p && p.time ? "  ·  " + p.time : "");
-        },
-        label: item => item.dataset.label + ": " + (item.raw.y === null ? "-" : item.raw.y.toPrecision(4)),
-      } } },
-      scales: {
-        x: { type: "linear", title: { display: true, text: "sample step" }, grid: { color: "#eee" } },
-        y: { type: panel.log ? "logarithmic" : "linear", grid: { color: "#eee" } },
-      },
-    },
-  });
-}
-
-async function load() {
-  const resp = await fetch("/data").catch(() => null);
-  if (!resp) return;
-  const data = await resp.json();
-  document.getElementById("err").textContent = data.error || "";
-  points = data.points || [];
-  const last = points[points.length - 1];
-  document.getElementById("stats").textContent = last
-    ? points.length + " steps | last step " + last.step + " | model time " + (last.time || "?")
-    : "No training lines yet.";
-  Object.keys(PANELS).forEach(draw);
-}
-
-document.getElementById("smooth").onchange = () => Object.keys(PANELS).forEach(draw);
 load();
 setInterval(() => { if (--countdown <= 0) { countdown = 5; load(); } }, 1000);
 </script>
