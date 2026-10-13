@@ -57,7 +57,7 @@ def test_history_fills_before_training_and_forecasting():
         assert trainer.train_step(_field(k), T0 + k * DT) == {}
     assert trainer.predict_increment(T0 + N_HISTORY * DT) is not None
     stats = trainer.train_step(_field(N_HISTORY), T0 + N_HISTORY * DT)
-    assert set(stats) == {"recon", "incre", "oracle", "grad_norm", "dropped"}
+    assert set(stats) == {"loss", "recon", "incre", "oracle", "persist_mse", "state_ms", "grad_norm", "dropped"}
     assert stats["dropped"] is None
     assert sorted(stats["recon"]) == sorted(stats["incre"]) == sorted(stats["oracle"]) == [0, 2, 3, 4]
 
@@ -71,14 +71,23 @@ def test_untrained_forecast_is_persistence():
     assert increment.abs().max() < 1e-4
 
 
-def test_first_increment_loss_of_persistence_is_one_per_level():
-    """Each level's loss is divided by the running mean square of its target,
-    so on the first update a zero increment scores exactly 1 per level."""
+def test_untrained_increment_loss_is_the_persistence_mse():
+    """An untrained forecaster forecasts zero change, so its increment loss
+    per level is the logged persistence reference."""
     trainer = _trainer()
     for k in range(N_HISTORY + 1):
         stats = trainer.train_step(_field(k), T0 + k * DT)
     for zoom, value in stats["incre"].items():
-        assert value == pytest.approx(1.0, abs=1e-3), zoom
+        assert value == pytest.approx(stats["persist_mse"][zoom], rel=1e-3), zoom
+
+
+def test_logged_parts_are_the_trained_loss():
+    """The log carries the unscaled per-level MSEs that are trained on: their
+    sum is the trained total."""
+    trainer = _trainer()
+    for k in range(N_HISTORY + 1):
+        stats = trainer.train_step(_field(k), T0 + k * DT)
+    assert stats["loss"] == pytest.approx(sum(stats["recon"].values()) + sum(stats["incre"].values()), rel=1e-5)
 
 
 def test_backbone_is_not_compressed_so_its_oracle_is_exact():

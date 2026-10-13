@@ -57,7 +57,7 @@ import xarray as xr
 
 from fieldspacenn.src.modules.grids.grid_utils import icon_neighbor_cell_index_to_adjc
 
-# Callers (fieldspace_plugin.py, and MEssE/tests/conftest.py for unit tests)
+# Callers (decomposition_probe_plugin.py, and MEssE/tests/conftest.py for unit tests)
 # already put the project root on sys.path before importing this module --
 # see their own _PLUGIN_DIR/_PROJECT_ROOT bootstrap -- so a plain dotted
 # import is safe here without repeating that bootstrap (same approach
