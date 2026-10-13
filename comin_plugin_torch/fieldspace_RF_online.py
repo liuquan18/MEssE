@@ -8,9 +8,12 @@ run; zoom ``z`` is ``level - levels[0]``. A field is split into the backbone
 mean and one zero-mean residual per finer level with FieldSpaceNN's `to_zoom`
 and `encode_zooms`, and summed back with `decode_zooms`. Every loss below is
 computed on these levels with FieldSpaceNN's `MGMultiLoss`, one MSE per level.
-Each level's MSE is divided by the running mean square of its own target, so
-the small high-resolution residuals count as much as the backbone. The
-increment loss of a level then reads as 1 - (skill against persistence).
+Both models are trained on the plain loss (MSE weight 1 per level, as in
+FieldSpaceNN's configs): the whole-field MSE, so each level counts by its
+share of the variance. Logged per step, unscaled: ``loss`` (the trained total),
+the per-level parts (``recon``, ``incre``), ``oracle``, and the references
+``persist_mse`` (per-level mean square of x_t - x_{t-1}, the MSE of
+persistence) and ``state_ms`` (of x_t). Ratios are left to the monitor.
 
 RECONSTRUCTOR
     x_t -> encoder -> c_t -> decoder -> x̂_t, an `MG_AutoEncoder` with the
@@ -325,27 +328,21 @@ class OnlineReconstructorForecaster:
             ]
         )
         self.level_loss = MGMultiLoss({str(z): {"MSE_loss": 1.0} for z in self.model.zooms})
-        self._mean_square: Dict[str, Levels] = {"recon": {}, "incre": {}}
-        self._n_targets = 0
         self.history = deque(maxlen=n_history)  # (seconds, levels, frozen latent) per sample step
         # Probability per residual zoom (levels[1:]); one generator per rank.
         self.forecast_p_drop = dict(zip(self.model.zooms[1:], forecast_p_drop))
         self._rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
 
-    def _loss(self, name: str, output: Levels, target: Levels):
-        """Sum over levels of MSE / running mean square of the target, and the
-        per-level values. MGMultiLoss's per-level MSE is a mean over that
-        level's cells."""
-        scale = {z: self._mean_square[name][z].rsqrt() for z in target}
-        loss, parts = self.level_loss(
-            {z: output[z] * scale[z] for z in target}, {z: target[z] * scale[z] for z in target}
-        )
-        return loss, {z: parts[f"level{z}_MSE_loss"] for z in target}
+    def _loss(self, output: Levels, target: Levels):
+        """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
+        whole-field MSE) and its per-level parts, which are what is logged."""
+        total, parts = self.level_loss(output, target)
+        return total, {z: float(parts[f"level{z}_MSE_loss"]) for z in target}
 
-    def _update_mean_square(self, name: str, target: Levels):
-        for z, t in target.items():
-            old = self._mean_square[name].get(z, t.square().mean())
-            self._mean_square[name][z] = old + (t.square().mean() - old) / self._n_targets
+    @staticmethod
+    def _mean_square(levels: Levels) -> Dict[int, float]:
+        """Per-level mean square: the MSE of predicting zero for ``levels``."""
+        return {z: float(t.square().mean()) for z, t in levels.items()}
 
     def _history(self):
         """Cached frozen latents stacked on the time axis, oldest first, and
@@ -372,11 +369,8 @@ class OnlineReconstructorForecaster:
         history, history_seconds = self._history()
         prev_seconds, prev_levels, prev_latent = self.history[-1]
         increment = {z: levels[z] - prev_levels[z] for z in levels}
-        self._n_targets += 1
-        self._update_mean_square("recon", levels)
-        self._update_mean_square("incre", increment)
 
-        stats = {}
+        stats = {"persist_mse": self._mean_square(increment), "state_ms": self._mean_square(levels)}
         coarse, stats["dropped"] = drop_levels(prev_levels, self.forecast_p_drop, self._rng)
         if stats["dropped"] is not None:
             with torch.no_grad():
@@ -386,12 +380,14 @@ class OnlineReconstructorForecaster:
         with torch.no_grad():
             prev = self.model.decode_frozen(prev_latent, prev_seconds)
             oracle = self.model.decode_frozen(latent, seconds)
-            _, stats["oracle"] = self._loss("incre", {z: oracle[z] - prev[z] for z in levels}, increment)
-        loss_recon, stats["recon"] = self._loss("recon", recon, levels)
-        loss_incre, stats["incre"] = self._loss("incre", {z: forecast[z] - prev[z] for z in levels}, increment)
+            _, stats["oracle"] = self._loss({z: oracle[z] - prev[z] for z in levels}, increment)
+        loss_recon, stats["recon"] = self._loss(recon, levels)
+        loss_incre, stats["incre"] = self._loss({z: forecast[z] - prev[z] for z in levels}, increment)
+        loss = loss_recon + loss_incre
+        stats["loss"] = float(loss)
 
         self.optimizer.zero_grad(set_to_none=True)
-        (loss_recon + loss_incre).backward()
+        loss.backward()
         # Gradients are averaged over ranks, so all ranks take the same branch.
         norms = [nn.utils.clip_grad_norm_(group["params"], self.grad_clip) for group in self.optimizer.param_groups]
         if all(torch.isfinite(norm) for norm in norms):

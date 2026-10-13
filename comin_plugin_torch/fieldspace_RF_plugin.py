@@ -159,7 +159,7 @@ def _name(zoom: int) -> str:
 
 
 def _levels(values: dict) -> str:
-    return " ".join(f"{_name(z)}={v:.3f}" for z, v in values.items())
+    return " ".join(f"{_name(z)}={v:.4g}" for z, v in values.items())
 
 
 # ----------------------------------------------------------------------------
@@ -218,8 +218,9 @@ def sample_step():
     if stats:
         comin.print_info(
             f"step={State.step} {scores}drop={'-' if stats['dropped'] is None else _name(stats['dropped'])} "
-            f"recon[{_levels(stats['recon'])}] incre[{_levels(stats['incre'])}] "
-            f"oracle[{_levels(stats['oracle'])}] grad_norm[recon={stats['grad_norm']['recon']:.2f} "
+            f"loss={stats['loss']:.4g} recon[{_levels(stats['recon'])}] incre[{_levels(stats['incre'])}] "
+            f"oracle[{_levels(stats['oracle'])}] persist_mse[{_levels(stats['persist_mse'])}] "
+            f"state_ms[{_levels(stats['state_ms'])}] grad_norm[recon={stats['grad_norm']['recon']:.2f} "
             f"forecast={stats['grad_norm']['forecast']:.2f}] train_s={time.perf_counter() - start:.2f} "
             f"torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
         )
