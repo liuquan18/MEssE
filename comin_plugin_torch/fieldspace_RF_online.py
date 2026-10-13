@@ -6,26 +6,22 @@ Levels
 ``levels`` are R2B levels, backbone first, e.g. ``[4, 6, 7, 8]`` on an R2B8
 run; zoom ``z`` is ``level - levels[0]``. A field is split into the backbone
 mean and one zero-mean residual per finer level with FieldSpaceNN's `to_zoom`
-and `encode_zooms`, and summed back with `decode_zooms`. Every loss below is
-computed on these levels with FieldSpaceNN's `MGMultiLoss`, one MSE per level.
-Both models are trained on the plain loss (MSE weight 1 per level, as in
-FieldSpaceNN's configs): the whole-field MSE, so each level counts by its
-share of the variance. Logged per step, unscaled: ``loss`` (the trained total),
-the per-level parts (``recon``, ``incre``), ``oracle``, and the references
-``persist_mse`` (per-level mean square of x_t - x_{t-1}, the MSE of
-persistence) and ``state_ms`` (of x_t). Ratios are left to the monitor.
+and `encode_zooms`, and summed back with `decode_zooms`. Both losses below are
+FieldSpaceNN's `MGMultiLoss` on these levels, one MSE per level with weight 1
+(as in FieldSpaceNN's configs): the whole-field MSE, so each level counts by
+its share of the variance.
 
 RECONSTRUCTOR
     x_t -> encoder -> c_t -> decoder -> x̂_t, an `MG_AutoEncoder` with the
     staged compression of `.claude/compression.png`: each residual level finer
-    than ``latent_level`` is folded into the next coarser one. Trained at every
-    sample step with ``L_recon`` = per-level MSE(x̂_t, x_t).
+    than ``latent_level`` is folded into the next coarser one. Trained with
+    ``L_recon`` = per-level MSE(x̂_t, x_t).
 
 FORECASTOR
     c_{t-H} .. c_{t-1} -> MG transformer -> ĉ_t -> frozen decoder. Trained with
     ``L_incre`` = per-level MSE(D(ĉ_t) - D(c_{t-1}), x_t - x_{t-1}): the
     increment from the most recent state, which is also what is written to
-    ICON.
+    ICON. Averaged over a batch of windows (latent replay, below).
 
 The two are trained independently: the forecaster's loss reaches only the
 forecaster. The frozen encoder/decoder is an exponential moving average of the
@@ -34,41 +30,31 @@ history c_{t-H} .. c_{t-1} and decodes the forecast, so the forecaster sees a
 latent space that moves slowly and consistently while the reconstructor keeps
 learning.
 
-At sample step t (history full)
--------------------------------
-1. ``L_recon`` on x_t and ``L_incre`` on the forecast of x_t (and of the
-   replayed windows, below), one backward, one optimizer step (separate
-   learning rates and gradient clipping per model), then the EMA update.
-2. ``oracle``: ``L_incre`` if the forecaster had predicted ĉ_t = E(x_t)
-   exactly, i.e. how much of the change the frozen autoencoder can represent
-   at all. It bounds what the forecaster can reach.
-3. c_t = E_frozen(x_t) is cached, the window is stored for replay, and the
-   plugin asks for the increment to t+1.
-
-Latent replay (forecaster only)
--------------------------------
-Against forgetting earlier weather while training on a correlated stream. Each
-training window, i.e. the frozen latents c_{t-H} .. c_{t-1}, the true increment
-x_t - x_{t-1} and the valid times, is kept in a buffer of the last
-``replay_size`` windows. Every update draws ``replay_batch`` of them at random
-and forecasts them in one batch with the live window. The forecaster loss is
-the same ``L_incre`` for every window, averaged over the batch, so each
-window's total weight stays about the same as without replay. The stored
+Latent replay
+-------------
+Against forgetting earlier weather while training on a correlated stream. A
+training window is the frozen latents c_{t-H} .. c_{t-1}, the true increment
+x_t - x_{t-1} and their valid times. The last ``replay_size`` windows are
+kept; every update draws ``replay_batch`` of them at random, and the
+forecaster is trained on these plus the new window as one batch. The stored
 latents are not re-encoded: the buffer length bounds how much older the
 encoder that made them is.
 
-Residual dropout (forecaster only)
-----------------------------------
-With probability ``forecast_p_drop[level]`` per sample step, the newest history
-latent is replaced by E_frozen of a coarsened x_{t-1}: that residual level and
-every finer one set to 0 (FieldSpaceNN's per-zoom ``p_drop``, see
-`datasets_base.py`). Target and base stay the full x_t - x_{t-1}, so the
-forecaster has to rebuild the newest fine structure from the older history
-and the coarse state instead of copying it. Prediction is never dropped.
+At sample step t (history full)
+-------------------------------
+1. ``L_recon`` on x_t plus ``L_incre`` on the batch, one backward, one
+   optimizer step (separate learning rates and gradient clipping per model),
+   then the EMA update.
+2. The new window is stored for replay, c_t = E_frozen(x_t) is cached, and the
+   plugin asks for the increment to t+1.
+3. Returned for the log, per level: both losses and their references,
+   ``state_ms`` (mean square of x_t, the loss of outputting zero) and
+   ``persist_mse`` (mean square of the batch's increments, the loss of
+   persistence).
 """
 
 from collections import deque
-from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Sequence
 
 import torch
 import torch.distributed as dist
@@ -83,7 +69,7 @@ from fieldspacenn.src.modules.field_space.field_space_layer import FieldSpaceLay
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms, encode_zooms, to_zoom
 from fieldspacenn.src.utils.losses import MGMultiLoss
 
-# {zoom: (b=1, v=1, t, n_zoom, d=nlev, f)}, FieldSpaceNN's layout.
+# {zoom: (b, v=1, t, n_zoom, d=nlev, f)}, FieldSpaceNN's layout.
 Levels = Dict[int, torch.Tensor]
 
 # TimeEmbedder periods in days, as in FieldSpaceNN's configs/embedding/default.yaml.
@@ -96,22 +82,8 @@ def _sample_configs(n_past: int, n_future: int, zooms: Sequence[int]) -> Dict[in
     return {zoom: dict(conf) for zoom in zooms}
 
 
-def drop_levels(levels: Levels, p_drop: Dict[int, float], generator: torch.Generator) -> Tuple[Levels, Optional[int]]:
-    """FieldSpaceNN's per-zoom dropout (`datasets_base.py`, ``p_drop``): the
-    residual zooms are drawn coarse to fine, and the first one drawn is set to
-    0 with every finer one, so the field becomes the upsampled coarser field.
-    The backbone is never dropped. Returns the new levels and the dropped zoom."""
-    dropped = None
-    for z in sorted(levels)[1:]:
-        if dropped is None and p_drop.get(z, 0.0) > 0 and torch.rand((), generator=generator, device="cpu") < p_drop[z]:
-            dropped = z
-    if dropped is None:
-        return levels, None
-    return {z: torch.zeros_like(t) if z >= dropped else t for z, t in levels.items()}, dropped
-
-
 class Window(NamedTuple):
-    """One forecaster sample, batch size 1."""
+    """One forecaster training sample, batch size 1."""
 
     history: Levels  # frozen latents c_{t-H} .. c_{t-1}
     increment: Levels  # x_t - x_{t-1}, the target
@@ -126,11 +98,6 @@ def stack(windows: Sequence[Window]) -> Window:
         {z: torch.cat([w.increment[z] for w in windows]) for z in windows[0].increment},
         [w.seconds for w in windows],
     )
-
-
-def _split(levels: Levels) -> Tuple[Levels, Levels]:
-    """Batch levels -> (live window, replayed windows)."""
-    return {z: t[:1] for z, t in levels.items()}, {z: t[1:] for z, t in levels.items()}
 
 
 class LatentReplay:
@@ -365,7 +332,6 @@ class OnlineReconstructorForecaster:
         n_history: int = 4,
         lr_recon: float = 2e-4,
         lr_forecast: float = 2e-4,
-        forecast_p_drop: Sequence[float] = (),
         replay_size: int = 0,
         replay_batch: int = 10,
         grad_clip: float = 1.0,
@@ -391,10 +357,8 @@ class OnlineReconstructorForecaster:
         )
         self.level_loss = MGMultiLoss({str(z): {"MSE_loss": 1.0} for z in self.model.zooms})
         self.history = deque(maxlen=n_history)  # (seconds, levels, frozen latent) per sample step
-        # Probability per residual zoom (levels[1:]); one generator per rank.
-        self.forecast_p_drop = dict(zip(self.model.zooms[1:], forecast_p_drop))
-        self._rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
-        self.replay = LatentReplay(replay_size, replay_batch, self._rng)
+        rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
+        self.replay = LatentReplay(replay_size, replay_batch, rng)
 
     def _loss(self, output: Levels, target: Levels):
         """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
@@ -416,7 +380,8 @@ class OnlineReconstructorForecaster:
     def train_step(self, x: torch.Tensor, seconds: float) -> Dict:
         """Train on the normalized patch ``x`` (n_fine, nlev) valid at
         ``seconds`` once the history is full, then cache its frozen latent.
-        Returns the per-level losses, empty while the history fills."""
+        Returns the per-level losses for the log, empty while the history
+        fills."""
         stats = {}
         self.model.train()
         with torch.device(self.device):
@@ -424,53 +389,39 @@ class OnlineReconstructorForecaster:
             with torch.no_grad():
                 latent = self.model.encode_frozen(levels, seconds)
             if len(self.history) == self.history.maxlen:
-                stats = self._update(levels, latent, seconds)
+                stats = self._update(levels, seconds)
             self.history.append((seconds, levels, latent))
         return stats
 
-    def _update(self, levels: Levels, latent: Levels, seconds: float) -> Dict:
+    def _update(self, levels: Levels, seconds: float) -> Dict:
+        # The new window ends at x_t; the batch adds randomly drawn stored ones.
         history, history_seconds = self._history()
-        prev_seconds, prev_levels, _ = self.history[-1]
-        live = Window(history, {z: levels[z] - prev_levels[z] for z in levels}, history_seconds + [seconds])
-        replayed = self.replay.sample()
-        batch = stack([live] + replayed)  # the live window is window 0
+        prev_levels = self.history[-1][1]
+        window = Window(history, {z: levels[z] - prev_levels[z] for z in levels}, history_seconds + [seconds])
+        batch = stack([window] + self.replay.sample())
 
-        stats = {"persist_mse": self._mean_square(live.increment), "state_ms": self._mean_square(levels)}
-        inputs = batch.history
-        coarse, stats["dropped"] = drop_levels(prev_levels, self.forecast_p_drop, self._rng)
-        if stats["dropped"] is not None:  # only the live input; the base and the stored window stay clean
-            with torch.no_grad():
-                coarse = self.model.encode_frozen(coarse, prev_seconds)
-            dropped = {z: torch.cat([h[:, :, :-1], coarse[z]], dim=2) for z, h in history.items()}
-            inputs = stack([live._replace(history=dropped)] + replayed).history
-        recon, forecast = self.ddp_model(levels, seconds, inputs, batch.seconds)
-        with torch.no_grad():
-            # D(c_{t-1}) per window, from the newest history latent.
+        recon, forecast = self.ddp_model(levels, seconds, batch.history, batch.seconds)
+        with torch.no_grad():  # D(c_{t-1}) of every window, from its newest history latent
             base = self.model.decode_frozen({z: h[:, :, -1:] for z, h in batch.history.items()}, [s[-2] for s in batch.seconds])
-            oracle = self.model.decode_frozen(latent, [seconds])
-            _, stats["oracle"] = self._loss({z: oracle[z] - base[z][:1] for z in levels}, live.increment)
-        loss_recon, stats["recon"] = self._loss(recon, levels)
-        incre = {z: forecast[z] - base[z] for z in levels}
-        loss_incre, _ = self._loss(incre, batch.increment)  # mean over the windows
-        with torch.no_grad():
-            (live_incre, replay_incre), (_, replay_target) = _split(incre), _split(batch.increment)
-            _, stats["incre"] = self._loss(live_incre, live.increment)
-            if replayed:
-                _, stats["replay_incre"] = self._loss(replay_incre, replay_target)
-                stats["replay_persist_mse"] = self._mean_square(replay_target)
-        loss = loss_recon + loss_incre
-        stats["loss"] = float(loss)
+        loss_recon, recon_parts = self._loss(recon, levels)
+        loss_incre, incre_parts = self._loss({z: forecast[z] - base[z] for z in levels}, batch.increment)
 
         self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        (loss_recon + loss_incre).backward()
         # Gradients are averaged over ranks, so all ranks take the same branch.
         norms = [nn.utils.clip_grad_norm_(group["params"], self.grad_clip) for group in self.optimizer.param_groups]
         if all(torch.isfinite(norm) for norm in norms):
             self.optimizer.step()
             self.model.frozen.update_parameters(self.model.reconstructor)
-        stats["grad_norm"] = {"recon": float(norms[0]), "forecast": float(norms[1])}
-        self.replay.add(live)
-        return stats
+        self.replay.add(window)
+
+        # Each loss per level, with the loss of outputting zero (x_t) or of persistence (the batch's increments).
+        return {
+            "recon": recon_parts,
+            "state_ms": self._mean_square(levels),
+            "incre": incre_parts,
+            "persist_mse": self._mean_square(batch.increment),
+        }
 
     @torch.no_grad()
     def predict_increment(self, seconds: float):

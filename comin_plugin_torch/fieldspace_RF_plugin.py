@@ -11,12 +11,14 @@ both models and forecasts the next sample step.
 ``var_predict`` at model time t holds the forecast valid at t, made one sample
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
-units) and prints the per-level losses of both models.
+units) and prints, per level, the loss each model is trained on with its
+reference: ``recon`` vs ``state_ms`` (outputting zero) and ``incre`` vs
+``persist_mse`` (persistence), the latter over the forecaster's whole batch.
 
-The forecaster also trains on ``MESSE_AE_REPLAY_BATCH`` windows drawn from the
-last ``MESSE_AE_REPLAY_SIZE`` sample steps (latent replay, 0 = off), logged as
-``replay_incre`` against ``replay_persist_mse``. The replay buffer is not
-checkpointed: after a restart it fills again.
+The forecaster's batch is the newest window plus ``MESSE_AE_REPLAY_BATCH``
+windows drawn from the last ``MESSE_AE_REPLAY_SIZE`` sample steps (latent
+replay, size 0 = off). The replay buffer is not checkpointed: after a restart
+it fills again.
 """
 
 import os
@@ -69,8 +71,6 @@ MODEL = dict(
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
-    # Residual dropout of the newest history state, one probability per residual level (LEVELS[1:]).
-    forecast_p_drop=[float(p) for p in env("MESSE_AE_FORECAST_P_DROP", "").split(",") if p],
     # Latent replay for the forecaster: windows kept (144 = one day of 600 s samples) and drawn per update.
     replay_size=int(env("MESSE_AE_REPLAY_SIZE", "144")),
     replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),
@@ -203,9 +203,14 @@ def sample_step():
         State.normalizer = RunningMeanStd(patch.shape, int(DRY_RUN_SECONDS // State.sample_seconds), DEVICE)
     if not State.normalizer.update(patch):
         return
-    if State.trainer is None:
-        State.trainer = _trainer(nlev=patch.shape[1])
     std = State.normalizer.stats.std
+    if State.trainer is None:
+        comin.print_info(
+            f"dry run done at {comin.current_get_datetime()}: per-cell mean/std of {VARIABLE} from "
+            f"{State.normalizer.count} samples (rank 0 std {float(std.min()):.3g}-{float(std.max()):.3g}); "
+            f"training starts once {MODEL['n_history']} sample steps of history are cached"
+        )
+        State.trainer = _trainer(nlev=patch.shape[1])
 
     # Score and write the forecast made one sample step ago, which is valid now.
     scores = ""
@@ -224,19 +229,16 @@ def sample_step():
     State.prev_patch = patch
 
     if stats:
-        replay = "".join(f"{key}[{_levels(stats[key])}] " for key in ("replay_incre", "replay_persist_mse") if key in stats)
         comin.print_info(
-            f"step={State.step} {scores}drop={'-' if stats['dropped'] is None else _name(stats['dropped'])} "
-            f"loss={stats['loss']:.4g} recon[{_levels(stats['recon'])}] incre[{_levels(stats['incre'])}] "
-            f"oracle[{_levels(stats['oracle'])}] persist_mse[{_levels(stats['persist_mse'])}] {replay}"
-            f"state_ms[{_levels(stats['state_ms'])}] grad_norm[recon={stats['grad_norm']['recon']:.2f} "
-            f"forecast={stats['grad_norm']['forecast']:.2f}] train_s={time.perf_counter() - start:.2f} "
-            f"torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
+            f"step={State.step} {scores}recon[{_levels(stats['recon'])}] state_ms[{_levels(stats['state_ms'])}] "
+            f"incre[{_levels(stats['incre'])}] persist_mse[{_levels(stats['persist_mse'])}] "
+            f"train_s={time.perf_counter() - start:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
         )
     State.step += 1
     if State.step % max(1, int(SAVE_INTERVAL_SECONDS // State.sample_seconds)) == 0:
         norm = State.normalizer.stats
         save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, {"norm_mean": norm.mean, "norm_std": norm.std})
+        comin.print_info(f"checkpoint at step {State.step}, {comin.current_get_datetime()}: {CHECKPOINT_PATH}")
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)
