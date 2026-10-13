@@ -36,13 +36,26 @@ learning.
 
 At sample step t (history full)
 -------------------------------
-1. ``L_recon`` on x_t and ``L_incre`` on the forecast of x_t, one backward,
-   one optimizer step (separate learning rates and gradient clipping per
-   model), then the EMA update.
+1. ``L_recon`` on x_t and ``L_incre`` on the forecast of x_t (and of the
+   replayed windows, below), one backward, one optimizer step (separate
+   learning rates and gradient clipping per model), then the EMA update.
 2. ``oracle``: ``L_incre`` if the forecaster had predicted ĉ_t = E(x_t)
    exactly, i.e. how much of the change the frozen autoencoder can represent
    at all. It bounds what the forecaster can reach.
-3. c_t = E_frozen(x_t) is cached, and the plugin asks for the increment to t+1.
+3. c_t = E_frozen(x_t) is cached, the window is stored for replay, and the
+   plugin asks for the increment to t+1.
+
+Latent replay (forecaster only)
+-------------------------------
+Against forgetting earlier weather while training on a correlated stream. Each
+training window, i.e. the frozen latents c_{t-H} .. c_{t-1}, the true increment
+x_t - x_{t-1} and the valid times, is kept in a buffer of the last
+``replay_size`` windows. Every update draws ``replay_batch`` of them at random
+and forecasts them in one batch with the live window. The forecaster loss is
+the same ``L_incre`` for every window, averaged over the batch, so each
+window's total weight stays about the same as without replay. The stored
+latents are not re-encoded: the buffer length bounds how much older the
+encoder that made them is.
 
 Residual dropout (forecaster only)
 ----------------------------------
@@ -55,7 +68,7 @@ and the coarse state instead of copying it. Prediction is never dropped.
 """
 
 from collections import deque
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import torch
 import torch.distributed as dist
@@ -95,6 +108,49 @@ def drop_levels(levels: Levels, p_drop: Dict[int, float], generator: torch.Gener
     if dropped is None:
         return levels, None
     return {z: torch.zeros_like(t) if z >= dropped else t for z, t in levels.items()}, dropped
+
+
+class Window(NamedTuple):
+    """One forecaster sample, batch size 1."""
+
+    history: Levels  # frozen latents c_{t-H} .. c_{t-1}
+    increment: Levels  # x_t - x_{t-1}, the target
+    seconds: List[float]  # valid times of the history, then of x_t
+
+
+def stack(windows: Sequence[Window]) -> Window:
+    """Windows concatenated on the batch axis; ``seconds`` becomes one row per
+    window."""
+    return Window(
+        {z: torch.cat([w.history[z] for w in windows]) for z in windows[0].history},
+        {z: torch.cat([w.increment[z] for w in windows]) for z in windows[0].increment},
+        [w.seconds for w in windows],
+    )
+
+
+def _split(levels: Levels) -> Tuple[Levels, Levels]:
+    """Batch levels -> (live window, replayed windows)."""
+    return {z: t[:1] for z, t in levels.items()}, {z: t[1:] for z, t in levels.items()}
+
+
+class LatentReplay:
+    """The last ``size`` training windows; :meth:`sample` draws up to
+    ``batch`` of them at random, without replacement. ``size=0`` turns replay
+    off."""
+
+    def __init__(self, size: int, batch: int, generator: torch.Generator):
+        self.windows = deque(maxlen=size)
+        self.batch, self._rng = batch, generator
+
+    def add(self, window: Window) -> None:
+        self.windows.append(window)
+
+    def sample(self) -> List[Window]:
+        n = min(self.batch, len(self.windows))
+        if n == 0:
+            return []
+        picks = torch.randperm(len(self.windows), generator=self._rng, device="cpu")[:n]
+        return [self.windows[i] for i in picks.tolist()]
 
 
 class _Blocks:
@@ -259,11 +315,11 @@ class ReconstructorForecaster(nn.Module):
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
         self.frozen.requires_grad_(False)
 
-    def emb(self, unix_seconds: Sequence[float]):
-        """Time embedding input for valid times along the time axis, on the
-        default device (the trainer sets it). A new dict every call:
-        FieldSpaceNN blocks add keys to it."""
-        days = torch.tensor([[s / 86400.0 for s in unix_seconds]])
+    def emb(self, times: Sequence[Sequence[float]]):
+        """Time embedding input: one row of valid times (unix seconds) along
+        the time axis per batch sample, on the default device (the trainer
+        sets it). A new dict every call: FieldSpaceNN blocks add keys to it."""
+        days = torch.tensor([[s / 86400.0 for s in row] for row in times])
         return {"TimeEmbedder": {zoom: days for zoom in self.all_zooms}}
 
     def to_levels(self, x: torch.Tensor) -> Levels:
@@ -276,19 +332,23 @@ class ReconstructorForecaster(nn.Module):
         return decode_zooms(dict(levels), self.step, self.fine_zoom)[self.fine_zoom].reshape(-1, self.nlev)
 
     def encode_frozen(self, levels: Levels, seconds: float) -> Levels:
-        return self.frozen.module.encode(levels, self.emb([seconds]))
+        return self.frozen.module.encode(levels, self.emb([[seconds]]))
 
-    def decode_frozen(self, latent: Levels, seconds: float) -> Levels:
-        return self.frozen.module.decode(latent, self.emb([seconds]))
+    def decode_frozen(self, latent: Levels, seconds: Sequence[float]) -> Levels:
+        """Decode a batch of latents, one valid time per sample."""
+        return self.frozen.module.decode(latent, self.emb([[s] for s in seconds]))
 
-    def forecast(self, history: Levels, history_seconds: List[float], seconds: float) -> Levels:
-        return self.forecaster(history, self.emb(history_seconds + [seconds]))
+    def forecast(self, history: Levels, times: Sequence[Sequence[float]]) -> Levels:
+        """Latent forecast of a batch of histories; ``times`` has one row per
+        sample: the history's valid times, then the forecast's."""
+        return self.forecaster(history, self.emb(times))
 
-    def forward(self, levels: Levels, seconds: float, history: Levels, history_seconds: List[float]):
+    def forward(self, levels: Levels, seconds: float, history: Levels, times: Sequence[Sequence[float]]):
         """Training pass: the reconstruction of x_t and the frozen decode of the
-        forecast of x_t. One call, so DDP sees every trainable parameter once."""
-        recon = self.reconstructor.decode(self.reconstructor.encode(levels, self.emb([seconds])), self.emb([seconds]))
-        forecast = self.decode_frozen(self.forecast(history, history_seconds, seconds), seconds)
+        forecasts of a batch of windows. One call, so DDP sees every trainable
+        parameter once."""
+        recon = self.reconstructor.decode(self.reconstructor.encode(levels, self.emb([[seconds]])), self.emb([[seconds]]))
+        forecast = self.decode_frozen(self.forecast(history, times), [row[-1] for row in times])
         return recon, forecast
 
 
@@ -306,6 +366,8 @@ class OnlineReconstructorForecaster:
         lr_recon: float = 2e-4,
         lr_forecast: float = 2e-4,
         forecast_p_drop: Sequence[float] = (),
+        replay_size: int = 0,
+        replay_batch: int = 10,
         grad_clip: float = 1.0,
         device: torch.device = torch.device("cuda", 0),
         **model_kwargs,
@@ -332,6 +394,7 @@ class OnlineReconstructorForecaster:
         # Probability per residual zoom (levels[1:]); one generator per rank.
         self.forecast_p_drop = dict(zip(self.model.zooms[1:], forecast_p_drop))
         self._rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
+        self.replay = LatentReplay(replay_size, replay_batch, self._rng)
 
     def _loss(self, output: Levels, target: Levels):
         """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
@@ -367,22 +430,34 @@ class OnlineReconstructorForecaster:
 
     def _update(self, levels: Levels, latent: Levels, seconds: float) -> Dict:
         history, history_seconds = self._history()
-        prev_seconds, prev_levels, prev_latent = self.history[-1]
-        increment = {z: levels[z] - prev_levels[z] for z in levels}
+        prev_seconds, prev_levels, _ = self.history[-1]
+        live = Window(history, {z: levels[z] - prev_levels[z] for z in levels}, history_seconds + [seconds])
+        replayed = self.replay.sample()
+        batch = stack([live] + replayed)  # the live window is window 0
 
-        stats = {"persist_mse": self._mean_square(increment), "state_ms": self._mean_square(levels)}
+        stats = {"persist_mse": self._mean_square(live.increment), "state_ms": self._mean_square(levels)}
+        inputs = batch.history
         coarse, stats["dropped"] = drop_levels(prev_levels, self.forecast_p_drop, self._rng)
-        if stats["dropped"] is not None:
+        if stats["dropped"] is not None:  # only the live input; the base and the stored window stay clean
             with torch.no_grad():
                 coarse = self.model.encode_frozen(coarse, prev_seconds)
-            history = {z: torch.cat([h[:, :, :-1], coarse[z]], dim=2) for z, h in history.items()}
-        recon, forecast = self.ddp_model(levels, seconds, history, history_seconds)
+            dropped = {z: torch.cat([h[:, :, :-1], coarse[z]], dim=2) for z, h in history.items()}
+            inputs = stack([live._replace(history=dropped)] + replayed).history
+        recon, forecast = self.ddp_model(levels, seconds, inputs, batch.seconds)
         with torch.no_grad():
-            prev = self.model.decode_frozen(prev_latent, prev_seconds)
-            oracle = self.model.decode_frozen(latent, seconds)
-            _, stats["oracle"] = self._loss({z: oracle[z] - prev[z] for z in levels}, increment)
+            # D(c_{t-1}) per window, from the newest history latent.
+            base = self.model.decode_frozen({z: h[:, :, -1:] for z, h in batch.history.items()}, [s[-2] for s in batch.seconds])
+            oracle = self.model.decode_frozen(latent, [seconds])
+            _, stats["oracle"] = self._loss({z: oracle[z] - base[z][:1] for z in levels}, live.increment)
         loss_recon, stats["recon"] = self._loss(recon, levels)
-        loss_incre, stats["incre"] = self._loss({z: forecast[z] - prev[z] for z in levels}, increment)
+        incre = {z: forecast[z] - base[z] for z in levels}
+        loss_incre, _ = self._loss(incre, batch.increment)  # mean over the windows
+        with torch.no_grad():
+            (live_incre, replay_incre), (_, replay_target) = _split(incre), _split(batch.increment)
+            _, stats["incre"] = self._loss(live_incre, live.increment)
+            if replayed:
+                _, stats["replay_incre"] = self._loss(replay_incre, replay_target)
+                stats["replay_persist_mse"] = self._mean_square(replay_target)
         loss = loss_recon + loss_incre
         stats["loss"] = float(loss)
 
@@ -394,6 +469,7 @@ class OnlineReconstructorForecaster:
             self.optimizer.step()
             self.model.frozen.update_parameters(self.model.reconstructor)
         stats["grad_norm"] = {"recon": float(norms[0]), "forecast": float(norms[1])}
+        self.replay.add(live)
         return stats
 
     @torch.no_grad()
@@ -407,6 +483,6 @@ class OnlineReconstructorForecaster:
         history, history_seconds = self._history()
         last_seconds, _, last_latent = self.history[-1]
         with torch.device(self.device):
-            forecast = self.model.decode_frozen(self.model.forecast(history, history_seconds, seconds), seconds)
-            last = self.model.decode_frozen(last_latent, last_seconds)
+            forecast = self.model.decode_frozen(self.model.forecast(history, [history_seconds + [seconds]]), [seconds])
+            last = self.model.decode_frozen(last_latent, [last_seconds])
             return self.model.to_field({z: forecast[z] - last[z] for z in forecast})

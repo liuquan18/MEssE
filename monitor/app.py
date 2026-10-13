@@ -10,6 +10,8 @@ forecaster plugin (fieldspace_RF_plugin.py) that gives one panel per model:
   trained, ``oracle/<level>`` (dashed), the best a forecast through the
   decoder could reach, and ``persist_mse/<level>`` (dotted, the MSE of
   persistence).
+* Forecaster replay: ``replay_incre/<level>``, the increment MSE of the
+  replayed windows, with ``replay_persist_mse/<level>`` (dotted).
 * Forecast error: ``fc_rmse`` vs ``persistence`` in the variable's units.
 
 The plugins log the trained losses unscaled; the "÷ reference" switch of a
@@ -102,6 +104,11 @@ HTML = """<!DOCTYPE html>
      dotted = persistence MSE. "÷ reference": 1 = persistence, 0 = perfect.</p>
   <div class="bar" id="forecast-bar"></div>
   <div class="wrap"><canvas id="forecast"></canvas></div></div>
+<div class="panel"><h4>Forecaster replay</h4>
+  <p>Per level: increment MSE of the replayed windows (solid); dotted = their persistence MSE.
+     "÷ reference": 1 = persistence, 0 = perfect. Rising while the live loss falls means forgetting.</p>
+  <div class="bar" id="replay-bar"></div>
+  <div class="wrap"><canvas id="replay"></canvas></div></div>
 <div class="panel"><h4>Forecast error of var_predict</h4>
   <p>RMSE over one lead in the variable's units, model vs persistence.</p>
   <div class="bar" id="rmse-bar"></div>
@@ -116,9 +123,11 @@ const PANELS = {
               ref: n => n.startsWith("recon/") ? "state_ms/" + n.split("/")[1] : null },
   forecast: { match: n => /^(incre|oracle|persist_mse)[/]/.test(n), log: false,
               ref: n => /^(incre|oracle)[/]/.test(n) ? "persist_mse/" + n.split("/")[1] : null },
+  replay:   { match: n => /^replay_(incre|persist_mse)[/]/.test(n), log: false,
+              ref: n => n.startsWith("replay_incre/") ? "replay_persist_mse/" + n.split("/")[1] : null },
   rmse:     { match: n => n === "fc_rmse" || n === "persistence", log: false },
 };
-const REFERENCE = /^(state_ms|persist_mse)[/]/;
+const REFERENCE = /^(state_ms|persist_mse|replay_persist_mse)[/]/;
 const charts = {};
 let points = [];
 let countdown = 5;

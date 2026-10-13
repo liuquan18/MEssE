@@ -12,6 +12,11 @@ both models and forecasts the next sample step.
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
 units) and prints the per-level losses of both models.
+
+The forecaster also trains on ``MESSE_AE_REPLAY_BATCH`` windows drawn from the
+last ``MESSE_AE_REPLAY_SIZE`` sample steps (latent replay, 0 = off), logged as
+``replay_incre`` against ``replay_persist_mse``. The replay buffer is not
+checkpointed: after a restart it fills again.
 """
 
 import os
@@ -66,6 +71,9 @@ MODEL = dict(
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
     # Residual dropout of the newest history state, one probability per residual level (LEVELS[1:]).
     forecast_p_drop=[float(p) for p in env("MESSE_AE_FORECAST_P_DROP", "").split(",") if p],
+    # Latent replay for the forecaster: windows kept (144 = one day of 600 s samples) and drawn per update.
+    replay_size=int(env("MESSE_AE_REPLAY_SIZE", "144")),
+    replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),
 )
 CHECKPOINT_PATH = os.path.join(os.getcwd(), "saved_models", "fieldspace_rf_online.pt")
 os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
@@ -216,10 +224,11 @@ def sample_step():
     State.prev_patch = patch
 
     if stats:
+        replay = "".join(f"{key}[{_levels(stats[key])}] " for key in ("replay_incre", "replay_persist_mse") if key in stats)
         comin.print_info(
             f"step={State.step} {scores}drop={'-' if stats['dropped'] is None else _name(stats['dropped'])} "
             f"loss={stats['loss']:.4g} recon[{_levels(stats['recon'])}] incre[{_levels(stats['incre'])}] "
-            f"oracle[{_levels(stats['oracle'])}] persist_mse[{_levels(stats['persist_mse'])}] "
+            f"oracle[{_levels(stats['oracle'])}] persist_mse[{_levels(stats['persist_mse'])}] {replay}"
             f"state_ms[{_levels(stats['state_ms'])}] grad_norm[recon={stats['grad_norm']['recon']:.2f} "
             f"forecast={stats['grad_norm']['forecast']:.2f}] train_s={time.perf_counter() - start:.2f} "
             f"torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"

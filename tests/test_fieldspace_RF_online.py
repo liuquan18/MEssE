@@ -7,7 +7,7 @@ level 2: two compression stages. CPU only, no comin, no MPI.
 import pytest
 import torch
 
-from fieldspace_RF_online import OnlineReconstructorForecaster, autoencoder_configs, drop_levels, _Blocks
+from fieldspace_RF_online import LatentReplay, OnlineReconstructorForecaster, autoencoder_configs, drop_levels, _Blocks
 from icon_nested_mgrid import patch_mgrid
 from test_icon_nested_mgrid import synthetic_global_mgrid
 
@@ -106,7 +106,7 @@ def test_models_are_trained_independently():
     model = trainer.model
     history, seconds = trainer._history()
     levels = model.to_levels(_field(9))
-    recon, forecast = model(levels, T0 + N_HISTORY * DT, history, seconds)
+    recon, forecast = model(levels, T0 + N_HISTORY * DT, history, [seconds + [T0 + N_HISTORY * DT]])
 
     sum(f.square().sum() for f in forecast.values()).backward(retain_graph=True)
     assert all(p.grad is None for p in model.reconstructor.parameters())
@@ -118,17 +118,19 @@ def test_models_are_trained_independently():
     assert all(p.grad is None for p in model.forecaster.parameters())
 
 
-@pytest.mark.parametrize("p_drop", [(), (0, 0, 1)])
-def test_every_trainable_parameter_gets_a_gradient_in_one_pass(p_drop):
-    """DDP (find_unused_parameters=False) needs this, with and without dropout."""
-    trainer = _trainer(forecast_p_drop=p_drop)
-    for k in range(N_HISTORY):
+@pytest.mark.parametrize("config", [{}, {"forecast_p_drop": (0, 0, 1)}, {"replay_size": 4, "forecast_p_drop": (0, 0, 1)}])
+def test_every_trainable_parameter_gets_a_gradient_in_one_pass(config):
+    """DDP (find_unused_parameters=False) needs this, with and without
+    dropout and replay."""
+    trainer = _trainer(**config)
+    for k in range(N_HISTORY + 2):
         trainer.train_step(_field(k), T0 + k * DT)
     seen = {}
     for name, p in trainer.model.named_parameters():
         if p.requires_grad:
             p.register_hook(lambda g, name=name: seen.__setitem__(name, True))
-    trainer.train_step(_field(N_HISTORY), T0 + N_HISTORY * DT)
+    stats = trainer.train_step(_field(N_HISTORY + 2), T0 + (N_HISTORY + 2) * DT)
+    assert ("replay_incre" in stats) == ("replay_size" in config)
     trainable = [n for n, p in trainer.model.named_parameters() if p.requires_grad]
     assert trainable and sorted(seen) == sorted(trainable)
 
@@ -187,3 +189,86 @@ def test_history_dropout_changes_only_the_forecaster_input():
     for (_, lc, cc), (_, ld, cd) in zip(clean.history, drop.history):
         assert all(torch.equal(lc[z], ld[z]) for z in lc)
         assert all(torch.equal(cc[z], cd[z]) for z in cc)
+
+
+def _train(trainer, n_steps):
+    """``n_steps`` sample steps; returns the stats of the last one."""
+    for k in range(n_steps):
+        stats = trainer.train_step(_field(k), T0 + k * DT)
+    return stats
+
+
+def test_latent_replay_keeps_the_last_windows_and_draws_without_replacement():
+    replay = LatentReplay(size=5, batch=3, generator=torch.Generator().manual_seed(0))
+    assert replay.sample() == []
+    for k in range(8):
+        replay.add(k)  # the buffer does not look inside a window
+    assert list(replay.windows) == [3, 4, 5, 6, 7]
+    for _ in range(20):
+        drawn = replay.sample()
+        assert len(drawn) == len(set(drawn)) == 3 and set(drawn) <= {3, 4, 5, 6, 7}
+    small = LatentReplay(size=5, batch=3, generator=torch.Generator().manual_seed(0))
+    small.add(0)
+    assert small.sample() == [0]
+
+
+def test_replay_off_draws_no_random_numbers():
+    rng = torch.Generator().manual_seed(0)
+    state = rng.get_state()
+    replay = LatentReplay(size=0, batch=10, generator=rng)
+    replay.add(0)
+    assert replay.sample() == [] and torch.equal(rng.get_state(), state)
+
+
+def test_batched_forecast_matches_the_single_window_forecast():
+    trainer = _trainer()
+    _train(trainer, N_HISTORY)
+    model = trainer.model
+    history, seconds = trainer._history()
+    times = seconds + [T0 + N_HISTORY * DT]
+    single = model.forecast(history, [times])
+    other = {z: torch.randn_like(h) for z, h in history.items()}
+    batch = model.forecast({z: torch.cat([history[z], other[z], other[z]]) for z in history},
+                           [times, [s + 3600 for s in times], [s + 7200 for s in times]])
+    for z in single:
+        assert batch[z].shape[0] == 3
+        assert torch.allclose(batch[z][:1], single[z], atol=1e-5), z
+
+
+def test_replay_starts_with_the_second_update():
+    """The first update has an empty buffer, so it equals training without
+    replay; from the second one the replayed windows are logged."""
+    off, on = _trainer(), _trainer(replay_size=4, replay_batch=2)
+    for k in range(N_HISTORY + 2):
+        s_off, s_on = off.train_step(_field(k), T0 + k * DT), on.train_step(_field(k), T0 + k * DT)
+        if k == N_HISTORY:
+            assert s_on == s_off
+    assert "replay_incre" not in s_off
+    assert sorted(s_on["replay_incre"]) == sorted(s_on["replay_persist_mse"]) == [0, 2, 3, 4]
+    assert len(on.replay.windows) == 2
+
+
+def test_trained_forecaster_loss_is_the_mean_over_windows():
+    trainer = _trainer(replay_size=4, replay_batch=2)
+    stats = _train(trainer, N_HISTORY + 4)  # 4th update: 3 windows stored, 2 drawn
+    n = 2
+    incre = sum((stats["incre"][z] + n * stats["replay_incre"][z]) / (1 + n) for z in stats["incre"])
+    assert stats["loss"] == pytest.approx(sum(stats["recon"].values()) + incre, rel=1e-5)
+
+
+def test_untrained_replay_loss_is_the_replayed_persistence_mse():
+    trainer = _trainer(replay_size=4, replay_batch=2, lr_forecast=0.0)
+    stats = _train(trainer, N_HISTORY + 3)
+    for zoom, value in stats["replay_incre"].items():
+        assert value == pytest.approx(stats["replay_persist_mse"][zoom], rel=1e-3), zoom
+
+
+def test_stored_windows_are_clean_under_dropout():
+    clean, drop = _trainer(replay_size=4), _trainer(replay_size=4, forecast_p_drop=(0, 0, 1))
+    _train(clean, N_HISTORY + 1)
+    stats = _train(drop, N_HISTORY + 1)
+    assert stats["dropped"] == 4
+    (wc,), (wd,) = clean.replay.windows, drop.replay.windows
+    assert wc.seconds == wd.seconds == [T0 + k * DT for k in range(N_HISTORY + 1)]
+    assert all(torch.equal(wc.history[z], wd.history[z]) for z in wc.history)
+    assert all(torch.equal(wc.increment[z], wd.increment[z]) for z in wc.increment)
