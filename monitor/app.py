@@ -4,14 +4,18 @@ Every ``key=value`` on a ``step=N`` line becomes a series, and every
 ``group[k=v ...]`` becomes series ``group/k``. For the reconstructor +
 forecaster plugin (fieldspace_RF_plugin.py) that gives one panel per model:
 
-* Reconstructor: ``recon/<level>``, the per-level reconstruction loss.
-* Forecaster: ``incre/<level>`` (solid) and ``oracle/<level>`` (dashed), the
-  per-level increment loss and the best any forecaster could reach through
-  the frozen decoder. 1 = persistence.
+* Reconstructor: ``recon/<level>``, the per-level reconstruction MSE as
+  trained, with ``state_ms/<level>`` (dotted, the MSE of outputting nothing).
+* Forecaster: ``incre/<level>`` (solid), the per-level increment MSE as
+  trained, ``oracle/<level>`` (dashed), the best a forecast through the
+  decoder could reach, and ``persist_mse/<level>`` (dotted, the MSE of
+  persistence).
 * Forecast error: ``fc_rmse`` vs ``persistence`` in the variable's units.
 
-Older plugins' ``loss=`` lines still show in the reconstructor panel. Each
-panel has checkboxes to choose its curves and a log/linear switch; a
+The plugins log the trained losses unscaled; the "÷ reference" switch of a
+panel divides each curve by its reference (both smoothed first), so incre then
+reads 1 - skill against persistence. Older logs, already scaled, show as they
+are. Each panel has checkboxes to choose its curves and a log/linear switch; a
 sample-step window (from/to) limits all panels to part of the run.
 
     bash scripts/monitor.sh LOG_FILE PORT
@@ -89,12 +93,13 @@ HTML = """<!DOCTYPE html>
   <button id="step-all">whole run</button></div>
 
 <div class="panel"><h4>Reconstructor loss</h4>
-  <p>Per level: MSE / mean square of that level's target. 0 = perfect, 1 = outputs nothing.</p>
+  <p>Per level: reconstruction MSE as trained (solid); dotted = state mean square, the MSE of outputting nothing.
+     "÷ reference": 0 = perfect, 1 = outputs nothing.</p>
   <div class="bar" id="recon-bar"></div>
   <div class="wrap"><canvas id="recon"></canvas></div></div>
 <div class="panel"><h4>Forecaster loss</h4>
-  <p>Per level: increment MSE / mean square of the true increment (solid). 1 = persistence.
-     Dashed = oracle, the best any forecaster can reach through the frozen decoder.</p>
+  <p>Per level: increment MSE as trained (solid); dashed = oracle, the best a forecast through the decoder can reach;
+     dotted = persistence MSE. "÷ reference": 1 = persistence, 0 = perfect.</p>
   <div class="bar" id="forecast-bar"></div>
   <div class="wrap"><canvas id="forecast"></canvas></div></div>
 <div class="panel"><h4>Forecast error of var_predict</h4>
@@ -105,11 +110,15 @@ HTML = """<!DOCTYPE html>
 
 <script>
 const LEVEL_COLORS = ["#000000", "#1e88e5", "#fb8c00", "#43a047", "#8e24aa", "#e53935"];
+// ref: the reference curve a curve is divided by under "÷ reference".
 const PANELS = {
-  recon:    { match: n => n.startsWith("recon/") || n === "loss", log: true },
-  forecast: { match: n => n.startsWith("incre/") || n.startsWith("oracle/"), log: false, one: true },
+  recon:    { match: n => /^(recon|state_ms)[/]/.test(n) || n === "loss", log: true,
+              ref: n => n.startsWith("recon/") ? "state_ms/" + n.split("/")[1] : null },
+  forecast: { match: n => /^(incre|oracle|persist_mse)[/]/.test(n), log: false,
+              ref: n => /^(incre|oracle)[/]/.test(n) ? "persist_mse/" + n.split("/")[1] : null },
   rmse:     { match: n => n === "fc_rmse" || n === "persistence", log: false },
 };
+const REFERENCE = /^(state_ms|persist_mse)[/]/;
 const charts = {};
 let points = [];
 let countdown = 5;
@@ -123,6 +132,7 @@ function store(key, value) {
 }
 const hidden = new Set(stored("messe-hidden", []));
 const logScale = stored("messe-log", Object.fromEntries(Object.entries(PANELS).map(([id, p]) => [id, p.log])));
+const relative = stored("messe-relative", {});
 
 function smooth(ys, n) {
   return ys.map((_, i) => {
@@ -137,8 +147,8 @@ function style(name, names) {
   const fixed = { fc_rmse: "#1e88e5", persistence: "#e53935", loss: "#000000" };
   return {
     borderColor: fixed[name] || LEVEL_COLORS[keys.indexOf(key) % LEVEL_COLORS.length],
-    borderDash: group === "oracle" ? [6, 4] : [],
-    borderWidth: group === "oracle" ? 1.5 : 2,
+    borderDash: group === "oracle" ? [6, 4] : REFERENCE.test(name) ? [2, 3] : [],
+    borderWidth: group === "oracle" || REFERENCE.test(name) ? 1.5 : 2,
   };
 }
 
@@ -193,6 +203,13 @@ function drawBar(id, names) {
   log.querySelector("input").checked = logScale[id];
   log.querySelector("input").onchange = e => { logScale[id] = e.target.checked; store("messe-log", logScale); redraw(); };
   bar.append(all, none, log);
+  if (PANELS[id].ref && names.some(n => REFERENCE.test(n))) {
+    const rel = document.createElement("label");
+    rel.innerHTML = `<input type="checkbox"> \u00f7 reference`;
+    rel.querySelector("input").checked = !!relative[id];
+    rel.querySelector("input").onchange = e => { relative[id] = e.target.checked; store("messe-relative", relative); redraw(); };
+    bar.append(rel);
+  }
 }
 
 function draw(id) {
@@ -200,15 +217,26 @@ function draw(id) {
   const names = [...new Set(points.flatMap(p => Object.keys(p.values)))].filter(panel.match).sort();
   drawBar(id, names);
   const n = parseInt(document.getElementById("smooth").value);
-  const datasets = names.map(name => ({
-    label: name,
-    data: smooth(points.map(p => p.values[name] ?? null), n)
-      .map((y, i) => ({ x: points[i].step, y })).filter(d => inWindow(d.x)),
-    hidden: hidden.has(name),
-    pointRadius: 0, tension: 0, ...style(name, names),
-  }));
-  if (panel.one && names.length) {
-    datasets.push({ label: "persistence (1)", data: points.filter(p => inWindow(p.step)).map(p => ({ x: p.step, y: 1 })),
+  const hasRef = names.some(nm => REFERENCE.test(nm));
+  const rel = panel.ref && relative[id] && hasRef;
+  const series = name => smooth(points.map(p => p.values[name] ?? null), n);
+  const datasets = names.filter(name => !(rel && REFERENCE.test(name))).map(name => {
+    let ys = series(name);
+    const ref = rel && panel.ref(name);
+    if (ref) {
+      const r = series(ref);
+      ys = ys.map((y, i) => (y === null || !r[i]) ? null : y / r[i]);
+    }
+    return {
+      label: name,
+      data: ys.map((y, i) => ({ x: points[i].step, y })).filter(d => inWindow(d.x)),
+      hidden: hidden.has(name),
+      pointRadius: 0, tension: 0, ...style(name, names),
+    };
+  });
+  // The 1-line is the reference once divided, and old (already scaled) forecaster logs.
+  if (names.length && (rel || (id === "forecast" && !hasRef))) {
+    datasets.push({ label: "reference (1)", data: points.filter(p => inWindow(p.step)).map(p => ({ x: p.step, y: 1 })),
                     borderColor: "#bbb", borderWidth: 1, pointRadius: 0 });
   }
   const yType = logScale[id] ? "logarithmic" : "linear";
