@@ -64,8 +64,9 @@ def test_history_fills_before_training_and_forecasting():
         assert trainer.train_step(_field(k), T0 + k * DT) == {}
     assert trainer.predict_increment(T0 + N_HISTORY * DT) is not None
     stats = trainer.train_step(_field(N_HISTORY), T0 + N_HISTORY * DT)
-    assert set(stats) == {"recon", "state_ms", "incre", "persist_mse"}
-    assert all(sorted(parts) == [0, 2, 3, 4] for parts in stats.values())
+    assert set(stats) == {"recon", "state_ms", "latent_mse", "latent_persist"}
+    assert sorted(stats["recon"]) == sorted(stats["state_ms"]) == [0, 2, 3, 4]
+    assert sorted(stats["latent_mse"]) == sorted(stats["latent_persist"]) == [0, 2]  # latent levels
 
 
 def test_untrained_forecast_is_persistence():
@@ -78,12 +79,13 @@ def test_untrained_forecast_is_persistence():
 
 
 @pytest.mark.parametrize("replay", [{}, {"replay_size": 4, "replay_batch": 2}])
-def test_untrained_increment_loss_is_the_persistence_mse(replay):
-    """An untrained forecaster forecasts zero change, so its increment loss
-    per level is the logged persistence reference, also over a replay batch."""
+def test_untrained_latent_loss_is_the_persistence_mse(replay):
+    """An untrained forecaster returns the newest history latent, so its
+    latent loss per level is the logged persistence reference, also over a
+    replay batch."""
     stats = _train(_trainer(lr_forecast=0.0, **replay), N_HISTORY + 3)
-    for zoom, value in stats["incre"].items():
-        assert value == pytest.approx(stats["persist_mse"][zoom], rel=1e-3), zoom
+    for zoom, value in stats["latent_mse"].items():
+        assert value == pytest.approx(stats["latent_persist"][zoom], rel=1e-3), zoom
 
 
 def test_models_are_trained_independently():
@@ -189,12 +191,12 @@ def test_forecaster_batch_is_the_new_window_plus_the_drawn_ones():
     stats = _train(trainer, N_HISTORY + 3)
     windows = trainer.replay.windows
     assert len(windows) == 3
-    for z, value in stats["persist_mse"].items():
-        expected = sum(float(w.increment[z].square().mean()) for w in windows) / 3
+    for z, value in stats["latent_persist"].items():
+        expected = sum(float((w.target[z] - w.history[z][:, :, -1:]).square().mean()) for w in windows) / 3
         assert value == pytest.approx(expected, rel=1e-5), z
 
 
-def test_stored_window_holds_the_history_latents_increment_and_times():
+def test_stored_window_holds_the_history_target_latent_and_times():
     trainer = _trainer(replay_size=4)
     _train(trainer, N_HISTORY)
     history, _ = trainer._history()
@@ -202,5 +204,5 @@ def test_stored_window_holds_the_history_latents_increment_and_times():
     (window,) = trainer.replay.windows
     assert window.seconds == [T0 + k * DT for k in range(N_HISTORY + 1)]
     assert all(torch.equal(window.history[z], history[z]) for z in history)
-    x_t, x_prev = trainer.model.to_levels(_field(N_HISTORY)), trainer.model.to_levels(_field(N_HISTORY - 1))
-    assert all(torch.allclose(window.increment[z], x_t[z] - x_prev[z]) for z in x_t)
+    _, cached = trainer.history[-1]  # c_t, cached after the update
+    assert all(window.target[z] is cached[z] for z in cached)

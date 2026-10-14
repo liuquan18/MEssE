@@ -12,8 +12,9 @@ both models and forecasts the next sample step.
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
 units) and prints, per level, the loss each model is trained on with its
-reference: ``recon`` vs ``state_ms`` (outputting zero) and ``incre`` vs
-``persist_mse`` (persistence), the latter over the forecaster's whole batch.
+reference: ``recon`` vs ``state_ms`` (outputting zero) and, per latent level
+(``r6`` = the R2B6' latent), ``latent_mse`` vs ``latent_persist``
+(persistence), both over the forecaster's whole batch.
 
 The forecaster's batch is the newest window plus ``MESSE_AE_REPLAY_BATCH``
 windows drawn from the last ``MESSE_AE_REPLAY_SIZE`` sample steps (latent
@@ -231,7 +232,7 @@ def sample_step():
     if stats:
         comin.print_info(
             f"step={State.step} {scores}recon[{_levels(stats['recon'])}] state_ms[{_levels(stats['state_ms'])}] "
-            f"incre[{_levels(stats['incre'])}] persist_mse[{_levels(stats['persist_mse'])}] "
+            f"latent_mse[{_levels(stats['latent_mse'])}] latent_persist[{_levels(stats['latent_persist'])}] "
             f"train_s={time.perf_counter() - start:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
         )
     State.step += 1

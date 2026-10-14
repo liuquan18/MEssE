@@ -7,8 +7,10 @@ each showing the per-level loss the model is trained on and its reference:
 
 * Reconstructor: ``recon/<level>``, with ``state_ms/<level>`` (dotted, the
   loss of outputting zero).
-* Forecaster: ``incre/<level>``, the mean over its batch (newest + replayed
-  windows), with ``persist_mse/<level>`` (dotted, the loss of persistence).
+* Forecaster: ``latent_mse/<level>``, the latent forecast MSE per latent level,
+  mean over its batch (newest + replayed windows), with
+  ``latent_persist/<level>`` (dotted, the loss of persistence). Older runs
+  logged the field increment loss ``incre`` with ``persist_mse`` instead.
 * Forecast error: ``fc_rmse`` vs ``persistence`` in the variable's units.
 
 The "÷ reference" switch of a panel divides each curve by its reference (both
@@ -96,8 +98,9 @@ HTML = """<!DOCTYPE html>
   <div class="bar" id="recon-bar"></div>
   <div class="wrap"><canvas id="recon"></canvas></div></div>
 <div class="panel"><h4>Forecaster loss</h4>
-  <p>Per level: the trained increment MSE, mean over the batch of newest + replayed windows (solid);
-     dotted = the persistence MSE of the same batch. "÷ reference": 1 = persistence, 0 = perfect.</p>
+  <p>Per latent level: the trained latent forecast MSE, mean over the batch of newest + replayed windows (solid);
+     dotted = the persistence MSE of the same batch (older runs: field increment MSE).
+     "÷ reference": 1 = persistence, 0 = perfect.</p>
   <div class="bar" id="forecast-bar"></div>
   <div class="wrap"><canvas id="forecast"></canvas></div></div>
 <div class="panel"><h4>Forecast error of var_predict</h4>
@@ -112,11 +115,13 @@ const LEVEL_COLORS = ["#000000", "#1e88e5", "#fb8c00", "#43a047", "#8e24aa", "#e
 const PANELS = {
   recon:    { match: n => /^(recon|state_ms)[/]/.test(n), log: true,
               ref: n => n.startsWith("recon/") ? "state_ms/" + n.split("/")[1] : null },
-  forecast: { match: n => /^(incre|persist_mse)[/]/.test(n), log: false,
-              ref: n => n.startsWith("incre/") ? "persist_mse/" + n.split("/")[1] : null },
+  forecast: { match: n => /^(latent_mse|latent_persist|incre|persist_mse)[/]/.test(n), log: false,
+              ref: n => { const [group, key] = n.split("/");
+                          const r = { latent_mse: "latent_persist/", incre: "persist_mse/" }[group];
+                          return r ? r + key : null; } },
   rmse:     { match: n => n === "fc_rmse" || n === "persistence", log: false },
 };
-const REFERENCE = /^(state_ms|persist_mse)[/]/;
+const REFERENCE = /^(state_ms|persist_mse|latent_persist)[/]/;
 const charts = {};
 let points = [];
 let countdown = 5;
