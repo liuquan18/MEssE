@@ -2,21 +2,21 @@
 
 Every ``key=value`` on a ``step=N`` line becomes a series, and every
 ``group[k=v ...]`` becomes series ``group/k``. For the reconstructor +
-forecaster plugin (fieldspace_RF_plugin.py) that gives one panel per model:
+forecaster plugin (fieldspace_RF_plugin.py) that gives one panel per model,
+each showing the per-level loss the model is trained on and its reference:
 
-* Reconstructor: ``recon/<level>``, the per-level reconstruction MSE as
-  trained, with ``state_ms/<level>`` (dotted, the MSE of outputting nothing).
-* Forecaster: ``incre/<level>`` (solid), the per-level increment MSE as
-  trained, ``oracle/<level>`` (dashed), the best a forecast through the
-  decoder could reach, and ``persist_mse/<level>`` (dotted, the MSE of
-  persistence).
+* Reconstructor: ``recon/<level>``, with ``state_ms/<level>`` (dotted, the
+  loss of outputting zero).
+* Forecaster: ``latent_mse/<level>``, the latent forecast MSE per latent level,
+  mean over its batch (newest + replayed windows), with
+  ``latent_persist/<level>`` (dotted, the loss of persistence). Older runs
+  logged the field increment loss ``incre`` with ``persist_mse`` instead.
 * Forecast error: ``fc_rmse`` vs ``persistence`` in the variable's units.
 
-The plugins log the trained losses unscaled; the "÷ reference" switch of a
-panel divides each curve by its reference (both smoothed first), so incre then
-reads 1 - skill against persistence. Older logs, already scaled, show as they
-are. Each panel has checkboxes to choose its curves and a log/linear switch; a
-sample-step window (from/to) limits all panels to part of the run.
+The "÷ reference" switch of a panel divides each curve by its reference (both
+smoothed first), so incre then reads 1 - skill against persistence. Each panel
+has checkboxes to choose its curves and a log/linear switch; a sample-step
+window (from/to) limits all panels to part of the run.
 
     bash scripts/monitor.sh LOG_FILE PORT
 """
@@ -93,13 +93,14 @@ HTML = """<!DOCTYPE html>
   <button id="step-all">whole run</button></div>
 
 <div class="panel"><h4>Reconstructor loss</h4>
-  <p>Per level: reconstruction MSE as trained (solid); dotted = state mean square, the MSE of outputting nothing.
+  <p>Per level: the trained reconstruction MSE (solid); dotted = the MSE of outputting zero.
      "÷ reference": 0 = perfect, 1 = outputs nothing.</p>
   <div class="bar" id="recon-bar"></div>
   <div class="wrap"><canvas id="recon"></canvas></div></div>
 <div class="panel"><h4>Forecaster loss</h4>
-  <p>Per level: increment MSE as trained (solid); dashed = oracle, the best a forecast through the decoder can reach;
-     dotted = persistence MSE. "÷ reference": 1 = persistence, 0 = perfect.</p>
+  <p>Per latent level: the trained latent forecast MSE, mean over the batch of newest + replayed windows (solid);
+     dotted = the persistence MSE of the same batch (older runs: field increment MSE).
+     "÷ reference": 1 = persistence, 0 = perfect.</p>
   <div class="bar" id="forecast-bar"></div>
   <div class="wrap"><canvas id="forecast"></canvas></div></div>
 <div class="panel"><h4>Forecast error of var_predict</h4>
@@ -112,13 +113,15 @@ HTML = """<!DOCTYPE html>
 const LEVEL_COLORS = ["#000000", "#1e88e5", "#fb8c00", "#43a047", "#8e24aa", "#e53935"];
 // ref: the reference curve a curve is divided by under "÷ reference".
 const PANELS = {
-  recon:    { match: n => /^(recon|state_ms)[/]/.test(n) || n === "loss", log: true,
+  recon:    { match: n => /^(recon|state_ms)[/]/.test(n), log: true,
               ref: n => n.startsWith("recon/") ? "state_ms/" + n.split("/")[1] : null },
-  forecast: { match: n => /^(incre|oracle|persist_mse)[/]/.test(n), log: false,
-              ref: n => /^(incre|oracle)[/]/.test(n) ? "persist_mse/" + n.split("/")[1] : null },
+  forecast: { match: n => /^(latent_mse|latent_persist|incre|persist_mse)[/]/.test(n), log: false,
+              ref: n => { const [group, key] = n.split("/");
+                          const r = { latent_mse: "latent_persist/", incre: "persist_mse/" }[group];
+                          return r ? r + key : null; } },
   rmse:     { match: n => n === "fc_rmse" || n === "persistence", log: false },
 };
-const REFERENCE = /^(state_ms|persist_mse)[/]/;
+const REFERENCE = /^(state_ms|persist_mse|latent_persist)[/]/;
 const charts = {};
 let points = [];
 let countdown = 5;
@@ -142,13 +145,13 @@ function smooth(ys, n) {
 }
 
 function style(name, names) {
-  const [group, key] = name.includes("/") ? name.split("/") : [name, name];
+  const key = name.split("/").pop();
   const keys = [...new Set(names.map(n => n.split("/").pop()))];
-  const fixed = { fc_rmse: "#1e88e5", persistence: "#e53935", loss: "#000000" };
+  const fixed = { fc_rmse: "#1e88e5", persistence: "#e53935" };
   return {
     borderColor: fixed[name] || LEVEL_COLORS[keys.indexOf(key) % LEVEL_COLORS.length],
-    borderDash: group === "oracle" ? [6, 4] : REFERENCE.test(name) ? [2, 3] : [],
-    borderWidth: group === "oracle" || REFERENCE.test(name) ? 1.5 : 2,
+    borderDash: REFERENCE.test(name) ? [2, 3] : [],
+    borderWidth: REFERENCE.test(name) ? 1.5 : 2,
   };
 }
 
@@ -234,8 +237,8 @@ function draw(id) {
       pointRadius: 0, tension: 0, ...style(name, names),
     };
   });
-  // The 1-line is the reference once divided, and old (already scaled) forecaster logs.
-  if (names.length && (rel || (id === "forecast" && !hasRef))) {
+  // The 1-line is the reference once divided.
+  if (names.length && rel) {
     datasets.push({ label: "reference (1)", data: points.filter(p => inWindow(p.step)).map(p => ({ x: p.step, y: 1 })),
                     borderColor: "#bbb", borderWidth: 1, pointRadius: 0 });
   }

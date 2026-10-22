@@ -1,5 +1,6 @@
-"""ComIn plugin: online RECONSTRUCTOR + FORECASTOR (fieldspace_RF_online.py)
-inside a running ICON simulation on its native grid, e.g. R2B8.
+"""ComIn plugin: online RECONSTRUCTOR + FORECASTER (fieldspace_RF_online.py,
+`.claude/schematic.pdf`) inside a running ICON simulation on its native grid,
+e.g. R2B8.
 
 Every ICON work rank owns a GPU and one model patch: complete R2B4 backbone
 cells with all their descendants (icon_nested_mgrid.py). Once per
@@ -11,7 +12,15 @@ both models and forecasts the next sample step.
 ``var_predict`` at model time t holds the forecast valid at t, made one sample
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
-units) and prints the per-level losses of both models.
+units) and prints, per level, the loss each model is trained on with its
+reference: ``recon`` vs ``state_ms`` (outputting zero) and, per latent level
+(``r6`` = the R2B6' latent), ``latent_mse`` vs ``latent_persist``
+(persistence), both over the forecaster's whole batch.
+
+The forecaster's batch is the live window plus ``MESSE_AE_REPLAY_BATCH``
+windows drawn from the replay buffer, which keeps those of the last
+``MESSE_AE_REPLAY_SECONDS`` of model time (latent replay, 0 = off). The replay
+buffer is not checkpointed: after a restart it fills again.
 """
 
 import os
@@ -52,11 +61,12 @@ VARIABLE = env("MESSE_ICON_VAR", "uas")  # AES 10 m zonal wind (u_10m in NWP)
 LEVELS = [int(v) for v in env("MESSE_AE_LEVELS", "4,6,7,8").split(",")]  # backbone first, last = ICON's grid
 LATENT_LEVEL = int(env("MESSE_AE_LATENT_LEVEL", "6"))
 GRID_DIR = env("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
-SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead and history spacing
+SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead and context spacing
 DRY_RUN_SECONDS = float(env("MESSE_AE_DRY_RUN_SECONDS", "86400"))
 SAVE_INTERVAL_SECONDS = float(env("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))
+REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # model time of windows the replay buffer keeps
 MODEL = dict(
-    n_history=int(env("MESSE_AE_N_HISTORY", "4")),
+    n_context=int(env("MESSE_AE_N_CONTEXT", "4")),  # latents the forecaster sees
     latent_channels=int(env("MESSE_AE_LATENT_CHANNELS", "4")),
     n_blocks=int(env("MESSE_AE_N_BLOCKS", "2")),  # attention blocks per compression stage
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
@@ -64,8 +74,7 @@ MODEL = dict(
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
-    # Residual dropout of the newest history state, one probability per residual level (LEVELS[1:]).
-    forecast_p_drop=[float(p) for p in env("MESSE_AE_FORECAST_P_DROP", "").split(",") if p],
+    replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # windows drawn from the replay buffer per update
 )
 CHECKPOINT_PATH = os.path.join(os.getcwd(), "saved_models", "fieldspace_rf_online.pt")
 os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
@@ -141,7 +150,8 @@ def _write(forecast: torch.Tensor) -> None:
 
 
 def _trainer(nlev: int) -> OnlineReconstructorForecaster:
-    trainer = OnlineReconstructorForecaster(mgrids, LEVELS, LATENT_LEVEL, nlev, device=DEVICE, **MODEL)
+    replay_size = int(REPLAY_SECONDS // State.sample_seconds)
+    trainer = OnlineReconstructorForecaster(mgrids, LEVELS, LATENT_LEVEL, nlev, replay_size=replay_size, device=DEVICE, **MODEL)
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
         trainer.model.load_state_dict(ckpt["model_state_dict"])
@@ -187,6 +197,11 @@ def sample_step():
         comin.print_info(f"sampling every {stride} ICON steps = {State.sample_seconds} s")
         n_dry = int(DRY_RUN_SECONDS // State.sample_seconds)
         comin.print_info(f"dry run: {n_dry} sample steps = {n_dry * stride} ICON steps = {n_dry * State.sample_seconds:.0f} s")
+        n_replay = int(REPLAY_SECONDS // State.sample_seconds)
+        comin.print_info(
+            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s, "
+            f"draws {MODEL['replay_batch']} per update"
+        )
     if round(now - State.first_seconds) % State.sample_seconds:
         return
     patch = _patch()
@@ -195,9 +210,14 @@ def sample_step():
         State.normalizer = RunningMeanStd(patch.shape, int(DRY_RUN_SECONDS // State.sample_seconds), DEVICE)
     if not State.normalizer.update(patch):
         return
-    if State.trainer is None:
-        State.trainer = _trainer(nlev=patch.shape[1])
     std = State.normalizer.stats.std
+    if State.trainer is None:
+        comin.print_info(
+            f"dry run done at {comin.current_get_datetime()}: per-cell mean/std of {VARIABLE} from "
+            f"{State.normalizer.count} samples (rank 0 std {float(std.min()):.3g}-{float(std.max()):.3g}); "
+            f"training starts once {MODEL['n_context']} sample steps of context are cached"
+        )
+        State.trainer = _trainer(nlev=patch.shape[1])
 
     # Score and write the forecast made one sample step ago, which is valid now.
     scores = ""
@@ -217,17 +237,15 @@ def sample_step():
 
     if stats:
         comin.print_info(
-            f"step={State.step} {scores}drop={'-' if stats['dropped'] is None else _name(stats['dropped'])} "
-            f"loss={stats['loss']:.4g} recon[{_levels(stats['recon'])}] incre[{_levels(stats['incre'])}] "
-            f"oracle[{_levels(stats['oracle'])}] persist_mse[{_levels(stats['persist_mse'])}] "
-            f"state_ms[{_levels(stats['state_ms'])}] grad_norm[recon={stats['grad_norm']['recon']:.2f} "
-            f"forecast={stats['grad_norm']['forecast']:.2f}] train_s={time.perf_counter() - start:.2f} "
-            f"torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
+            f"step={State.step} {scores}recon[{_levels(stats['recon'])}] state_ms[{_levels(stats['state_ms'])}] "
+            f"latent_mse[{_levels(stats['latent_mse'])}] latent_persist[{_levels(stats['latent_persist'])}] "
+            f"train_s={time.perf_counter() - start:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
         )
     State.step += 1
     if State.step % max(1, int(SAVE_INTERVAL_SECONDS // State.sample_seconds)) == 0:
         norm = State.normalizer.stats
         save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, {"norm_mean": norm.mean, "norm_std": norm.std})
+        comin.print_info(f"checkpoint at step {State.step}, {comin.current_get_datetime()}: {CHECKPOINT_PATH}")
 
 
 @comin.register_callback(comin.EP_DESTRUCTOR)

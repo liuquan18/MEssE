@@ -8,6 +8,9 @@ by pytest. Run on a GPU node, from the project root:
 
     srun -A mh0033 -p gpu --gpus=1 --time=00:20:00 --mem=64G \\
         MEssE/build_nwp/messe_env/py_env/bin/python MEssE/tests/bench_fieldspace_RF_r2b8.py
+
+``--replay-batch 0`` times the forecaster without latent replay; with replay,
+the batch is full from step ``--replay-batch`` + 1 of the timed steps.
 """
 
 import argparse
@@ -30,7 +33,9 @@ def main():
     parser.add_argument("--ranks", type=int, default=32)
     parser.add_argument("--levels", default="4,6,7,8")
     parser.add_argument("--latent-level", type=int, default=6)
-    parser.add_argument("--steps", type=int, default=5, help="timed training steps")
+    parser.add_argument("--steps", type=int, default=15, help="timed training steps")
+    parser.add_argument("--replay-size", type=int, default=144)
+    parser.add_argument("--replay-batch", type=int, default=10)
     parser.add_argument("--grid-dir", default="/pool/data/ICON/grids/mpim")
     args = parser.parse_args()
     levels = [int(v) for v in args.levels.split(",")]
@@ -53,9 +58,10 @@ def main():
     print(f"setup {time.perf_counter() - t:.1f}s: backbone cells per rank {per_rank.min()}-{per_rank.max()}, "
           f"largest patch {len(coords)} R2B{levels[-1]} cells", flush=True)
 
-    trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1)
+    trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1,
+                                            replay_size=args.replay_size, replay_batch=args.replay_batch)
     t0 = 1577836800.0
-    for k in range(trainer.history.maxlen + args.steps):
+    for k in range(trainer.context.maxlen + args.steps):
         x = (torch.sin(40 * coords[:, :1] - 0.02 * k) * torch.cos(20 * coords[:, 1:]))
         torch.cuda.synchronize()
         t = time.perf_counter()
