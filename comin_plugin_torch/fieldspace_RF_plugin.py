@@ -1,5 +1,6 @@
-"""ComIn plugin: online RECONSTRUCTOR + FORECASTOR (fieldspace_RF_online.py)
-inside a running ICON simulation on its native grid, e.g. R2B8.
+"""ComIn plugin: online RECONSTRUCTOR + FORECASTER (fieldspace_RF_online.py,
+`.claude/schematic.pdf`) inside a running ICON simulation on its native grid,
+e.g. R2B8.
 
 Every ICON work rank owns a GPU and one model patch: complete R2B4 backbone
 cells with all their descendants (icon_nested_mgrid.py). Once per
@@ -16,10 +17,10 @@ reference: ``recon`` vs ``state_ms`` (outputting zero) and, per latent level
 (``r6`` = the R2B6' latent), ``latent_mse`` vs ``latent_persist``
 (persistence), both over the forecaster's whole batch.
 
-The forecaster's batch is the newest window plus ``MESSE_AE_REPLAY_BATCH``
-windows drawn from those of the last ``MESSE_AE_REPLAY_SECONDS`` of model time
-(latent replay, 0 = off). The replay buffer is not checkpointed: after a restart
-it fills again.
+The forecaster's batch is the live window plus ``MESSE_AE_REPLAY_BATCH``
+windows drawn from the replay buffer, which keeps those of the last
+``MESSE_AE_REPLAY_SECONDS`` of model time (latent replay, 0 = off). The replay
+buffer is not checkpointed: after a restart it fills again.
 """
 
 import os
@@ -60,12 +61,12 @@ VARIABLE = env("MESSE_ICON_VAR", "uas")  # AES 10 m zonal wind (u_10m in NWP)
 LEVELS = [int(v) for v in env("MESSE_AE_LEVELS", "4,6,7,8").split(",")]  # backbone first, last = ICON's grid
 LATENT_LEVEL = int(env("MESSE_AE_LATENT_LEVEL", "6"))
 GRID_DIR = env("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
-SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead and history spacing
+SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead and context spacing
 DRY_RUN_SECONDS = float(env("MESSE_AE_DRY_RUN_SECONDS", "86400"))
 SAVE_INTERVAL_SECONDS = float(env("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))
-REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # latent replay keeps this much model time of windows
+REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # model time of windows the replay buffer keeps
 MODEL = dict(
-    n_history=int(env("MESSE_AE_N_HISTORY", "4")),
+    n_context=int(env("MESSE_AE_N_CONTEXT", "4")),  # latents the forecaster sees
     latent_channels=int(env("MESSE_AE_LATENT_CHANNELS", "4")),
     n_blocks=int(env("MESSE_AE_N_BLOCKS", "2")),  # attention blocks per compression stage
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
@@ -73,7 +74,7 @@ MODEL = dict(
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
-    replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # latent replay: stored windows drawn per update
+    replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # windows drawn from the replay buffer per update
 )
 CHECKPOINT_PATH = os.path.join(os.getcwd(), "saved_models", "fieldspace_rf_online.pt")
 os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
@@ -214,7 +215,7 @@ def sample_step():
         comin.print_info(
             f"dry run done at {comin.current_get_datetime()}: per-cell mean/std of {VARIABLE} from "
             f"{State.normalizer.count} samples (rank 0 std {float(std.min()):.3g}-{float(std.max()):.3g}); "
-            f"training starts once {MODEL['n_history']} sample steps of history are cached"
+            f"training starts once {MODEL['n_context']} sample steps of context are cached"
         )
         State.trainer = _trainer(nlev=patch.shape[1])
 

@@ -1,5 +1,9 @@
-"""Online RECONSTRUCTOR + FORECASTOR on one rank's nested ICON patch
-(`.claude/architecture_loss.pdf`).
+"""Online RECONSTRUCTOR + FORECASTER on one rank's nested ICON patch
+(`.claude/schematic.pdf`).
+
+Notation as in the schematic: x is the ICON field, c = E(x) its compressed
+state (latent), ĉ a forecast, D the decoder. A bar, c̄ = Ē(x), marks the
+frozen copy of the encoder (below).
 
 Levels
 ------
@@ -12,18 +16,18 @@ FieldSpaceNN's configs). On the field levels that is the whole-field MSE, so
 each level counts by its share of the variance.
 
 RECONSTRUCTOR
-    x_t -> encoder -> c_t -> decoder -> x̂_t, an `MG_AutoEncoder` with the
-    staged compression of `.claude/compression.png`: each residual level finer
-    than ``latent_level`` is folded into the next coarser one. Trained with
-    ``L_recon`` = per-level MSE(x̂_t, x_t).
+    x_t -> E -> c_t -> D -> x̂_t, an `MG_AutoEncoder` with the staged
+    compression of the schematic: each residual level finer than
+    ``latent_level`` is folded into the next coarser one. Trained with
+    ``L_recon`` = per-level MSE(D(E(x_t)), x_t).
 
-FORECASTOR
-    c_{t-H} .. c_{t-1} -> MG transformer -> ĉ_t, in the latent space of the
-    frozen encoder. Trained with ``L_latent`` = per-latent-level
-    MSE(ĉ_t, c_t), c_t = E_frozen(x_t): it forecasts the next latent state
-    directly, averaged over a batch of windows (latent replay, below). What is
-    written to ICON is the increment through the frozen decoder,
-    D(ĉ_{t+1}) - D(c_t).
+FORECASTER
+    context c̄_{t-H} .. c̄_{t-1} -> MG transformer -> ĉ_t, with
+    H = ``n_context``. Trained with ``L_latent`` = per-latent-level
+    MSE(ĉ_t, c̄_t): it forecasts the next compressed state directly, with no
+    decoder in the loss, averaged over a batch of windows (latent replay,
+    below). What is written to ICON is the increment through the frozen
+    decoder, D̄(ĉ_{t+1}) - D̄(c̄_t).
 
 The two are trained independently: the forecaster's loss reaches only the
 forecaster. The frozen encoder/decoder is an exponential moving average of the
@@ -35,23 +39,24 @@ learning.
 Latent replay
 -------------
 Against forgetting earlier weather while training on a correlated stream. A
-training window is the frozen latents c_{t-H} .. c_{t-1}, the target c_t and
-their valid times. The last ``replay_size`` windows are kept; every update
-draws ``replay_batch`` of them at random, and the forecaster is trained on
-these plus the new window as one batch. Stored latents are not re-encoded:
-the buffer length bounds how much older the encoder that made them is.
+window is one forecaster training sample: the context c̄_{t-H} .. c̄_{t-1},
+the target c̄_t and their valid times. The replay buffer keeps the last
+``replay_size`` windows; every update draws ``replay_batch`` of them at random,
+and the forecaster is trained on these plus the new (live) window as one batch.
+Stored latents are not re-encoded: the buffer length bounds how much older the
+encoder that made them is.
 
-At sample step t (history full)
+At sample step t (context full)
 -------------------------------
-1. c_t = E_frozen(x_t).
+1. c̄_t = Ē(x_t).
 2. ``L_recon`` on x_t plus ``L_latent`` on the batch, one backward, one
    optimizer step (separate learning rates and gradient clipping per model),
    then the EMA update.
-3. The new window is stored for replay, c_t is cached, and the plugin asks for
-   the increment to t+1.
+3. The live window goes into the replay buffer, c̄_t joins the context, and
+   the plugin asks for the increment to t+1.
 4. Returned for the log, per level: both losses and their references,
    ``state_ms`` (mean square of x_t, the loss of outputting zero) and
-   ``latent_persist`` (mean square of c_t - c_{t-1} over the batch, the loss
+   ``latent_persist`` (mean square of c̄_t - c̄_{t-1} over the batch, the loss
    of persistence).
 """
 
@@ -87,25 +92,24 @@ def _sample_configs(n_past: int, n_future: int, zooms: Sequence[int]) -> Dict[in
 class Window(NamedTuple):
     """One forecaster training sample, batch size 1."""
 
-    history: Levels  # frozen latents c_{t-H} .. c_{t-1}
-    target: Levels  # frozen latent c_t
-    seconds: List[float]  # valid times of the history, then of the target
+    context: Levels  # frozen latents c̄_{t-H} .. c̄_{t-1}
+    target: Levels  # frozen latent c̄_t
+    seconds: List[float]  # valid times of the context, then of the target
 
 
-def stack(windows: Sequence[Window]) -> Window:
+def stack_windows(windows: Sequence[Window]) -> Window:
     """Windows concatenated on the batch axis; ``seconds`` becomes one row per
     window."""
     return Window(
-        {z: torch.cat([w.history[z] for w in windows]) for z in windows[0].history},
+        {z: torch.cat([w.context[z] for w in windows]) for z in windows[0].context},
         {z: torch.cat([w.target[z] for w in windows]) for z in windows[0].target},
         [w.seconds for w in windows],
     )
 
 
-class LatentReplay:
-    """The last ``size`` training windows; :meth:`sample` draws up to
-    ``batch`` of them at random, without replacement. ``size=0`` turns replay
-    off."""
+class ReplayBuffer:
+    """The last ``size`` windows; :meth:`sample` draws up to ``batch`` of them
+    at random, without replacement. ``size=0`` turns replay off."""
 
     def __init__(self, size: int, batch: int, generator: torch.Generator):
         self.windows = deque(maxlen=size)
@@ -122,7 +126,7 @@ class LatentReplay:
         return [self.windows[i] for i in picks.tolist()]
 
 
-class _Blocks:
+class _BlockConfigs:
     """FieldSpaceNN block configs shared by all models: attention tokens on
     the backbone, time conditioning, ``ext`` blocks (the legacy blocks reject
     levels with different channel counts)."""
@@ -171,7 +175,7 @@ class _Blocks:
         )
 
 
-def autoencoder_configs(zooms: List[int], latent_zoom: int, channels: int, n_blocks: int, blocks: _Blocks):
+def autoencoder_configs(zooms: List[int], latent_zoom: int, channels: int, n_blocks: int, configs: _BlockConfigs):
     """Encoder and decoder block configs of the staged compression, and the
     channels of every latent level. The finest residual level is folded into
     the next coarser one, stage by stage, down to ``latent_zoom`` (``channels``
@@ -179,72 +183,73 @@ def autoencoder_configs(zooms: List[int], latent_zoom: int, channels: int, n_blo
     stage."""
     stages = [(fine, parent) for parent, fine in zip(zooms[1:], zooms[2:]) if fine > latent_zoom][::-1]
     zooms = list(zooms)
-    encoder = {f"att_in_{i}": blocks.attention(zooms) for i in range(n_blocks)}
+    encoder = {f"att_in_{i}": configs.attention(zooms) for i in range(n_blocks)}
     for s, (fine, parent) in enumerate(stages):
         zooms.remove(fine)
-        encoder[f"compress_{s}"] = blocks.field_layer([parent, fine], [parent], parent, list(zooms), channels)
-        encoder.update({f"att_{s}_{i}": blocks.attention(zooms) for i in range(n_blocks)})
+        encoder[f"compress_{s}"] = configs.field_layer([parent, fine], [parent], parent, list(zooms), channels)
+        encoder.update({f"att_{s}_{i}": configs.attention(zooms) for i in range(n_blocks)})
     latent_features = {z: channels if z in dict(stages).values() else 1 for z in zooms}
-    decoder = {f"latent_att_{i}": blocks.attention(zooms) for i in range(n_blocks)}
+    decoder = {f"latent_att_{i}": configs.attention(zooms) for i in range(n_blocks)}
     for s, (fine, parent) in reversed(list(enumerate(stages))):
         zooms = sorted(zooms + [fine])
         fine_channels = channels if s > 0 else 1  # fine was itself a parent in the stage before
-        decoder[f"decompress_{s}"] = blocks.field_layer(
+        decoder[f"decompress_{s}"] = configs.field_layer(
             [parent], [parent, fine], parent, list(zooms), {parent: 1, fine: fine_channels}
         )
-        decoder.update({f"att_{s}_{i}": blocks.attention(zooms) for i in range(n_blocks)})
+        decoder.update({f"att_{s}_{i}": configs.attention(zooms) for i in range(n_blocks)})
     return encoder, decoder, latent_features
 
 
 class Reconstructor(nn.Module):
     """Encoder/decoder between a field's levels and its latent."""
 
-    def __init__(self, mgrids, zooms, latent_zoom, channels, n_blocks, blocks: _Blocks):
+    def __init__(self, mgrids, zooms, latent_zoom, channels, n_blocks, configs: _BlockConfigs):
         super().__init__()
-        encoder, decoder, self.latent_features = autoencoder_configs(zooms, latent_zoom, channels, n_blocks, blocks)
+        encoder, decoder, self.latent_features = autoencoder_configs(zooms, latent_zoom, channels, n_blocks, configs)
         self.ae = MG_AutoEncoder(
             mgrids=mgrids,
             in_zooms=zooms,
             encoder_block_configs=encoder,
             decoder_block_configs=decoder,
-            n_head_channels=blocks.n_head_channels,
+            n_head_channels=configs.n_head_channels,
         )
-        self.step = _sample_configs(1, 0, range(len(mgrids)))
+        self.sample_configs = _sample_configs(1, 0, range(len(mgrids)))
 
     # FieldSpaceNN blocks write their outputs into the input dict: pass copies.
-    def encode(self, levels: Levels, emb) -> Levels:
-        return self.ae.ae_encode([dict(levels)], sample_configs=self.step, emb_groups=[emb])[0]
+    def encode(self, levels: Levels, time_emb) -> Levels:
+        return self.ae.ae_encode([dict(levels)], sample_configs=self.sample_configs, emb_groups=[time_emb])[0]
 
-    def decode(self, latent: Levels, emb) -> Levels:
-        return self.ae.ae_decode([dict(latent)], sample_configs=self.step, emb_groups=[emb])[0]
+    def decode(self, latent: Levels, time_emb) -> Levels:
+        return self.ae.ae_decode([dict(latent)], sample_configs=self.sample_configs, emb_groups=[time_emb])[0]
 
 
 class Forecaster(nn.Module):
-    """MG transformer over the latent levels: ``n_history`` latents plus one
-    future slot (a copy of the latest, FieldSpaceNN's ``repeat`` convention)
-    form one token per backbone cell; the future slot is returned. The gates
-    start near zero, so the untrained forecast is persistence."""
+    """MG transformer over the latent levels: the ``n_context`` context
+    latents plus one future slot (a copy of the latest, FieldSpaceNN's
+    ``repeat`` convention) form one token per backbone cell; the future slot
+    is returned. The gates start near zero, so the untrained forecast is
+    persistence."""
 
-    def __init__(self, grid_layers, latent_features: Dict[int, int], n_history, n_blocks, blocks: _Blocks):
+    def __init__(self, grid_layers, latent_features: Dict[int, int], n_context, n_blocks, configs: _BlockConfigs):
         super().__init__()
         zooms = sorted(latent_features)
         self.blocks = nn.ModuleList(
             create_encoder_decoder_block(
-                blocks.attention(zooms, token_len_time=n_history + 1),
+                configs.attention(zooms, token_len_time=n_context + 1),
                 zooms,
                 [latent_features[z] for z in zooms],
                 [1],
                 grid_layers=grid_layers,
-                n_head_channels=blocks.n_head_channels,
+                n_head_channels=configs.n_head_channels,
             )
             for _ in range(n_blocks)
         )
-        self.window = _sample_configs(n_history, 1, range(len(grid_layers)))
+        self.sample_configs = _sample_configs(n_context, 1, range(len(grid_layers)))
 
-    def forward(self, history: Levels, emb) -> Levels:
-        x = [{z: torch.cat([h, h[:, :, -1:]], dim=2) for z, h in history.items()}]
+    def forward(self, context: Levels, time_emb) -> Levels:
+        x = [{z: torch.cat([c, c[:, :, -1:]], dim=2) for z, c in context.items()}]  # append the future slot
         for block in self.blocks:
-            x = block(x, sample_configs=self.window, emb_groups=[emb])
+            x = block(x, sample_configs=self.sample_configs, emb_groups=[time_emb])
         return {z: t[:, :, -1:] for z, t in x[0].items()}
 
 
@@ -257,7 +262,7 @@ class ReconstructorForecaster(nn.Module):
         levels: Sequence[int],
         latent_level: int,
         nlev: int,
-        n_history: int = 4,
+        n_context: int = 4,
         latent_channels: int = 4,
         n_blocks: int = 2,
         n_forecaster_blocks: int = 2,
@@ -272,19 +277,19 @@ class ReconstructorForecaster(nn.Module):
         self.fine_zoom = self.zooms[-1]
         self.nlev = nlev
         self.all_zooms = list(range(len(mgrids)))
-        self.step = _sample_configs(1, 0, self.all_zooms)
-        blocks = _Blocks(att_dim, n_head_channels, hidden_dim, time_embed_dim)
+        self.sample_configs = _sample_configs(1, 0, self.all_zooms)
+        configs = _BlockConfigs(att_dim, n_head_channels, hidden_dim, time_embed_dim)
 
         self.reconstructor = Reconstructor(
-            mgrids, self.zooms, latent_level - levels[0], latent_channels, n_blocks, blocks
+            mgrids, self.zooms, latent_level - levels[0], latent_channels, n_blocks, configs
         )
         self.forecaster = Forecaster(
-            self.reconstructor.ae.grid_layers, self.reconstructor.latent_features, n_history, n_forecaster_blocks, blocks
+            self.reconstructor.ae.grid_layers, self.reconstructor.latent_features, n_context, n_forecaster_blocks, configs
         )
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
         self.frozen.requires_grad_(False)
 
-    def emb(self, times: Sequence[Sequence[float]]):
+    def time_emb(self, times: Sequence[Sequence[float]]):
         """Time embedding input: one row of valid times (unix seconds) along
         the time axis per batch sample, on the default device (the trainer
         sets it). A new dict every call: FieldSpaceNN blocks add keys to it."""
@@ -294,29 +299,30 @@ class ReconstructorForecaster(nn.Module):
     def to_levels(self, x: torch.Tensor) -> Levels:
         """(n_fine, nlev) -> backbone mean and zero-mean residuals per level."""
         x = x.reshape(1, 1, 1, -1, self.nlev, 1).clone()  # encode_zooms subtracts in place
-        return encode_zooms({z: to_zoom(x, self.fine_zoom, z)[0] for z in self.zooms}, self.step, None)
+        return encode_zooms({z: to_zoom(x, self.fine_zoom, z)[0] for z in self.zooms}, self.sample_configs, None)
 
     def to_field(self, levels: Levels) -> torch.Tensor:
         """Inverse of :meth:`to_levels`."""
-        return decode_zooms(dict(levels), self.step, self.fine_zoom)[self.fine_zoom].reshape(-1, self.nlev)
+        return decode_zooms(dict(levels), self.sample_configs, self.fine_zoom)[self.fine_zoom].reshape(-1, self.nlev)
 
     def encode_frozen(self, levels: Levels, seconds: float) -> Levels:
-        return self.frozen.module.encode(levels, self.emb([[seconds]]))
+        return self.frozen.module.encode(levels, self.time_emb([[seconds]]))
 
     def decode_frozen(self, latent: Levels, seconds: float) -> Levels:
-        return self.frozen.module.decode(latent, self.emb([[seconds]]))
+        return self.frozen.module.decode(latent, self.time_emb([[seconds]]))
 
-    def forecast(self, history: Levels, times: Sequence[Sequence[float]]) -> Levels:
-        """Latent forecast of a batch of histories; ``times`` has one row per
-        sample: the history's valid times, then the forecast's."""
-        return self.forecaster(history, self.emb(times))
+    def forecast(self, context: Levels, times: Sequence[Sequence[float]]) -> Levels:
+        """Latent forecast of a batch of contexts; ``times`` has one row per
+        sample: the context's valid times, then the forecast's."""
+        return self.forecaster(context, self.time_emb(times))
 
-    def forward(self, levels: Levels, seconds: float, history: Levels, times: Sequence[Sequence[float]]):
+    def forward(self, levels: Levels, seconds: float, context: Levels, times: Sequence[Sequence[float]]):
         """Training pass: the reconstruction of x_t and the latent forecasts of
         a batch of windows. One call, so DDP sees every trainable parameter
         once."""
-        recon = self.reconstructor.decode(self.reconstructor.encode(levels, self.emb([[seconds]])), self.emb([[seconds]]))
-        return recon, self.forecast(history, times)
+        latent = self.reconstructor.encode(levels, self.time_emb([[seconds]]))
+        recon = self.reconstructor.decode(latent, self.time_emb([[seconds]]))
+        return recon, self.forecast(context, times)
 
 
 class OnlineReconstructorForecaster:
@@ -329,7 +335,7 @@ class OnlineReconstructorForecaster:
         levels: Sequence[int],
         latent_level: int,
         nlev: int,
-        n_history: int = 4,
+        n_context: int = 4,
         lr_recon: float = 2e-4,
         lr_forecast: float = 2e-4,
         replay_size: int = 0,
@@ -343,7 +349,7 @@ class OnlineReconstructorForecaster:
         # passes; the grids must be on the same device as those.
         mgrids = [{k: v.to(device) if torch.is_tensor(v) else v for k, v in grid.items()} for grid in mgrids]
         with torch.device(device):
-            self.model = ReconstructorForecaster(mgrids, levels, latent_level, nlev, n_history, **model_kwargs)
+            self.model = ReconstructorForecaster(mgrids, levels, latent_level, nlev, n_context, **model_kwargs)
         self.ddp_model = (
             DDP(self.model, broadcast_buffers=False)  # grid buffers differ: patch sizes differ
             if dist.is_initialized() and dist.get_world_size() > 1
@@ -356,9 +362,9 @@ class OnlineReconstructorForecaster:
             ]
         )
         self.level_loss = MGMultiLoss({str(z): {"MSE_loss": 1.0} for z in self.model.zooms})
-        self.history = deque(maxlen=n_history)  # (seconds, frozen latent) per sample step
+        self.context = deque(maxlen=n_context)  # (seconds, frozen latent) of the latest sample steps
         rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
-        self.replay = LatentReplay(replay_size, replay_batch, rng)
+        self.replay_buffer = ReplayBuffer(replay_size, replay_batch, rng)
 
     def _loss(self, output: Levels, target: Levels):
         """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
@@ -371,35 +377,35 @@ class OnlineReconstructorForecaster:
         """Per-level mean square: the MSE of predicting zero for ``levels``."""
         return {z: float(t.square().mean()) for z, t in levels.items()}
 
-    def _history(self):
-        """Cached frozen latents stacked on the time axis, oldest first, and
+    def _stacked_context(self):
+        """The context latents stacked on the time axis, oldest first, and
         their valid times."""
-        latents = [c for _, c in self.history]
-        return {z: torch.cat([c[z] for c in latents], dim=2) for z in latents[0]}, [s for s, _ in self.history]
+        latents = [c for _, c in self.context]
+        return {z: torch.cat([c[z] for c in latents], dim=2) for z in latents[0]}, [s for s, _ in self.context]
 
     def train_step(self, x: torch.Tensor, seconds: float) -> Dict:
         """Train on the normalized patch ``x`` (n_fine, nlev) valid at
-        ``seconds`` once the history is full, then cache its frozen latent.
-        Returns the per-level losses for the log, empty while the history
-        fills."""
+        ``seconds`` once the context is full, then add its frozen latent to the
+        context. Returns the per-level losses for the log, empty while the
+        context fills."""
         stats = {}
         self.model.train()
         with torch.device(self.device):
             levels = self.model.to_levels(x)
             with torch.no_grad():
                 latent = self.model.encode_frozen(levels, seconds)
-            if len(self.history) == self.history.maxlen:
+            if len(self.context) == self.context.maxlen:
                 stats = self._update(levels, latent, seconds)
-            self.history.append((seconds, latent))
+            self.context.append((seconds, latent))
         return stats
 
     def _update(self, levels: Levels, latent: Levels, seconds: float) -> Dict:
-        # The new window ends at c_t; the batch adds randomly drawn stored ones.
-        history, history_seconds = self._history()
-        window = Window(history, latent, history_seconds + [seconds])
-        batch = stack([window] + self.replay.sample())
+        # The live window ends at c̄_t; the batch adds windows drawn from the replay buffer.
+        context, context_seconds = self._stacked_context()
+        live = Window(context, latent, context_seconds + [seconds])
+        batch = stack_windows([live] + self.replay_buffer.sample())
 
-        recon, forecast = self.ddp_model(levels, seconds, batch.history, batch.seconds)
+        recon, forecast = self.ddp_model(levels, seconds, batch.context, batch.seconds)
         loss_recon, recon_parts = self._loss(recon, levels)
         loss_latent, latent_parts = self._loss(forecast, batch.target)
 
@@ -410,10 +416,10 @@ class OnlineReconstructorForecaster:
         if all(torch.isfinite(norm) for norm in norms):
             self.optimizer.step()
             self.model.frozen.update_parameters(self.model.reconstructor)
-        self.replay.add(window)
+        self.replay_buffer.add(live)
 
-        # Each loss per level, with the loss of outputting zero (x_t) or of persistence (c_{t-1} for c_t).
-        persistence = {z: batch.target[z] - batch.history[z][:, :, -1:] for z in batch.target}
+        # Each loss per level, with the loss of outputting zero (x_t) or of persistence (c̄_{t-1} for c̄_t).
+        persistence = {z: batch.target[z] - batch.context[z][:, :, -1:] for z in batch.target}
         return {
             "recon": recon_parts,
             "state_ms": self._mean_square(levels),
@@ -423,15 +429,15 @@ class OnlineReconstructorForecaster:
 
     @torch.no_grad()
     def predict_increment(self, seconds: float):
-        """Change of the field from the latest cached state to ``seconds``,
-        D(ĉ) - D(c_latest), both through the frozen decoder: (n_fine, nlev)
-        normalized, or ``None`` while the history fills."""
-        if len(self.history) < self.history.maxlen:
+        """Change of the field from the latest context state to ``seconds``,
+        D̄(ĉ) - D̄(c̄_latest), both through the frozen decoder: (n_fine, nlev)
+        normalized, or ``None`` while the context fills."""
+        if len(self.context) < self.context.maxlen:
             return None
         self.model.eval()
-        history, history_seconds = self._history()
-        last_seconds, last_latent = self.history[-1]
+        context, context_seconds = self._stacked_context()
+        last_seconds, last_latent = self.context[-1]
         with torch.device(self.device):
-            forecast = self.model.decode_frozen(self.model.forecast(history, [history_seconds + [seconds]]), seconds)
+            forecast = self.model.decode_frozen(self.model.forecast(context, [context_seconds + [seconds]]), seconds)
             last = self.model.decode_frozen(last_latent, last_seconds)
             return self.model.to_field({z: forecast[z] - last[z] for z in forecast})

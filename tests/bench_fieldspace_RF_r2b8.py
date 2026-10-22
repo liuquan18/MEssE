@@ -61,7 +61,7 @@ def main():
     trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1,
                                             replay_size=args.replay_size, replay_batch=args.replay_batch)
     t0 = 1577836800.0
-    for k in range(trainer.history.maxlen + args.steps):
+    for k in range(trainer.context.maxlen + args.steps):
         x = (torch.sin(40 * coords[:, :1] - 0.02 * k) * torch.cos(20 * coords[:, 1:]))
         torch.cuda.synchronize()
         t = time.perf_counter()
