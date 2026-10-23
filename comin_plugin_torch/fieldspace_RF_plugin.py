@@ -13,9 +13,17 @@ both models and forecasts the next sample step.
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
 units) and prints, per level, the loss each model is trained on with its
-reference: ``recon`` vs ``state_ms`` (outputting zero) and, per latent level
-(``r6`` = the R2B6' latent), ``latent_mse`` vs ``latent_persist``
-(persistence), both over the forecaster's whole batch.
+reference: ``recon`` vs ``state_ms`` (outputting zero), over all variables,
+and, per latent level (``r6`` = the R2B6' latent), ``latent_mse`` vs
+``latent_persist`` (persistence) of the forecast variable, both over the
+forecaster's whole batch.
+
+The ICON fields ``MESSE_AE_FORCINGS`` (e.g. SST, sea ice, orography) go
+through both models as extra variables after the forecast variable
+(fieldspace_RF_online.py, "Variables"); only the forecast variable is
+forecast and written. They are read at every sample step after the dry run,
+and each is normalized by one global mean/std over all ranks' patches, taken
+when training starts (a per-cell std would erase static fields).
 
 The forecaster's batch is the live window plus ``MESSE_AE_REPLAY_BATCH``
 windows drawn from the replay buffer, which keeps those of the last
@@ -58,6 +66,8 @@ from MEssE.utils.icon_online_helper import (
 env = os.environ.get
 DOMAIN_ID = 1
 VARIABLE = env("MESSE_ICON_VAR", "uas")  # AES 10 m zonal wind (u_10m in NWP)
+# AES names: SST (water tile of ts_tile), sea ice fraction, TOA incoming shortwave, orography.
+FORCINGS = [v for v in env("MESSE_AE_FORCINGS", "ts_wtr,sic,rsdt,orog").split(",") if v]
 LEVELS = [int(v) for v in env("MESSE_AE_LEVELS", "4,6,7,8").split(",")]  # backbone first, last = ICON's grid
 LATENT_LEVEL = int(env("MESSE_AE_LATENT_LEVEL", "6"))
 GRID_DIR = env("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
@@ -123,6 +133,8 @@ comin.print_info(
 class State:
     icon_var = None
     predict_var = None
+    forcing_vars = []
+    forcing_mean = forcing_std = None  # global, per forcing
     first_seconds = None  # model time of the first callback
     sample_seconds = None  # SAMPLE_SECONDS rounded to whole ICON steps
     normalizer = None
@@ -136,11 +148,31 @@ def _seconds() -> float:
     return parse_icon_datetime(comin.current_get_datetime()).timestamp()
 
 
-def _patch() -> torch.Tensor:
-    """Collective: this rank's patch of the ICON variable, (n_fine, nlev) on the GPU."""
-    cells = extract_icon_cells(State.icon_var, domain.cells.ncells)
-    cells = cells.get() if hasattr(cells, "get") else cells  # cupy -> numpy for MPI
-    return torch.from_numpy(exchange.to_patch(compute_comm, cells.reshape(len(cells), -1))).to(DEVICE)
+def _patch(variables) -> torch.Tensor:
+    """Collective: this rank's patch of the ICON variables, (n_fine, levels
+    of all variables) on the GPU."""
+    columns = [np.empty((domain.cells.ncells, 0), dtype=np.float32)]  # concatenate needs one array
+    for var in variables:
+        cells = extract_icon_cells(var, domain.cells.ncells)
+        cells = cells.get() if hasattr(cells, "get") else cells  # cupy -> numpy for MPI
+        columns.append(cells.reshape(len(cells), -1))
+    return torch.from_numpy(exchange.to_patch(compute_comm, np.concatenate(columns, axis=1))).to(DEVICE)
+
+
+def _global_mean_std(patch: torch.Tensor):
+    """Collective: mean and std of every column over all patches, i.e. over
+    every ICON cell once."""
+    values = patch.double().cpu().numpy()
+    sums = np.stack([values.sum(axis=0), np.square(values).sum(axis=0)])
+    compute_comm.Allreduce(MPI.IN_PLACE, sums)
+    n = compute_comm.allreduce(len(values))
+    mean = sums[0] / n
+    std = np.sqrt(np.maximum(sums[1] / n - mean**2, 1e-12))
+    return torch.tensor(mean, dtype=torch.float32, device=DEVICE), torch.tensor(std, dtype=torch.float32, device=DEVICE)
+
+
+def _stats(names, mean, std) -> str:
+    return " ".join(f"{name}={m:.4g}±{s:.4g}" for name, m, s in zip(names, mean.tolist(), std.tolist()))
 
 
 def _write(forecast: torch.Tensor) -> None:
@@ -149,9 +181,22 @@ def _write(forecast: torch.Tensor) -> None:
     insert_icon_cells(owned.astype(np.float64), State.predict_var, indices=exchange.send_ids)
 
 
-def _trainer(nlev: int) -> OnlineReconstructorForecaster:
+def _trainer(nlev: int, forcing: torch.Tensor) -> OnlineReconstructorForecaster:
+    """Collective. ``forcing``: the physical forcing patch now, for the
+    forcings' normalization."""
+    State.forcing_mean, State.forcing_std = _global_mean_std(forcing)
+    comin.print_info(f"forcings (mean±std over all cells): {_stats(FORCINGS, State.forcing_mean, State.forcing_std)}")
     replay_size = int(REPLAY_SECONDS // State.sample_seconds)
-    trainer = OnlineReconstructorForecaster(mgrids, LEVELS, LATENT_LEVEL, nlev, replay_size=replay_size, device=DEVICE, **MODEL)
+    trainer = OnlineReconstructorForecaster(
+        mgrids,
+        LEVELS,
+        LATENT_LEVEL,
+        nlev,
+        n_variables=1 + len(FORCINGS),
+        replay_size=replay_size,
+        device=DEVICE,
+        **MODEL,
+    )
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
         trainer.model.load_state_dict(ckpt["model_state_dict"])
@@ -184,6 +229,7 @@ def sec_ctor():
     ep = [comin.EP_ATM_WRITE_OUTPUT_BEFORE]
     State.icon_var = comin.var_get(ep, (VARIABLE, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG)
     State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | DEVICE_FLAG)
+    State.forcing_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG) for name in FORCINGS]
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
@@ -204,20 +250,21 @@ def sample_step():
         )
     if round(now - State.first_seconds) % State.sample_seconds:
         return
-    patch = _patch()
+    patch = _patch([State.icon_var])
 
     if State.normalizer is None:
         State.normalizer = RunningMeanStd(patch.shape, int(DRY_RUN_SECONDS // State.sample_seconds), DEVICE)
     if not State.normalizer.update(patch):
         return
     std = State.normalizer.stats.std
+    forcing = _patch(State.forcing_vars)
     if State.trainer is None:
         comin.print_info(
             f"dry run done at {comin.current_get_datetime()}: per-cell mean/std of {VARIABLE} from "
             f"{State.normalizer.count} samples (rank 0 std {float(std.min()):.3g}-{float(std.max()):.3g}); "
             f"training starts once {MODEL['n_context']} sample steps of context are cached"
         )
-        State.trainer = _trainer(nlev=patch.shape[1])
+        State.trainer = _trainer(patch.shape[1], forcing)
 
     # Score and write the forecast made one sample step ago, which is valid now.
     scores = ""
@@ -229,7 +276,10 @@ def sample_step():
 
     torch.cuda.synchronize()
     start = time.perf_counter()
-    stats = State.trainer.train_step(State.normalizer.normalize(patch), now)
+    # Variables: the forecast variable, then the 2D forcings on each of its levels.
+    forcing = ((forcing - State.forcing_mean) / State.forcing_std)[:, :, None].expand(-1, -1, patch.shape[1])
+    x = torch.cat([State.normalizer.normalize(patch)[:, None], forcing], dim=1)
+    stats = State.trainer.train_step(x, now)
     increment = State.trainer.predict_increment(now + State.sample_seconds)
     torch.cuda.synchronize()
     State.forecast = None if increment is None else patch + increment * std
@@ -244,7 +294,9 @@ def sample_step():
     State.step += 1
     if State.step % max(1, int(SAVE_INTERVAL_SECONDS // State.sample_seconds)) == 0:
         norm = State.normalizer.stats
-        save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, {"norm_mean": norm.mean, "norm_std": norm.std})
+        extra = {"norm_mean": norm.mean, "norm_std": norm.std}
+        extra.update(forcings=FORCINGS, forcing_mean=State.forcing_mean, forcing_std=State.forcing_std)
+        save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, extra)
         comin.print_info(f"checkpoint at step {State.step}, {comin.current_get_datetime()}: {CHECKPOINT_PATH}")
 
 

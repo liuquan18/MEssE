@@ -11,6 +11,8 @@ by pytest. Run on a GPU node, from the project root:
 
 ``--replay-batch 0`` times the forecaster without latent replay; with replay,
 the batch is full from step ``--replay-batch`` + 1 of the timed steps.
+``--forcings`` sets the number of synthetic forcing fields, extra variables
+of both models (0 = the forecast variable only).
 """
 
 import argparse
@@ -36,6 +38,8 @@ def main():
     parser.add_argument("--steps", type=int, default=15, help="timed training steps")
     parser.add_argument("--replay-size", type=int, default=144)
     parser.add_argument("--replay-batch", type=int, default=10)
+    parser.add_argument("--n-context", type=int, default=4)
+    parser.add_argument("--forcings", type=int, default=4, help="plugin default: ts_wtr, sic, rsdt, orog")
     parser.add_argument("--grid-dir", default="/pool/data/ICON/grids/mpim")
     args = parser.parse_args()
     levels = [int(v) for v in args.levels.split(",")]
@@ -58,11 +62,17 @@ def main():
     print(f"setup {time.perf_counter() - t:.1f}s: backbone cells per rank {per_rank.min()}-{per_rank.max()}, "
           f"largest patch {len(coords)} R2B{levels[-1]} cells", flush=True)
 
-    trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1,
+    trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1, n_context=args.n_context,
+                                            n_variables=1 + args.forcings,
                                             replay_size=args.replay_size, replay_batch=args.replay_batch)
+    print(f"{trainer.model.n_variables} variables, reconstructor "
+          f"{sum(p.numel() for p in trainer.model.reconstructor.parameters()):,} / forecaster "
+          f"{sum(p.numel() for p in trainer.model.forecaster.parameters()):,} parameters", flush=True)
     t0 = 1577836800.0
     for k in range(trainer.context.maxlen + args.steps):
         x = (torch.sin(40 * coords[:, :1] - 0.02 * k) * torch.cos(20 * coords[:, 1:]))
+        forcing = torch.sin(10 * coords[:, 1:] * torch.arange(1, args.forcings + 1, device=coords.device) - 0.01 * k)
+        x = torch.cat([x, forcing], dim=1)[:, :, None]  # (n, variables, nlev=1)
         torch.cuda.synchronize()
         t = time.perf_counter()
         stats = trainer.train_step(x, t0 + 600.0 * k)

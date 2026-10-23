@@ -29,6 +29,20 @@ FORECASTER
     below). What is written to ICON is the increment through the frozen
     decoder, D̄(ĉ_{t+1}) - D̄(c̄_t).
 
+Variables
+---------
+x holds ``n_variables`` ICON fields on FieldSpaceNN's variable axis: variable
+0 is the forecast variable (e.g. ``uas``), the others are forcings (e.g. SST,
+sea ice, TOA incoming shortwave, orography). The reconstructor treats them
+alike, so the latent keeps the forcings' fine levels (e.g. orography at R2B8)
+compressed like the forecast variable's. All blocks attend across variables
+(``with_var_att``) and give each variable its own weights
+(``n_groups_variables``, ids in ``VariableEmbedder``), as in FieldSpaceNN's
+configs. Only variable 0 is forecast: ``L_latent`` and ``latent_persist``
+cover variable 0 of the latent, and the increment written to ICON is variable
+0's. The forcings at the forecast time are not known yet, so ĉ_{t+1} is
+decoded with the forcing latents of c̄_t.
+
 The two are trained independently: the forecaster's loss reaches only the
 forecaster. The frozen encoder/decoder is an exponential moving average of the
 reconstructor (`torch.optim.swa_utils.AveragedModel`). It encodes every
@@ -55,9 +69,9 @@ At sample step t (context full)
 3. The live window goes into the replay buffer, c̄_t joins the context, and
    the plugin asks for the increment to t+1.
 4. Returned for the log, per level: both losses and their references,
-   ``state_ms`` (mean square of x_t, the loss of outputting zero) and
-   ``latent_persist`` (mean square of c̄_t - c̄_{t-1} over the batch, the loss
-   of persistence).
+   ``state_ms`` (mean square of x_t over all variables, the loss of
+   outputting zero) and ``latent_persist`` (mean square of c̄_t - c̄_{t-1} of
+   variable 0 over the batch, the loss of persistence).
 """
 
 from collections import deque
@@ -76,7 +90,7 @@ from fieldspacenn.src.modules.field_space.field_space_layer import FieldSpaceLay
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms, encode_zooms, to_zoom
 from fieldspacenn.src.utils.losses import MGMultiLoss
 
-# {zoom: (b, v=1, t, n_zoom, d=nlev, f)}, FieldSpaceNN's layout.
+# {zoom: (b, v, t, n_zoom, d=nlev, f)}, FieldSpaceNN's layout.
 Levels = Dict[int, torch.Tensor]
 
 # TimeEmbedder periods in days, as in FieldSpaceNN's configs/embedding/default.yaml.
@@ -92,8 +106,8 @@ def _sample_configs(n_past: int, n_future: int, zooms: Sequence[int]) -> Dict[in
 class Window(NamedTuple):
     """One forecaster training sample, batch size 1."""
 
-    context: Levels  # frozen latents c̄_{t-H} .. c̄_{t-1}
-    target: Levels  # frozen latent c̄_t
+    context: Levels  # frozen latents c̄_{t-H} .. c̄_{t-1}, all variables
+    target: Levels  # frozen latent c̄_t, variable 0
     seconds: List[float]  # valid times of the context, then of the target
 
 
@@ -128,8 +142,8 @@ class ReplayBuffer:
 
 class _BlockConfigs:
     """FieldSpaceNN block configs shared by all models: attention tokens on
-    the backbone, time conditioning, ``ext`` blocks (the legacy blocks reject
-    levels with different channel counts)."""
+    the backbone and across variables, time conditioning, ``ext`` blocks (the
+    legacy blocks reject levels with different channel counts)."""
 
     def __init__(self, att_dim, n_head_channels, hidden_dim, time_embed_dim):
         self.att_dim, self.n_head_channels, self.hidden_dim = att_dim, n_head_channels, hidden_dim
@@ -158,6 +172,7 @@ class _BlockConfigs:
             att_dim=self.att_dim,
             n_head_channels=self.n_head_channels,
             token_len_time=token_len_time,
+            with_var_att=True,
             embed_confs=self.time,
             block_type="ext",
         )
@@ -201,9 +216,9 @@ def autoencoder_configs(zooms: List[int], latent_zoom: int, channels: int, n_blo
 
 
 class Reconstructor(nn.Module):
-    """Encoder/decoder between a field's levels and its latent."""
+    """Encoder/decoder between the variables' levels and their latent."""
 
-    def __init__(self, mgrids, zooms, latent_zoom, channels, n_blocks, configs: _BlockConfigs):
+    def __init__(self, mgrids, zooms, latent_zoom, channels, n_blocks, n_variables, configs: _BlockConfigs):
         super().__init__()
         encoder, decoder, self.latent_features = autoencoder_configs(zooms, latent_zoom, channels, n_blocks, configs)
         self.ae = MG_AutoEncoder(
@@ -211,26 +226,29 @@ class Reconstructor(nn.Module):
             in_zooms=zooms,
             encoder_block_configs=encoder,
             decoder_block_configs=decoder,
+            n_groups_variables=[n_variables],
             n_head_channels=configs.n_head_channels,
         )
         self.sample_configs = _sample_configs(1, 0, range(len(mgrids)))
 
     # FieldSpaceNN blocks write their outputs into the input dict: pass copies.
-    def encode(self, levels: Levels, time_emb) -> Levels:
-        return self.ae.ae_encode([dict(levels)], sample_configs=self.sample_configs, emb_groups=[time_emb])[0]
+    def encode(self, levels: Levels, emb) -> Levels:
+        return self.ae.ae_encode([dict(levels)], sample_configs=self.sample_configs, emb_groups=[emb])[0]
 
-    def decode(self, latent: Levels, time_emb) -> Levels:
-        return self.ae.ae_decode([dict(latent)], sample_configs=self.sample_configs, emb_groups=[time_emb])[0]
+    def decode(self, latent: Levels, emb) -> Levels:
+        return self.ae.ae_decode([dict(latent)], sample_configs=self.sample_configs, emb_groups=[emb])[0]
 
 
 class Forecaster(nn.Module):
     """MG transformer over the latent levels: the ``n_context`` context
     latents plus one future slot (a copy of the latest, FieldSpaceNN's
-    ``repeat`` convention) form one token per backbone cell; the future slot
-    is returned. The gates start near zero, so the untrained forecast is
-    persistence."""
+    ``repeat`` convention) form one token per backbone cell and variable;
+    variable 0 of the future slot is returned. The gates start near zero, so
+    the untrained forecast is persistence."""
 
-    def __init__(self, grid_layers, latent_features: Dict[int, int], n_context, n_blocks, configs: _BlockConfigs):
+    def __init__(
+        self, grid_layers, latent_features: Dict[int, int], n_variables, n_context, n_blocks, configs: _BlockConfigs
+    ):
         super().__init__()
         zooms = sorted(latent_features)
         self.blocks = nn.ModuleList(
@@ -238,7 +256,7 @@ class Forecaster(nn.Module):
                 configs.attention(zooms, token_len_time=n_context + 1),
                 zooms,
                 [latent_features[z] for z in zooms],
-                [1],
+                [n_variables],
                 grid_layers=grid_layers,
                 n_head_channels=configs.n_head_channels,
             )
@@ -246,11 +264,11 @@ class Forecaster(nn.Module):
         )
         self.sample_configs = _sample_configs(n_context, 1, range(len(grid_layers)))
 
-    def forward(self, context: Levels, time_emb) -> Levels:
+    def forward(self, context: Levels, emb) -> Levels:
         x = [{z: torch.cat([c, c[:, :, -1:]], dim=2) for z, c in context.items()}]  # append the future slot
         for block in self.blocks:
-            x = block(x, sample_configs=self.sample_configs, emb_groups=[time_emb])
-        return {z: t[:, :, -1:] for z, t in x[0].items()}
+            x = block(x, sample_configs=self.sample_configs, emb_groups=[emb])
+        return {z: t[:, :1, -1:] for z, t in x[0].items()}
 
 
 class ReconstructorForecaster(nn.Module):
@@ -263,6 +281,7 @@ class ReconstructorForecaster(nn.Module):
         latent_level: int,
         nlev: int,
         n_context: int = 4,
+        n_variables: int = 1,
         latent_channels: int = 4,
         n_blocks: int = 2,
         n_forecaster_blocks: int = 2,
@@ -275,53 +294,64 @@ class ReconstructorForecaster(nn.Module):
         super().__init__()
         self.zooms = [level - levels[0] for level in levels]
         self.fine_zoom = self.zooms[-1]
-        self.nlev = nlev
+        self.nlev, self.n_variables = nlev, n_variables
         self.all_zooms = list(range(len(mgrids)))
         self.sample_configs = _sample_configs(1, 0, self.all_zooms)
         configs = _BlockConfigs(att_dim, n_head_channels, hidden_dim, time_embed_dim)
 
         self.reconstructor = Reconstructor(
-            mgrids, self.zooms, latent_level - levels[0], latent_channels, n_blocks, configs
+            mgrids, self.zooms, latent_level - levels[0], latent_channels, n_blocks, n_variables, configs
         )
         self.forecaster = Forecaster(
-            self.reconstructor.ae.grid_layers, self.reconstructor.latent_features, n_context, n_forecaster_blocks, configs
+            self.reconstructor.ae.grid_layers,
+            self.reconstructor.latent_features,
+            n_variables,
+            n_context,
+            n_forecaster_blocks,
+            configs,
         )
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
         self.frozen.requires_grad_(False)
 
-    def time_emb(self, times: Sequence[Sequence[float]]):
-        """Time embedding input: one row of valid times (unix seconds) along
-        the time axis per batch sample, on the default device (the trainer
-        sets it). A new dict every call: FieldSpaceNN blocks add keys to it."""
+    def emb(self, times: Sequence[Sequence[float]]):
+        """FieldSpaceNN's embedding inputs, on the default device (the trainer
+        sets it): one row of valid times (unix seconds) along the time axis per
+        batch sample, and the variable ids. A new dict every call: FieldSpaceNN
+        blocks add keys to it."""
         days = torch.tensor([[s / 86400.0 for s in row] for row in times])
-        return {"TimeEmbedder": {zoom: days for zoom in self.all_zooms}}
+        return {
+            "TimeEmbedder": {zoom: days for zoom in self.all_zooms},
+            "VariableEmbedder": torch.arange(self.n_variables).repeat(len(times), 1),
+        }
 
     def to_levels(self, x: torch.Tensor) -> Levels:
-        """(n_fine, nlev) -> backbone mean and zero-mean residuals per level."""
-        x = x.reshape(1, 1, 1, -1, self.nlev, 1).clone()  # encode_zooms subtracts in place
+        """(n_fine, n_variables, nlev) -> backbone mean and zero-mean residuals
+        per level."""
+        x = x.permute(1, 0, 2).reshape(1, self.n_variables, 1, -1, self.nlev, 1).clone()  # encode_zooms works in place
         return encode_zooms({z: to_zoom(x, self.fine_zoom, z)[0] for z in self.zooms}, self.sample_configs, None)
 
     def to_field(self, levels: Levels) -> torch.Tensor:
         """Inverse of :meth:`to_levels`."""
-        return decode_zooms(dict(levels), self.sample_configs, self.fine_zoom)[self.fine_zoom].reshape(-1, self.nlev)
+        field = decode_zooms(dict(levels), self.sample_configs, self.fine_zoom)[self.fine_zoom]
+        return field.reshape(self.n_variables, -1, self.nlev).permute(1, 0, 2)
 
     def encode_frozen(self, levels: Levels, seconds: float) -> Levels:
-        return self.frozen.module.encode(levels, self.time_emb([[seconds]]))
+        return self.frozen.module.encode(levels, self.emb([[seconds]]))
 
     def decode_frozen(self, latent: Levels, seconds: float) -> Levels:
-        return self.frozen.module.decode(latent, self.time_emb([[seconds]]))
+        return self.frozen.module.decode(latent, self.emb([[seconds]]))
 
     def forecast(self, context: Levels, times: Sequence[Sequence[float]]) -> Levels:
-        """Latent forecast of a batch of contexts; ``times`` has one row per
-        sample: the context's valid times, then the forecast's."""
-        return self.forecaster(context, self.time_emb(times))
+        """Latent forecast of variable 0 for a batch of contexts; ``times`` has
+        one row per sample: the context's valid times, then the forecast's."""
+        return self.forecaster(context, self.emb(times))
 
     def forward(self, levels: Levels, seconds: float, context: Levels, times: Sequence[Sequence[float]]):
         """Training pass: the reconstruction of x_t and the latent forecasts of
         a batch of windows. One call, so DDP sees every trainable parameter
         once."""
-        latent = self.reconstructor.encode(levels, self.time_emb([[seconds]]))
-        recon = self.reconstructor.decode(latent, self.time_emb([[seconds]]))
+        latent = self.reconstructor.encode(levels, self.emb([[seconds]]))
+        recon = self.reconstructor.decode(latent, self.emb([[seconds]]))
         return recon, self.forecast(context, times)
 
 
@@ -384,10 +414,10 @@ class OnlineReconstructorForecaster:
         return {z: torch.cat([c[z] for c in latents], dim=2) for z in latents[0]}, [s for s, _ in self.context]
 
     def train_step(self, x: torch.Tensor, seconds: float) -> Dict:
-        """Train on the normalized patch ``x`` (n_fine, nlev) valid at
-        ``seconds`` once the context is full, then add its frozen latent to the
-        context. Returns the per-level losses for the log, empty while the
-        context fills."""
+        """Train on the normalized patch ``x`` (n_fine, n_variables, nlev)
+        valid at ``seconds`` once the context is full, then add its frozen
+        latent to the context. Returns the per-level losses for the log, empty
+        while the context fills."""
         stats = {}
         self.model.train()
         with torch.device(self.device):
@@ -402,7 +432,7 @@ class OnlineReconstructorForecaster:
     def _update(self, levels: Levels, latent: Levels, seconds: float) -> Dict:
         # The live window ends at c̄_t; the batch adds windows drawn from the replay buffer.
         context, context_seconds = self._stacked_context()
-        live = Window(context, latent, context_seconds + [seconds])
+        live = Window(context, {z: c[:, :1] for z, c in latent.items()}, context_seconds + [seconds])
         batch = stack_windows([live] + self.replay_buffer.sample())
 
         recon, forecast = self.ddp_model(levels, seconds, batch.context, batch.seconds)
@@ -419,7 +449,7 @@ class OnlineReconstructorForecaster:
         self.replay_buffer.add(live)
 
         # Each loss per level, with the loss of outputting zero (x_t) or of persistence (c̄_{t-1} for c̄_t).
-        persistence = {z: batch.target[z] - batch.context[z][:, :, -1:] for z in batch.target}
+        persistence = {z: batch.target[z] - batch.context[z][:, :1, -1:] for z in batch.target}
         return {
             "recon": recon_parts,
             "state_ms": self._mean_square(levels),
@@ -429,15 +459,18 @@ class OnlineReconstructorForecaster:
 
     @torch.no_grad()
     def predict_increment(self, seconds: float):
-        """Change of the field from the latest context state to ``seconds``,
-        D̄(ĉ) - D̄(c̄_latest), both through the frozen decoder: (n_fine, nlev)
-        normalized, or ``None`` while the context fills."""
+        """Change of variable 0 from the latest context state to ``seconds``,
+        D̄(ĉ) - D̄(c̄_latest), both through the frozen decoder and with the
+        forcing latents of c̄_latest: (n_fine, nlev) normalized, or ``None``
+        while the context fills."""
         if len(self.context) < self.context.maxlen:
             return None
         self.model.eval()
         context, context_seconds = self._stacked_context()
         last_seconds, last_latent = self.context[-1]
         with torch.device(self.device):
-            forecast = self.model.decode_frozen(self.model.forecast(context, [context_seconds + [seconds]]), seconds)
+            forecast = self.model.forecast(context, [context_seconds + [seconds]])
+            forecast = {z: torch.cat([forecast[z], last_latent[z][:, 1:]], dim=1) for z in forecast}
+            forecast = self.model.decode_frozen(forecast, seconds)
             last = self.model.decode_frozen(last_latent, last_seconds)
-            return self.model.to_field({z: forecast[z] - last[z] for z in forecast})
+            return self.model.to_field({z: forecast[z] - last[z] for z in forecast})[:, 0]

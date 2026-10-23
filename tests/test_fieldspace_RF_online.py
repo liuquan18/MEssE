@@ -1,7 +1,8 @@
 """Tests for fieldspace_RF_online.py on a small synthetic nested patch.
 
 Levels 0, 2, 3, 4 (backbone 0, level 1 has a grid layer but no data), latent
-level 2: two compression stages. CPU only, no comin, no MPI.
+level 2: two compression stages. Variable 0 plus two forcings unless a test
+says otherwise. CPU only, no comin, no MPI.
 """
 
 import pytest
@@ -12,23 +13,24 @@ from icon_nested_mgrid import patch_mgrid
 from test_icon_nested_mgrid import synthetic_global_mgrid
 
 LEVELS, LATENT_LEVEL, N_CONTEXT, NLEV = [0, 2, 3, 4], 2, 3, 1
+N_VARIABLES = 3
 T0, DT = 1.78e9, 600.0
 N_BACKBONE = 10
 N_FINE = N_BACKBONE * 4**4
 
 
-def _trainer(**kwargs):
+def _trainer(n_variables=N_VARIABLES, **kwargs):
     torch.manual_seed(0)
     mgrids = patch_mgrid(synthetic_global_mgrid(n_levels=5), torch.arange(N_BACKBONE))
     config = dict(n_context=N_CONTEXT, device=torch.device("cpu"), att_dim=16, n_head_channels=4,
-                  hidden_dim=16, time_embed_dim=8, n_blocks=1, n_forecaster_blocks=1)
+                  hidden_dim=16, time_embed_dim=8, n_blocks=1, n_forecaster_blocks=1, n_variables=n_variables)
     config.update(kwargs)
     return OnlineReconstructorForecaster(mgrids, LEVELS, LATENT_LEVEL, NLEV, **config)
 
 
-def _field(k):
+def _field(k, n_variables=N_VARIABLES):
     torch.manual_seed(100 + k)
-    return torch.randn(N_FINE, NLEV)
+    return torch.randn(N_FINE, n_variables, NLEV)
 
 
 def test_levels_are_backbone_mean_plus_zero_mean_residuals_and_invert_exactly():
@@ -38,10 +40,11 @@ def test_levels_are_backbone_mean_plus_zero_mean_residuals_and_invert_exactly():
     levels = model.to_levels(x)
     assert torch.equal(x, x_copy)  # input untouched (encode_zooms works in place)
     assert sorted(levels) == [0, 2, 3, 4]
-    assert torch.allclose(levels[0].flatten(), x.reshape(N_BACKBONE, -1).mean(dim=1), atol=1e-6)
+    per_variable = x.permute(1, 0, 2).reshape(N_VARIABLES, N_BACKBONE, -1)
+    assert torch.allclose(levels[0][0, :, 0, :, 0, 0], per_variable.mean(dim=2), atol=1e-6)
     for parent, zoom in [(0, 2), (2, 3), (3, 4)]:
-        residual = levels[zoom].reshape(-1, 4 ** (zoom - parent))
-        assert torch.allclose(residual.mean(dim=1), torch.zeros(1), atol=1e-5)
+        residual = levels[zoom].reshape(N_VARIABLES, -1, 4 ** (zoom - parent))
+        assert torch.allclose(residual.mean(dim=2), torch.zeros(1), atol=1e-5)
     assert torch.allclose(model.to_field(levels), x, atol=1e-5)
 
 
@@ -69,10 +72,11 @@ def test_context_fills_before_training_and_forecasting():
     assert sorted(stats["latent_mse"]) == sorted(stats["latent_persist"]) == [0, 2]  # latent levels
 
 
-def test_untrained_forecast_is_persistence():
-    trainer = _trainer()
+@pytest.mark.parametrize("n_variables", [1, N_VARIABLES])
+def test_untrained_forecast_is_persistence(n_variables):
+    trainer = _trainer(n_variables)
     for k in range(N_CONTEXT):
-        trainer.train_step(_field(k), T0 + k * DT)
+        trainer.train_step(_field(k, n_variables), T0 + k * DT)
     increment = trainer.predict_increment(T0 + N_CONTEXT * DT)
     assert increment.shape == (N_FINE, NLEV)
     assert increment.abs().max() < 1e-4
@@ -98,6 +102,8 @@ def test_models_are_trained_independently():
     context, seconds = trainer._stacked_context()
     levels = model.to_levels(_field(9))
     recon, forecast = model(levels, T0 + N_CONTEXT * DT, context, [seconds + [T0 + N_CONTEXT * DT]])
+    assert all(r.shape[1] == N_VARIABLES for r in recon.values())  # every variable is reconstructed
+    assert all(f.shape[1] == 1 for f in forecast.values())  # only variable 0 is forecast
 
     sum(f.square().sum() for f in forecast.values()).backward(retain_graph=True)
     assert all(p.grad is None for p in model.reconstructor.parameters())
@@ -192,7 +198,7 @@ def test_forecaster_batch_is_the_new_window_plus_the_drawn_ones():
     windows = trainer.replay_buffer.windows
     assert len(windows) == 3
     for z, value in stats["latent_persist"].items():
-        expected = sum(float((w.target[z] - w.context[z][:, :, -1:]).square().mean()) for w in windows) / 3
+        expected = sum(float((w.target[z] - w.context[z][:, :1, -1:]).square().mean()) for w in windows) / 3
         assert value == pytest.approx(expected, rel=1e-5), z
 
 
@@ -205,4 +211,33 @@ def test_stored_window_holds_the_context_target_latent_and_times():
     assert window.seconds == [T0 + k * DT for k in range(N_CONTEXT + 1)]
     assert all(torch.equal(window.context[z], context[z]) for z in context)
     _, cached = trainer.context[-1]  # c̄_t, added to the context after the update
-    assert all(window.target[z] is cached[z] for z in cached)
+    assert all(torch.equal(window.target[z], cached[z][:, :1]) for z in cached)  # variable 0
+
+
+def test_forecast_depends_on_the_forcing_variables():
+    """The forecaster attends across variables, so variable 0's forecast sees
+    the forcings' latents. The gates start near zero, so the dependence is tiny
+    but present."""
+    trainer = _trainer()
+    _train(trainer, N_CONTEXT)
+    context, seconds = trainer._stacked_context()
+    context = {z: c.clone().requires_grad_() for z, c in context.items()}
+    forecast = trainer.model.forecast(context, [seconds + [T0 + N_CONTEXT * DT]])
+    sum(f.sum() for f in forecast.values()).backward()
+    assert all(c.grad[:, 1:].abs().sum() > 0 for c in context.values())
+
+
+def test_forecast_is_decoded_with_the_forcing_latents_of_the_latest_state():
+    """Forcings at the forecast time are unknown: the decoded forecast latent
+    is variable 0 from the forecaster plus the forcing latents of c̄_latest."""
+    trainer = _trainer()
+    _train(trainer, N_CONTEXT)
+    _, latest = trainer.context[-1]
+    decoded, decode = [], trainer.model.decode_frozen
+    trainer.model.decode_frozen = lambda latent, seconds: decoded.append(latent) or decode(latent, seconds)
+    increment = trainer.predict_increment(T0 + N_CONTEXT * DT)
+    forecast, last = decoded
+    assert increment.shape == (N_FINE, NLEV)
+    assert all(last[z] is latest[z] for z in latest)
+    assert all(torch.equal(forecast[z][:, 1:], latest[z][:, 1:]) for z in latest)
+    assert all(forecast[z].shape == latest[z].shape for z in latest)
