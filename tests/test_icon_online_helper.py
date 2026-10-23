@@ -18,6 +18,7 @@ from MEssE.utils.icon_online_helper import (
     insert_icon_cells,
     parse_icon_datetime,
     sample_interval,
+    toa_insolation,
 )
 
 
@@ -244,3 +245,31 @@ def test_sample_interval_is_at_least_one_step_and_needs_a_positive_timestep():
     assert sample_interval(5, 60) == (1, 60)         # asked for less than one step
     with pytest.raises(ValueError):
         sample_interval(600, 0)
+
+
+# ----------------------------------------------------------------------------
+# toa_insolation
+# ----------------------------------------------------------------------------
+
+
+def test_toa_insolation_geometry():
+    def at(when, lon_deg, lat_deg):
+        seconds = datetime.datetime(*when, tzinfo=datetime.timezone.utc).timestamp()
+        return float(toa_insolation(seconds, torch.tensor([np.deg2rad(lon_deg)]), torch.tensor([np.deg2rad(lat_deg)]))[0])
+
+    noon_equinox = (2020, 3, 20, 12, 0)
+    assert 1330 < at(noon_equinox, 0, 0) < 1375  # sun near the zenith at 0E, 0N
+    assert at(noon_equinox, 180, 0) == 0  # night side
+    january = (2020, 1, 3, 6, 0)
+    assert at(january, 30, 89.9) == 0  # polar night
+    assert 500 < at(january, 30, -89.9) < 560  # polar day: tsi * sin(22.8 deg) * (r0/r)^2
+
+
+def test_toa_insolation_global_mean_is_a_quarter_of_the_incoming_flux():
+    lon, lat = np.meshgrid(np.linspace(-np.pi, np.pi, 721)[:-1], np.linspace(-np.pi / 2, np.pi / 2, 361))
+    weights = np.cos(lat)
+    for when, distance_factor in [((2020, 1, 3, 17, 0), 1.0342), ((2020, 7, 4, 3, 0), 0.9670)]:
+        seconds = datetime.datetime(*when, tzinfo=datetime.timezone.utc).timestamp()
+        flux = toa_insolation(seconds, torch.from_numpy(lon), torch.from_numpy(lat)).numpy()
+        mean = (flux * weights).sum() / weights.sum()
+        assert abs(mean - 1361 * distance_factor / 4) < 2, (when, mean)
