@@ -54,11 +54,14 @@ Latent replay
 -------------
 Against forgetting earlier weather while training on a correlated stream. A
 window is one forecaster training sample: the context c̄_{t-H} .. c̄_{t-1},
-the target c̄_t and their valid times. The replay buffer keeps the last
-``replay_size`` windows; every update draws ``replay_batch`` of them at random,
-and the forecaster is trained on these plus the new (live) window as one batch.
-Stored latents are not re-encoded: the buffer length bounds how much older the
-encoder that made them is.
+the target c̄_t and their valid times. The replay buffer keeps the frozen
+latents of the last ``n_context + replay_size`` sample steps, each once: the
+newest ``n_context`` are the live context, and every earlier step is the
+target of one stored window, so ``replay_size`` windows can be replayed.
+Windows are assembled when drawn. Every update draws ``replay_batch`` of them
+at random, and the forecaster is trained on these plus the new (live) window
+as one batch. Stored latents are not re-encoded: the buffer length bounds how
+much older the encoder that made them is.
 
 At sample step t (context full)
 -------------------------------
@@ -66,8 +69,8 @@ At sample step t (context full)
 2. ``L_recon`` on x_t plus ``L_latent`` on the batch, one backward, one
    optimizer step (separate learning rates and gradient clipping per model),
    then the EMA update.
-3. The live window goes into the replay buffer, c̄_t joins the context, and
-   the plugin asks for the increment to t+1.
+3. c̄_t goes into the replay buffer, where it joins the context and makes
+   the live window replayable, and the plugin asks for the increment to t+1.
 4. Returned for the log, per level: both losses and their references,
    ``state_ms`` (mean square of x_t over all variables, the loss of
    outputting zero) and ``latent_persist`` (mean square of c̄_t - c̄_{t-1} of
@@ -75,7 +78,7 @@ At sample step t (context full)
 """
 
 from collections import deque
-from typing import Dict, List, NamedTuple, Sequence
+from typing import Dict, List, NamedTuple, Optional, Sequence
 
 import torch
 import torch.distributed as dist
@@ -122,22 +125,44 @@ def stack_windows(windows: Sequence[Window]) -> Window:
 
 
 class ReplayBuffer:
-    """The last ``size`` windows; :meth:`sample` draws up to ``batch`` of them
-    at random, without replacement. ``size=0`` turns replay off."""
+    """Frozen latents and valid times of the last ``n_context + size`` sample
+    steps, each stored once. The newest ``n_context`` are the live context;
+    every earlier step is the target of a stored window. :meth:`sample` draws
+    up to ``batch`` stored windows at random, without replacement. ``size=0``
+    turns replay off."""
 
-    def __init__(self, size: int, batch: int, generator: torch.Generator):
-        self.windows = deque(maxlen=size)
+    def __init__(self, n_context: int, size: int, batch: int, generator: torch.Generator):
+        self.n_context = n_context
+        self.steps = deque(maxlen=n_context + size)  # (seconds, latent), oldest first
         self.batch, self._rng = batch, generator
 
-    def add(self, window: Window) -> None:
-        self.windows.append(window)
+    def append(self, seconds: float, latent: Levels) -> None:
+        self.steps.append((seconds, latent))
+
+    @property
+    def context_full(self) -> bool:
+        return len(self.steps) >= self.n_context
+
+    def context(self, end: Optional[int] = None):
+        """Latents of the ``n_context`` steps before step ``end`` (default:
+        the newest ones), stacked on the time axis, and their valid times."""
+        end = len(self.steps) if end is None else end
+        seconds, latents = zip(*(self.steps[i] for i in range(end - self.n_context, end)))
+        return {z: torch.cat([lv[z] for lv in latents], dim=2) for z in latents[0]}, list(seconds)
+
+    def window(self, end: int) -> Window:
+        """The window whose target is step ``end``."""
+        context, seconds = self.context(end)
+        target_seconds, target = self.steps[end]
+        return Window(context, {z: t[:, :1] for z, t in target.items()}, seconds + [target_seconds])
 
     def sample(self) -> List[Window]:
-        n = min(self.batch, len(self.windows))
-        if n == 0:
+        n_windows = len(self.steps) - self.n_context
+        n = min(self.batch, n_windows)
+        if n <= 0:
             return []
-        picks = torch.randperm(len(self.windows), generator=self._rng, device="cpu")[:n]
-        return [self.windows[i] for i in picks.tolist()]
+        ends = torch.randperm(n_windows, generator=self._rng, device="cpu")[:n] + self.n_context
+        return [self.window(end) for end in ends.tolist()]
 
 
 class _BlockConfigs:
@@ -392,9 +417,8 @@ class OnlineReconstructorForecaster:
             ]
         )
         self.level_loss = MGMultiLoss({str(z): {"MSE_loss": 1.0} for z in self.model.zooms})
-        self.context = deque(maxlen=n_context)  # (seconds, frozen latent) of the latest sample steps
         rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
-        self.replay_buffer = ReplayBuffer(replay_size, replay_batch, rng)
+        self.replay_buffer = ReplayBuffer(n_context, replay_size, replay_batch, rng)  # also holds the context
 
     def _loss(self, output: Levels, target: Levels):
         """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
@@ -407,31 +431,25 @@ class OnlineReconstructorForecaster:
         """Per-level mean square: the MSE of predicting zero for ``levels``."""
         return {z: float(t.square().mean()) for z, t in levels.items()}
 
-    def _stacked_context(self):
-        """The context latents stacked on the time axis, oldest first, and
-        their valid times."""
-        latents = [c for _, c in self.context]
-        return {z: torch.cat([c[z] for c in latents], dim=2) for z in latents[0]}, [s for s, _ in self.context]
-
     def train_step(self, x: torch.Tensor, seconds: float) -> Dict:
         """Train on the normalized patch ``x`` (n_fine, n_variables, nlev)
         valid at ``seconds`` once the context is full, then add its frozen
-        latent to the context. Returns the per-level losses for the log, empty
-        while the context fills."""
+        latent to the replay buffer, where it joins the context. Returns the
+        per-level losses for the log, empty while the context fills."""
         stats = {}
         self.model.train()
         with torch.device(self.device):
             levels = self.model.to_levels(x)
             with torch.no_grad():
                 latent = self.model.encode_frozen(levels, seconds)
-            if len(self.context) == self.context.maxlen:
+            if self.replay_buffer.context_full:
                 stats = self._update(levels, latent, seconds)
-            self.context.append((seconds, latent))
+            self.replay_buffer.append(seconds, latent)
         return stats
 
     def _update(self, levels: Levels, latent: Levels, seconds: float) -> Dict:
         # The live window ends at c̄_t; the batch adds windows drawn from the replay buffer.
-        context, context_seconds = self._stacked_context()
+        context, context_seconds = self.replay_buffer.context()
         live = Window(context, {z: c[:, :1] for z, c in latent.items()}, context_seconds + [seconds])
         batch = stack_windows([live] + self.replay_buffer.sample())
 
@@ -446,7 +464,6 @@ class OnlineReconstructorForecaster:
         if all(torch.isfinite(norm) for norm in norms):
             self.optimizer.step()
             self.model.frozen.update_parameters(self.model.reconstructor)
-        self.replay_buffer.add(live)
 
         # Each loss per level, with the loss of outputting zero (x_t) or of persistence (c̄_{t-1} for c̄_t).
         persistence = {z: batch.target[z] - batch.context[z][:, :1, -1:] for z in batch.target}
@@ -463,11 +480,11 @@ class OnlineReconstructorForecaster:
         D̄(ĉ) - D̄(c̄_latest), both through the frozen decoder and with the
         forcing latents of c̄_latest: (n_fine, nlev) normalized, or ``None``
         while the context fills."""
-        if len(self.context) < self.context.maxlen:
+        if not self.replay_buffer.context_full:
             return None
         self.model.eval()
-        context, context_seconds = self._stacked_context()
-        last_seconds, last_latent = self.context[-1]
+        context, context_seconds = self.replay_buffer.context()
+        last_seconds, last_latent = self.replay_buffer.steps[-1]
         with torch.device(self.device):
             forecast = self.model.forecast(context, [context_seconds + [seconds]])
             forecast = {z: torch.cat([forecast[z], last_latent[z][:, 1:]], dim=1) for z in forecast}

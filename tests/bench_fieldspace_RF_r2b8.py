@@ -69,7 +69,7 @@ def main():
           f"{sum(p.numel() for p in trainer.model.reconstructor.parameters()):,} / forecaster "
           f"{sum(p.numel() for p in trainer.model.forecaster.parameters()):,} parameters", flush=True)
     t0 = 1577836800.0
-    for k in range(trainer.context.maxlen + args.steps):
+    for k in range(trainer.replay_buffer.n_context + args.steps):
         x = (torch.sin(40 * coords[:, :1] - 0.02 * k) * torch.cos(20 * coords[:, 1:]))
         forcing = torch.sin(10 * coords[:, 1:] * torch.arange(1, args.forcings + 1, device=coords.device) - 0.01 * k)
         x = torch.cat([x, forcing], dim=1)[:, :, None]  # (n, variables, nlev=1)

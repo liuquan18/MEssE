@@ -99,7 +99,7 @@ def test_models_are_trained_independently():
     for k in range(N_CONTEXT):
         trainer.train_step(_field(k), T0 + k * DT)
     model = trainer.model
-    context, seconds = trainer._stacked_context()
+    context, seconds = trainer.replay_buffer.context()
     levels = model.to_levels(_field(9))
     recon, forecast = model(levels, T0 + N_CONTEXT * DT, context, [seconds + [T0 + N_CONTEXT * DT]])
     assert all(r.shape[1] == N_VARIABLES for r in recon.values())  # every variable is reconstructed
@@ -140,25 +140,40 @@ def test_frozen_copy_follows_the_reconstructor_slowly():
     assert (live - frozen).abs().max() < 0.1
 
 
-def test_replay_buffer_keeps_the_last_windows_and_draws_without_replacement():
-    buffer = ReplayBuffer(size=5, batch=3, generator=torch.Generator().manual_seed(0))
-    assert buffer.sample() == []
+def _step_latent(k):
+    """Latent of sample step k with 2 variables: variable 0 holds k, variable 1 holds -k."""
+    return {0: torch.tensor([k, -k], dtype=torch.float32).reshape(1, 2, 1, 1, 1, 1)}
+
+
+def test_replay_buffer_stores_each_step_once_and_draws_windows_without_replacement():
+    buffer = ReplayBuffer(n_context=2, size=3, batch=2, generator=torch.Generator().manual_seed(0))
+    assert not buffer.context_full and buffer.sample() == []
     for k in range(8):
-        buffer.add(k)  # the buffer does not look inside a window
-    assert list(buffer.windows) == [3, 4, 5, 6, 7]
+        buffer.append(T0 + k * DT, _step_latent(k))
+    assert [s for s, _ in buffer.steps] == [T0 + k * DT for k in range(3, 8)]  # n_context + size steps
+    context, seconds = buffer.context()
+    assert context[0][0, :, :, 0, 0, 0].tolist() == [[6, 7], [-6, -7]] and seconds == [T0 + 6 * DT, T0 + 7 * DT]
     for _ in range(20):
         drawn = buffer.sample()
-        assert len(drawn) == len(set(drawn)) == 3 and set(drawn) <= {3, 4, 5, 6, 7}
-    small = ReplayBuffer(size=5, batch=3, generator=torch.Generator().manual_seed(0))
-    small.add(0)
-    assert small.sample() == [0]
+        targets = [int(w.target[0].item()) for w in drawn]
+        assert len(targets) == len(set(targets)) == 2 and set(targets) <= {5, 6, 7}
+        for w, k in zip(drawn, targets):
+            assert w.target[0].shape[1] == 1  # variable 0 only
+            assert w.context[0][0, :, :, 0, 0, 0].tolist() == [[k - 2, k - 1], [2 - k, 1 - k]]
+            assert w.seconds == [T0 + j * DT for j in (k - 2, k - 1, k)]
+    small = ReplayBuffer(n_context=2, size=3, batch=2, generator=torch.Generator().manual_seed(0))
+    for k in range(3):
+        small.append(T0 + k * DT, _step_latent(k))
+    assert [int(w.target[0].item()) for w in small.sample()] == [2]
 
 
 def test_replay_off_draws_no_random_numbers():
     rng = torch.Generator().manual_seed(0)
     state = rng.get_state()
-    buffer = ReplayBuffer(size=0, batch=10, generator=rng)
-    buffer.add(0)
+    buffer = ReplayBuffer(n_context=2, size=0, batch=10, generator=rng)
+    for k in range(5):
+        buffer.append(T0 + k * DT, _step_latent(k))
+    assert len(buffer.steps) == 2 and buffer.context_full
     assert buffer.sample() == [] and torch.equal(rng.get_state(), state)
 
 
@@ -166,7 +181,7 @@ def test_batched_forecast_matches_the_single_window_forecast():
     trainer = _trainer()
     _train(trainer, N_CONTEXT)
     model = trainer.model
-    context, seconds = trainer._stacked_context()
+    context, seconds = trainer.replay_buffer.context()
     times = seconds + [T0 + N_CONTEXT * DT]
     single = model.forecast(context, [times])
     other = {z: torch.randn_like(h) for z, h in context.items()}
@@ -186,7 +201,7 @@ def test_replay_starts_with_the_second_update():
         if k == N_CONTEXT:
             assert s_on == s_off
     assert s_on != s_off
-    assert len(on.replay_buffer.windows) == 2 and len(off.replay_buffer.windows) == 0
+    assert len(on.replay_buffer.steps) == N_CONTEXT + 2 and len(off.replay_buffer.steps) == N_CONTEXT
 
 
 def test_forecaster_batch_is_the_new_window_plus_the_drawn_ones():
@@ -195,7 +210,8 @@ def test_forecaster_batch_is_the_new_window_plus_the_drawn_ones():
     their mean."""
     trainer = _trainer(replay_size=10, replay_batch=10)
     stats = _train(trainer, N_CONTEXT + 3)
-    windows = trainer.replay_buffer.windows
+    buffer = trainer.replay_buffer
+    windows = [buffer.window(end) for end in range(N_CONTEXT, len(buffer.steps))]
     assert len(windows) == 3
     for z, value in stats["latent_persist"].items():
         expected = sum(float((w.target[z] - w.context[z][:, :1, -1:]).square().mean()) for w in windows) / 3
@@ -205,12 +221,13 @@ def test_forecaster_batch_is_the_new_window_plus_the_drawn_ones():
 def test_stored_window_holds_the_context_target_latent_and_times():
     trainer = _trainer(replay_size=4)
     _train(trainer, N_CONTEXT)
-    context, _ = trainer._stacked_context()
+    context, _ = trainer.replay_buffer.context()
     trainer.train_step(_field(N_CONTEXT), T0 + N_CONTEXT * DT)
-    (window,) = trainer.replay_buffer.windows
+    assert len(trainer.replay_buffer.steps) == N_CONTEXT + 1
+    window = trainer.replay_buffer.window(N_CONTEXT)
     assert window.seconds == [T0 + k * DT for k in range(N_CONTEXT + 1)]
     assert all(torch.equal(window.context[z], context[z]) for z in context)
-    _, cached = trainer.context[-1]  # c̄_t, added to the context after the update
+    _, cached = trainer.replay_buffer.steps[-1]  # c̄_t, added after the update
     assert all(torch.equal(window.target[z], cached[z][:, :1]) for z in cached)  # variable 0
 
 
@@ -220,7 +237,7 @@ def test_forecast_depends_on_the_forcing_variables():
     but present."""
     trainer = _trainer()
     _train(trainer, N_CONTEXT)
-    context, seconds = trainer._stacked_context()
+    context, seconds = trainer.replay_buffer.context()
     context = {z: c.clone().requires_grad_() for z, c in context.items()}
     forecast = trainer.model.forecast(context, [seconds + [T0 + N_CONTEXT * DT]])
     sum(f.sum() for f in forecast.values()).backward()
@@ -232,7 +249,7 @@ def test_forecast_is_decoded_with_the_forcing_latents_of_the_latest_state():
     is variable 0 from the forecaster plus the forcing latents of c̄_latest."""
     trainer = _trainer()
     _train(trainer, N_CONTEXT)
-    _, latest = trainer.context[-1]
+    _, latest = trainer.replay_buffer.steps[-1]
     decoded, decode = [], trainer.model.decode_frozen
     trainer.model.decode_frozen = lambda latent, seconds: decoded.append(latent) or decode(latent, seconds)
     increment = trainer.predict_increment(T0 + N_CONTEXT * DT)

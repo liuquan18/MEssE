@@ -49,6 +49,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
 sys.path[:0] = [p for p in (_PLUGIN_DIR, _PROJECT_ROOT) if p not in sys.path]
 
 from fieldspace_RF_online import OnlineReconstructorForecaster
+from fieldspacenn.src.data.normalizer import MeanStdNormalizer
 from icon_nested_mgrid import CellExchange, load_global_mgrid, patch_mgrid
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
@@ -134,7 +135,7 @@ class State:
     icon_var = None
     predict_var = None
     forcing_vars = []
-    forcing_mean = forcing_std = None  # global, per forcing
+    forcing_norm = None  # MeanStdNormalizer, one global mean/std per forcing
     first_seconds = None  # model time of the first callback
     sample_seconds = None  # SAMPLE_SECONDS rounded to whole ICON steps
     normalizer = None
@@ -184,8 +185,9 @@ def _write(forecast: torch.Tensor) -> None:
 def _trainer(nlev: int, forcing: torch.Tensor) -> OnlineReconstructorForecaster:
     """Collective. ``forcing``: the physical forcing patch now, for the
     forcings' normalization."""
-    State.forcing_mean, State.forcing_std = _global_mean_std(forcing)
-    comin.print_info(f"forcings (mean±std over all cells): {_stats(FORCINGS, State.forcing_mean, State.forcing_std)}")
+    mean, std = _global_mean_std(forcing)
+    State.forcing_norm = MeanStdNormalizer({"mean": mean, "std": std}, {})
+    comin.print_info(f"forcings (mean±std over all cells): {_stats(FORCINGS, mean, std)}")
     replay_size = int(REPLAY_SECONDS // State.sample_seconds)
     trainer = OnlineReconstructorForecaster(
         mgrids,
@@ -245,8 +247,8 @@ def sample_step():
         comin.print_info(f"dry run: {n_dry} sample steps = {n_dry * stride} ICON steps = {n_dry * State.sample_seconds:.0f} s")
         n_replay = int(REPLAY_SECONDS // State.sample_seconds)
         comin.print_info(
-            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s, "
-            f"draws {MODEL['replay_batch']} per update"
+            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s "
+            f"({n_replay + MODEL['n_context']} latents, each stored once), draws {MODEL['replay_batch']} per update"
         )
     if round(now - State.first_seconds) % State.sample_seconds:
         return
@@ -277,7 +279,7 @@ def sample_step():
     torch.cuda.synchronize()
     start = time.perf_counter()
     # Variables: the forecast variable, then the 2D forcings on each of its levels.
-    forcing = ((forcing - State.forcing_mean) / State.forcing_std)[:, :, None].expand(-1, -1, patch.shape[1])
+    forcing = State.forcing_norm.normalize(forcing)[:, :, None].expand(-1, -1, patch.shape[1])
     x = torch.cat([State.normalizer.normalize(patch)[:, None], forcing], dim=1)
     stats = State.trainer.train_step(x, now)
     increment = State.trainer.predict_increment(now + State.sample_seconds)
@@ -295,7 +297,7 @@ def sample_step():
     if State.step % max(1, int(SAVE_INTERVAL_SECONDS // State.sample_seconds)) == 0:
         norm = State.normalizer.stats
         extra = {"norm_mean": norm.mean, "norm_std": norm.std}
-        extra.update(forcings=FORCINGS, forcing_mean=State.forcing_mean, forcing_std=State.forcing_std)
+        extra.update(forcings=FORCINGS, forcing_mean=State.forcing_norm.mean, forcing_std=State.forcing_norm.std)
         save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, extra)
         comin.print_info(f"checkpoint at step {State.step}, {comin.current_get_datetime()}: {CHECKPOINT_PATH}")
 
