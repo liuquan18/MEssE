@@ -26,9 +26,12 @@ forecast and written. In this order:
   every sample step after the dry run;
 - with ``MESSE_AE_INSOLATION=1``, the TOA incoming shortwave flux computed
   from the model time and the cell centres (ComIn's ``rsdt`` read as zero);
-- ``MESSE_AE_STATICS`` (orography): ICON fields read once from host memory
-  when training starts (AES never copies ``orog`` to the GPU, so the device
-  copy is zero).
+- ``MESSE_AE_STATICS`` (orography, ``oromea``): read at startup from
+  ``MESSE_AE_STATIC_FILE``, the file ICON reads them from (``bc_land_sso.nc``
+  in the run directory, on ICON's grid). Not through ComIn: AES reads
+  ``topography_c`` (``orog``) on the host and never copies it to the GPU, so
+  the device copy is zero, and a host read makes ComIn copy that zero device
+  copy over the host values before every callback.
 
 Each is normalized by one global mean/std over all ranks' patches, taken when
 training starts (a per-cell std would erase static fields). Training stops
@@ -47,6 +50,7 @@ import time
 import comin
 import numpy as np
 import torch
+import xarray as xr
 import torch.distributed as dist
 from mpi4py import MPI
 
@@ -77,11 +81,12 @@ from MEssE.utils.icon_online_helper import (
 env = os.environ.get
 DOMAIN_ID = 1
 VARIABLE = env("MESSE_ICON_VAR", "uas")  # AES 10 m zonal wind (u_10m in NWP)
-# Forcings (module docstring), AES names: SST (water tile of ts_tile) and sea ice fraction from
-# GPU memory, the computed TOA insolation, and orography from host memory.
+# Forcings (module docstring): SST (water tile of ts_tile) and sea ice fraction from ICON's GPU
+# memory (AES names), the computed TOA insolation, and the orography from ICON's input file.
 FORCINGS = [v for v in env("MESSE_AE_FORCINGS", "ts_wtr,sic").split(",") if v]
 INSOLATION = env("MESSE_AE_INSOLATION", "1") == "1"
-STATICS = [v for v in env("MESSE_AE_STATICS", "orog").split(",") if v]
+STATIC_FILE = env("MESSE_AE_STATIC_FILE", "bc_land_sso.nc")  # relative to the run directory
+STATICS = [v for v in env("MESSE_AE_STATICS", "oromea").split(",") if v]
 FORCING_NAMES = FORCINGS + ["insolation"] * INSOLATION + STATICS
 LEVELS = [int(v) for v in env("MESSE_AE_LEVELS", "4,6,7,8").split(",")]  # backbone first, last = ICON's grid
 LATENT_LEVEL = int(env("MESSE_AE_LATENT_LEVEL", "6"))
@@ -135,6 +140,13 @@ _backbone = np.flatnonzero(_owner == rank)
 exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT)
 mgrids = patch_mgrid(global_mgrid, torch.from_numpy(_backbone))
 FINE_LON, FINE_LAT = mgrids[-1]["coords"].to(DEVICE).T  # patch cell centres [radian], for the insolation
+# Static fields of the patch: its fine cells are the backbone cells' descendants, in nested order.
+_patch_ids = (_backbone[:, None] * REFINEMENT + np.arange(REFINEMENT)).ravel()
+STATIC = np.empty((len(_patch_ids), len(STATICS)), dtype=np.float32)
+with xr.open_dataset(STATIC_FILE) as _ds:
+    for _k, _name in enumerate(STATICS):
+        STATIC[:, _k] = _ds[_name].values[_patch_ids]
+STATIC = torch.from_numpy(STATIC).to(DEVICE)
 del global_mgrid
 _per_rank = np.bincount(_owner, minlength=n_ranks)
 comin.print_info(
@@ -150,8 +162,6 @@ class State:
     icon_var = None
     predict_var = None
     forcing_vars = []
-    static_vars = []
-    static = None  # physical static patch, read when training starts
     forcing_norm = None  # MeanStdNormalizer, one global mean/std per forcing
     first_seconds = None  # model time of the first callback
     sample_seconds = None  # SAMPLE_SECONDS rounded to whole ICON steps
@@ -205,13 +215,12 @@ def _forcing(seconds: float) -> torch.Tensor:
     columns = [_patch(State.forcing_vars)]
     if INSOLATION:
         columns.append(toa_insolation(seconds, FINE_LON, FINE_LAT)[:, None])
-    return torch.cat(columns + [State.static], dim=1)
+    return torch.cat(columns + [STATIC], dim=1)
 
 
 def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
-    """Collective: reads the static fields and normalizes the forcings by
-    their global mean/std at ``seconds``, then builds the trainer."""
-    State.static = _patch([np.asarray(var) for var in State.static_vars])  # host memory
+    """Collective: normalizes the forcings by their global mean/std at
+    ``seconds``, then builds the trainer."""
     mean, std = _global_mean_std(_forcing(seconds))
     comin.print_info(f"forcings (mean±std over all cells): {_stats(FORCING_NAMES, mean, std)}")
     flat = [name for name, m, s in zip(FORCING_NAMES, mean.tolist(), std.tolist()) if s <= 1e-6 * (1 + abs(m))]
@@ -262,7 +271,6 @@ def sec_ctor():
     State.icon_var = comin.var_get(ep, (VARIABLE, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG)
     State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | DEVICE_FLAG)
     State.forcing_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG) for name in FORCINGS]
-    State.static_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ) for name in STATICS]
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
