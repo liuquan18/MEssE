@@ -167,6 +167,24 @@ def test_replay_buffer_stores_each_step_once_and_draws_windows_without_replaceme
     assert [int(w.target[0].item()) for w in small.sample()] == [2]
 
 
+def test_replay_buffer_never_draws_windows_touching_the_warmup_steps():
+    """With warmup=3, steps 0-2 never appear in a drawn window, also after
+    the deque has pushed old steps out."""
+    buffer = ReplayBuffer(n_context=2, size=6, batch=10, generator=torch.Generator().manual_seed(0), warmup=3)
+
+    def drawn_targets():
+        return sorted(int(w.target[0].item()) for w in buffer.sample())
+
+    for k in range(5):
+        buffer.append(T0 + k * DT, _step_latent(k))
+    assert drawn_targets() == []  # every stored window still has warm-up steps in its context
+    buffer.append(T0 + 5 * DT, _step_latent(5))
+    assert drawn_targets() == [5]  # context 3, 4
+    for k in range(6, 12):
+        buffer.append(T0 + k * DT, _step_latent(k))
+    assert [int(lv[0][0, 0].item()) for _, lv in buffer.steps] == list(range(4, 12))
+    assert drawn_targets() == list(range(6, 12))  # target 5 lost its context step 3
+
 def test_replay_off_draws_no_random_numbers():
     rng = torch.Generator().manual_seed(0)
     state = rng.get_state()

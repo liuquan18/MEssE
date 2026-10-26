@@ -95,6 +95,8 @@ SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead a
 DRY_RUN_SECONDS = float(env("MESSE_AE_DRY_RUN_SECONDS", "86400"))
 SAVE_INTERVAL_SECONDS = float(env("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))
 REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # model time of windows the replay buffer keeps
+# Windows from this much model time after the dry run are never replayed (reconstructor not settled yet).
+REPLAY_WARMUP_SECONDS = float(env("MESSE_AE_REPLAY_WARMUP_SECONDS", "172800"))
 MODEL = dict(
     n_context=int(env("MESSE_AE_N_CONTEXT", "4")),  # latents the forecaster sees
     latent_channels=int(env("MESSE_AE_LATENT_CHANNELS", "4")),
@@ -235,6 +237,7 @@ def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
         nlev,
         n_variables=1 + len(FORCING_NAMES),
         replay_size=replay_size,
+        replay_warmup=int(REPLAY_WARMUP_SECONDS // State.sample_seconds),
         device=DEVICE,
         **MODEL,
     )
@@ -287,7 +290,8 @@ def sample_step():
         n_replay = int(REPLAY_SECONDS // State.sample_seconds)
         comin.print_info(
             f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s "
-            f"({n_replay + MODEL['n_context']} latents, each stored once), draws {MODEL['replay_batch']} per update"
+            f"({n_replay + MODEL['n_context']} latents, each stored once), draws {MODEL['replay_batch']} per update; "
+            f"windows from the first {REPLAY_WARMUP_SECONDS:.0f} s after the dry run are never replayed"
         )
     if round(now - State.first_seconds) % State.sample_seconds:
         return

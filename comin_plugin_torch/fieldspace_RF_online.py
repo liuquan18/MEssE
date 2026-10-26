@@ -61,7 +61,9 @@ target of one stored window, so ``replay_size`` windows can be replayed.
 Windows are assembled when drawn. Every update draws ``replay_batch`` of them
 at random, and the forecaster is trained on these plus the new (live) window
 as one batch. Stored latents are not re-encoded: the buffer length bounds how
-much older the encoder that made them is.
+much older the encoder that made them is, and windows from the first
+``replay_warmup`` sample steps, encoded before the reconstructor had settled,
+are never replayed.
 
 At sample step t (context full)
 -------------------------------
@@ -97,7 +99,9 @@ from fieldspacenn.src.utils.losses import MGMultiLoss
 Levels = Dict[int, torch.Tensor]
 
 # TimeEmbedder periods in days, as in FieldSpaceNN's configs/embedding/default.yaml.
-_TIME_SCALES_DAYS = [1.0, 7.0, 30.4375, 365.25]
+# FieldSpaceNN's configs also have a 7-day period. It is left out: the atmosphere has no weekly
+# cycle, and it let the model recall what it learned at the same weekday phase (job 28401149).
+_TIME_SCALES_DAYS = [1.0, 30.4375, 365.25]
 
 
 def _sample_configs(n_past: int, n_future: int, zooms: Sequence[int]) -> Dict[int, Dict]:
@@ -129,15 +133,18 @@ class ReplayBuffer:
     steps, each stored once. The newest ``n_context`` are the live context;
     every earlier step is the target of a stored window. :meth:`sample` draws
     up to ``batch`` stored windows at random, without replacement. ``size=0``
-    turns replay off."""
+    turns replay off. Windows that touch the first ``warmup`` steps are never
+    drawn: their latents come from a reconstructor that had barely trained."""
 
-    def __init__(self, n_context: int, size: int, batch: int, generator: torch.Generator):
-        self.n_context = n_context
+    def __init__(self, n_context: int, size: int, batch: int, generator: torch.Generator, warmup: int = 0):
+        self.n_context, self.warmup = n_context, warmup
         self.steps = deque(maxlen=n_context + size)  # (seconds, latent), oldest first
+        self.n_appended = 0
         self.batch, self._rng = batch, generator
 
     def append(self, seconds: float, latent: Levels) -> None:
         self.steps.append((seconds, latent))
+        self.n_appended += 1
 
     @property
     def context_full(self) -> bool:
@@ -157,11 +164,14 @@ class ReplayBuffer:
         return Window(context, {z: t[:, :1] for z, t in target.items()}, seconds + [target_seconds])
 
     def sample(self) -> List[Window]:
-        n_windows = len(self.steps) - self.n_context
+        # Earliest drawable target: its whole context comes after the warm-up steps.
+        n_dropped = self.n_appended - len(self.steps)  # steps already pushed out of the deque
+        first = max(self.n_context, self.warmup + self.n_context - n_dropped)
+        n_windows = len(self.steps) - first
         n = min(self.batch, n_windows)
         if n <= 0:
             return []
-        ends = torch.randperm(n_windows, generator=self._rng, device="cpu")[:n] + self.n_context
+        ends = torch.randperm(n_windows, generator=self._rng, device="cpu")[:n] + first
         return [self.window(end) for end in ends.tolist()]
 
 
@@ -395,6 +405,7 @@ class OnlineReconstructorForecaster:
         lr_forecast: float = 2e-4,
         replay_size: int = 0,
         replay_batch: int = 10,
+        replay_warmup: int = 0,
         grad_clip: float = 1.0,
         device: torch.device = torch.device("cuda", 0),
         **model_kwargs,
@@ -418,7 +429,8 @@ class OnlineReconstructorForecaster:
         )
         self.level_loss = MGMultiLoss({str(z): {"MSE_loss": 1.0} for z in self.model.zooms})
         rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
-        self.replay_buffer = ReplayBuffer(n_context, replay_size, replay_batch, rng)  # also holds the context
+        # Also holds the context. replay_warmup: sample steps after the dry run whose windows are never replayed.
+        self.replay_buffer = ReplayBuffer(n_context, replay_size, replay_batch, rng, warmup=replay_warmup)
 
     def _loss(self, output: Levels, target: Levels):
         """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
