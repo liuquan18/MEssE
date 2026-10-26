@@ -262,17 +262,47 @@ def test_forecast_depends_on_the_forcing_variables():
     assert all(c.grad[:, 1:].abs().sum() > 0 for c in context.values())
 
 
-def test_forecast_is_decoded_with_the_forcing_latents_of_the_latest_state():
+def test_forecast_is_decoded_with_the_forcing_latents_and_time_of_the_latest_state():
     """Forcings at the forecast time are unknown: the decoded forecast latent
-    is variable 0 from the forecaster plus the forcing latents of c̄_latest."""
+    is variable 0 from the forecaster plus the forcing latents of c̄_latest.
+    Both decodes use the time of c̄_latest."""
     trainer = _trainer()
     _train(trainer, N_CONTEXT)
-    _, latest = trainer.replay_buffer.steps[-1]
+    latest_seconds, latest = trainer.replay_buffer.steps[-1]
     decoded, decode = [], trainer.model.decode_frozen
-    trainer.model.decode_frozen = lambda latent, seconds: decoded.append(latent) or decode(latent, seconds)
+    trainer.model.decode_frozen = lambda latent, seconds: decoded.append((latent, seconds)) or decode(latent, seconds)
     increment = trainer.predict_increment(T0 + N_CONTEXT * DT)
-    forecast, last = decoded
+    (forecast, forecast_seconds), (last, last_seconds) = decoded
     assert increment.shape == (N_FINE, NLEV)
+    assert forecast_seconds == last_seconds == latest_seconds
     assert all(last[z] is latest[z] for z in latest)
     assert all(torch.equal(forecast[z][:, 1:], latest[z][:, 1:]) for z in latest)
     assert all(forecast[z].shape == latest[z].shape for z in latest)
+
+
+def test_persistence_forecast_gives_exactly_zero_increment():
+    """If the forecaster returns the latest latent, the two decodes see the
+    same input at the same time, so nothing the decoder does with time can
+    leak into the increment."""
+    trainer = _trainer()
+    _train(trainer, N_CONTEXT)
+    _, latest = trainer.replay_buffer.steps[-1]
+    trainer.model.forecast = lambda context, times: {z: c[:, :1] for z, c in latest.items()}
+    assert torch.equal(trainer.predict_increment(T0 + N_CONTEXT * DT), torch.zeros(N_FINE, NLEV))
+
+
+def test_reconstructor_without_time_ignores_the_clock_but_the_forecaster_does_not():
+    trainer = _trainer(reconstructor_time=False)
+    model = trainer.model
+    levels = model.to_levels(_field(0))
+    with torch.no_grad():
+        noon, midnight = model.encode_frozen(levels, T0), model.encode_frozen(levels, T0 + 43200)
+        assert all(torch.equal(noon[z], midnight[z]) for z in noon)
+        decoded = [model.decode_frozen(noon, s) for s in (T0, T0 + 43200)]
+        assert all(torch.equal(decoded[0][z], decoded[1][z]) for z in decoded[0])
+    _train(trainer, N_CONTEXT)
+    seen, forecaster = [], model.forecaster.forward
+    model.forecaster.forward = lambda context, emb: seen.append(emb["TimeEmbedder"][0].clone()) or forecaster(context, emb)
+    trainer.predict_increment(T0 + N_CONTEXT * DT)
+    expected = torch.tensor([[(T0 + k * DT) / 86400 for k in range(N_CONTEXT + 1)]])
+    assert torch.allclose(seen[0], expected)  # context times then the forecast time, in days

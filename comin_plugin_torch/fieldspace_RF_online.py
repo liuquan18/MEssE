@@ -325,8 +325,13 @@ class ReconstructorForecaster(nn.Module):
         hidden_dim: int = 64,
         time_embed_dim: int = 64,
         ema_decay: float = 0.99,
+        reconstructor_time: bool = True,
     ):
+        """``reconstructor_time=False`` gives the reconstructor a constant time:
+        it compresses and rebuilds a field without the clock, while the
+        forecaster still gets the model time."""
         super().__init__()
+        self.reconstructor_time = reconstructor_time
         self.zooms = [level - levels[0] for level in levels]
         self.fine_zoom = self.zooms[-1]
         self.nlev, self.n_variables = nlev, n_variables
@@ -370,11 +375,16 @@ class ReconstructorForecaster(nn.Module):
         field = decode_zooms(dict(levels), self.sample_configs, self.fine_zoom)[self.fine_zoom]
         return field.reshape(self.n_variables, -1, self.nlev).permute(1, 0, 2)
 
+    def reconstructor_emb(self, seconds: float):
+        """Embedding inputs of the reconstructor (live or frozen) for a field at
+        ``seconds``: its time, or a constant without ``reconstructor_time``."""
+        return self.emb([[seconds if self.reconstructor_time else 0.0]])
+
     def encode_frozen(self, levels: Levels, seconds: float) -> Levels:
-        return self.frozen.module.encode(levels, self.emb([[seconds]]))
+        return self.frozen.module.encode(levels, self.reconstructor_emb(seconds))
 
     def decode_frozen(self, latent: Levels, seconds: float) -> Levels:
-        return self.frozen.module.decode(latent, self.emb([[seconds]]))
+        return self.frozen.module.decode(latent, self.reconstructor_emb(seconds))
 
     def forecast(self, context: Levels, times: Sequence[Sequence[float]]) -> Levels:
         """Latent forecast of variable 0 for a batch of contexts; ``times`` has
@@ -385,8 +395,8 @@ class ReconstructorForecaster(nn.Module):
         """Training pass: the reconstruction of x_t and the latent forecasts of
         a batch of windows. One call, so DDP sees every trainable parameter
         once."""
-        latent = self.reconstructor.encode(levels, self.emb([[seconds]]))
-        recon = self.reconstructor.decode(latent, self.emb([[seconds]]))
+        latent = self.reconstructor.encode(levels, self.reconstructor_emb(seconds))
+        recon = self.reconstructor.decode(latent, self.reconstructor_emb(seconds))
         return recon, self.forecast(context, times)
 
 
@@ -489,9 +499,11 @@ class OnlineReconstructorForecaster:
     @torch.no_grad()
     def predict_increment(self, seconds: float):
         """Change of variable 0 from the latest context state to ``seconds``,
-        D̄(ĉ) - D̄(c̄_latest), both through the frozen decoder and with the
-        forcing latents of c̄_latest: (n_fine, nlev) normalized, or ``None``
-        while the context fills."""
+        D̄(ĉ) - D̄(c̄_latest), both through the frozen decoder, with the
+        forcing latents of c̄_latest and the time of c̄_latest: (n_fine, nlev)
+        normalized, or ``None`` while the context fills. Decoding both at one
+        time makes any time dependence of the decoder cancel (job 28418236:
+        decoding ĉ at its own valid time let it leak into r8)."""
         if not self.replay_buffer.context_full:
             return None
         self.model.eval()
@@ -500,6 +512,6 @@ class OnlineReconstructorForecaster:
         with torch.device(self.device):
             forecast = self.model.forecast(context, [context_seconds + [seconds]])
             forecast = {z: torch.cat([forecast[z], last_latent[z][:, 1:]], dim=1) for z in forecast}
-            forecast = self.model.decode_frozen(forecast, seconds)
+            forecast = self.model.decode_frozen(forecast, last_seconds)
             last = self.model.decode_frozen(last_latent, last_seconds)
             return self.model.to_field({z: forecast[z] - last[z] for z in forecast})[:, 0]

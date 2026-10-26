@@ -104,6 +104,9 @@ MODEL = dict(
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
     att_dim=int(env("MESSE_AE_ATT_DIM", "128")),
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
+    # 0: the reconstructor gets a constant time, the forecaster the model time (job 28418236: with
+    # the clock, the reconstructor's r8 failed at some hours of the day)
+    reconstructor_time=env("MESSE_AE_RECONSTRUCTOR_TIME", "1") == "1",
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
     replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # windows drawn from the replay buffer per update
