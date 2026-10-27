@@ -131,7 +131,7 @@ if rank == 0:
     )
 
 # --- Two-zoom multi-grid construction (coarse R2B3 + fine R2B4) ---
-# Only on the 4 GPU/compute ranks, matching the real fieldspace_plugin.py's
+# Only on the 4 GPU/compute ranks, matching the former fieldspace_plugin.py's
 # `if has_gpu:` gate exactly -- the I/O rank never builds an mgrid in
 # production, so skip it here too rather than exercising a code path that
 # never actually runs for real. CPU only: this script never trains, so
@@ -164,7 +164,7 @@ if is_gpu_rank:
     except Exception as e:
         _log(f"[rank={rank}] MGRID construction FAILED: {type(e).__name__}: {e}")
 else:
-    _log(f"[rank={rank}] MGRID: skipped (I/O rank, matches fieldspace_plugin.py's has_gpu gate)")
+    _log(f"[rank={rank}] MGRID: skipped (I/O rank, matches the former fieldspace_plugin.py's has_gpu gate)")
 
 # Sum only over the 4 GPU ranks -- n_owned_kept is 0 (never computed) on
 # the I/O rank by construction above.
