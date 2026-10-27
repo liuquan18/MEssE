@@ -19,7 +19,8 @@ reference: ``recon`` vs ``state_ms`` (outputting zero) and, per latent level
 
 The forecaster's batch is the live window plus ``MESSE_AE_REPLAY_BATCH``
 windows drawn from the replay buffer, which keeps those of the last
-``MESSE_AE_REPLAY_SECONDS`` of model time (latent replay, 0 = off). The replay
+``MESSE_AE_REPLAY_SECONDS`` of model time (latent replay, 0 = off), never those
+of the first ``MESSE_AE_REPLAY_WARMUP_SECONDS`` after the dry run. The replay
 buffer is not checkpointed: after a restart it fills again.
 """
 
@@ -65,6 +66,8 @@ SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead a
 DRY_RUN_SECONDS = float(env("MESSE_AE_DRY_RUN_SECONDS", "86400"))
 SAVE_INTERVAL_SECONDS = float(env("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))
 REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # model time of windows the replay buffer keeps
+# Windows from this much model time after the dry run are never replayed (reconstructor not settled yet).
+REPLAY_WARMUP_SECONDS = float(env("MESSE_AE_REPLAY_WARMUP_SECONDS", "172800"))
 MODEL = dict(
     n_context=int(env("MESSE_AE_N_CONTEXT", "4")),  # latents the forecaster sees
     latent_channels=int(env("MESSE_AE_LATENT_CHANNELS", "4")),
@@ -72,6 +75,9 @@ MODEL = dict(
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
     att_dim=int(env("MESSE_AE_ATT_DIM", "128")),
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
+    # 0: the reconstructor gets a constant time, the forecaster the model time (job 28418236, branch
+    # forcing: with the clock, the reconstructor's r8 failed at some hours of the day)
+    reconstructor_time=env("MESSE_AE_RECONSTRUCTOR_TIME", "1") == "1",
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
     replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # windows drawn from the replay buffer per update
@@ -151,7 +157,16 @@ def _write(forecast: torch.Tensor) -> None:
 
 def _trainer(nlev: int) -> OnlineReconstructorForecaster:
     replay_size = int(REPLAY_SECONDS // State.sample_seconds)
-    trainer = OnlineReconstructorForecaster(mgrids, LEVELS, LATENT_LEVEL, nlev, replay_size=replay_size, device=DEVICE, **MODEL)
+    trainer = OnlineReconstructorForecaster(
+        mgrids,
+        LEVELS,
+        LATENT_LEVEL,
+        nlev,
+        replay_size=replay_size,
+        replay_warmup=int(REPLAY_WARMUP_SECONDS // State.sample_seconds),
+        device=DEVICE,
+        **MODEL,
+    )
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
         trainer.model.load_state_dict(ckpt["model_state_dict"])
@@ -199,8 +214,9 @@ def sample_step():
         comin.print_info(f"dry run: {n_dry} sample steps = {n_dry * stride} ICON steps = {n_dry * State.sample_seconds:.0f} s")
         n_replay = int(REPLAY_SECONDS // State.sample_seconds)
         comin.print_info(
-            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s, "
-            f"draws {MODEL['replay_batch']} per update"
+            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s "
+            f"({n_replay + MODEL['n_context']} latents, each stored once), draws {MODEL['replay_batch']} per update; "
+            f"windows from the first {REPLAY_WARMUP_SECONDS:.0f} s after the dry run are never replayed"
         )
     if round(now - State.first_seconds) % State.sample_seconds:
         return
