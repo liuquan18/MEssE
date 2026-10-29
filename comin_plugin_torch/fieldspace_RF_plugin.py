@@ -11,12 +11,12 @@ both models and forecasts the next sample step.
 
 ``var_predict`` at model time t holds the forecast valid at t, made one sample
 step earlier: the field at t - lead plus the predicted increment. The log
-scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
-units) and prints, per level, the loss each model is trained on with its
-reference: ``recon`` vs ``state_ms`` (outputting zero), over all variables,
-and, per latent level (``r6`` = the R2B6' latent), ``latent_mse`` vs
-``latent_persist`` (persistence) of the forecast variable, both over the
-forecaster's whole batch.
+scores it (``fc_rmse``, in the variable's units; persistence is computed
+offline from the output) and prints, per level, the loss each model is trained on with its
+reference, both for the forecast variable only: ``recon`` vs ``state_ms``
+(outputting zero) and, per latent level (``r6`` = the R2B6' latent),
+``latent_mse`` vs ``latent_persist`` (persistence), over the forecaster's
+whole batch.
 
 Forcings go through both models as extra variables after the forecast
 variable (fieldspace_RF_online.py, "Variables"); only the forecast variable is
@@ -173,7 +173,6 @@ class State:
     normalizer = None
     trainer = None
     step = 0  # sample steps since the dry run
-    prev_patch = None  # physical patch one sample step ago
     forecast = None  # physical forecast valid at the next sample step
 
 
@@ -317,8 +316,7 @@ def sample_step():
     scores = ""
     if State.forecast is not None:
         fc_rmse = (State.forecast - patch).square().mean().sqrt()
-        persistence = (State.prev_patch - patch).square().mean().sqrt()
-        scores = f"fc_rmse={fc_rmse:.4f} persistence={persistence:.4f} "
+        scores = f"fc_rmse={fc_rmse:.4f} "
         _write(State.forecast)
 
     torch.cuda.synchronize()
@@ -330,7 +328,6 @@ def sample_step():
     increment = State.trainer.predict_increment(now + State.sample_seconds)
     torch.cuda.synchronize()
     State.forecast = None if increment is None else patch + increment * std
-    State.prev_patch = patch
 
     if stats:
         comin.print_info(
