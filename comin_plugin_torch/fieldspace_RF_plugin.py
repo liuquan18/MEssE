@@ -13,9 +13,29 @@ both models and forecasts the next sample step.
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
 units) and prints, per level, the loss each model is trained on with its
-reference: ``recon`` vs ``state_ms`` (outputting zero) and, per latent level
-(``r6`` = the R2B6' latent), ``latent_mse`` vs ``latent_persist``
-(persistence), both over the forecaster's whole batch.
+reference: ``recon`` vs ``state_ms`` (outputting zero), over all variables,
+and, per latent level (``r6`` = the R2B6' latent), ``latent_mse`` vs
+``latent_persist`` (persistence) of the forecast variable, both over the
+forecaster's whole batch.
+
+Forcings go through both models as extra variables after the forecast
+variable (fieldspace_RF_online.py, "Variables"); only the forecast variable is
+forecast and written. In this order:
+
+- ``MESSE_AE_FORCINGS`` (SST, sea ice): ICON fields read from GPU memory at
+  every sample step after the dry run;
+- with ``MESSE_AE_INSOLATION=1``, the TOA incoming shortwave flux computed
+  from the model time and the cell centres (ComIn's ``rsdt`` read as zero);
+- ``MESSE_AE_STATICS`` (orography, ``oromea``): read at startup from
+  ``MESSE_AE_STATIC_FILE``, the file ICON reads them from (``bc_land_sso.nc``
+  in the run directory, on ICON's grid). Not through ComIn: AES reads
+  ``topography_c`` (``orog``) on the host and never copies it to the GPU, so
+  the device copy is zero, and a host read makes ComIn copy that zero device
+  copy over the host values before every callback.
+
+Each is normalized by one global mean/std over all ranks' patches, taken when
+training starts (a per-cell std would erase static fields). Training stops
+with an error if a forcing has no spread over the globe, i.e. was read wrongly.
 
 The forecaster's batch is the live window plus ``MESSE_AE_REPLAY_BATCH``
 windows drawn from the replay buffer, which keeps those of the last
@@ -30,6 +50,7 @@ import time
 import comin
 import numpy as np
 import torch
+import xarray as xr
 import torch.distributed as dist
 from mpi4py import MPI
 
@@ -41,9 +62,11 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
 sys.path[:0] = [p for p in (_PLUGIN_DIR, _PROJECT_ROOT) if p not in sys.path]
 
 from fieldspace_RF_online import OnlineReconstructorForecaster
+from fieldspacenn.src.data.normalizer import MeanStdNormalizer
 from icon_nested_mgrid import CellExchange, load_global_mgrid, patch_mgrid
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
+    toa_insolation,
     extract_icon_cells,
     insert_icon_cells,
     parse_icon_datetime,
@@ -58,6 +81,13 @@ from MEssE.utils.icon_online_helper import (
 env = os.environ.get
 DOMAIN_ID = 1
 VARIABLE = env("MESSE_ICON_VAR", "uas")  # AES 10 m zonal wind (u_10m in NWP)
+# Forcings (module docstring): SST (water tile of ts_tile) and sea ice fraction from ICON's GPU
+# memory (AES names), the computed TOA insolation, and the orography from ICON's input file.
+FORCINGS = [v for v in env("MESSE_AE_FORCINGS", "ts_wtr,sic").split(",") if v]
+INSOLATION = env("MESSE_AE_INSOLATION", "1") == "1"
+STATIC_FILE = env("MESSE_AE_STATIC_FILE", "bc_land_sso.nc")  # relative to the run directory
+STATICS = [v for v in env("MESSE_AE_STATICS", "oromea").split(",") if v]
+FORCING_NAMES = FORCINGS + ["insolation"] * INSOLATION + STATICS
 LEVELS = [int(v) for v in env("MESSE_AE_LEVELS", "4,6,7,8").split(",")]  # backbone first, last = ICON's grid
 LATENT_LEVEL = int(env("MESSE_AE_LATENT_LEVEL", "6"))
 GRID_DIR = env("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
@@ -65,6 +95,8 @@ SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead a
 DRY_RUN_SECONDS = float(env("MESSE_AE_DRY_RUN_SECONDS", "86400"))
 SAVE_INTERVAL_SECONDS = float(env("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))
 REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # model time of windows the replay buffer keeps
+# Windows from this much model time after the dry run are never replayed (reconstructor not settled yet).
+REPLAY_WARMUP_SECONDS = float(env("MESSE_AE_REPLAY_WARMUP_SECONDS", "172800"))
 MODEL = dict(
     n_context=int(env("MESSE_AE_N_CONTEXT", "4")),  # latents the forecaster sees
     latent_channels=int(env("MESSE_AE_LATENT_CHANNELS", "4")),
@@ -72,6 +104,9 @@ MODEL = dict(
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
     att_dim=int(env("MESSE_AE_ATT_DIM", "128")),
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
+    # 0: the reconstructor gets a constant time, the forecaster the model time (job 28418236: with
+    # the clock, the reconstructor's r8 failed at some hours of the day)
+    reconstructor_time=env("MESSE_AE_RECONSTRUCTOR_TIME", "1") == "1",
     lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
     replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # windows drawn from the replay buffer per update
@@ -109,6 +144,14 @@ _owner = _counts.argmax(axis=0)
 _backbone = np.flatnonzero(_owner == rank)
 exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT)
 mgrids = patch_mgrid(global_mgrid, torch.from_numpy(_backbone))
+FINE_LON, FINE_LAT = mgrids[-1]["coords"].to(DEVICE).T  # patch cell centres [radian], for the insolation
+# Static fields of the patch: its fine cells are the backbone cells' descendants, in nested order.
+_patch_ids = (_backbone[:, None] * REFINEMENT + np.arange(REFINEMENT)).ravel()
+STATIC = np.empty((len(_patch_ids), len(STATICS)), dtype=np.float32)
+with xr.open_dataset(STATIC_FILE) as _ds:
+    for _k, _name in enumerate(STATICS):
+        STATIC[:, _k] = _ds[_name].values[_patch_ids]
+STATIC = torch.from_numpy(STATIC).to(DEVICE)
 del global_mgrid
 _per_rank = np.bincount(_owner, minlength=n_ranks)
 comin.print_info(
@@ -123,6 +166,8 @@ comin.print_info(
 class State:
     icon_var = None
     predict_var = None
+    forcing_vars = []
+    forcing_norm = None  # MeanStdNormalizer, one global mean/std per forcing
     first_seconds = None  # model time of the first callback
     sample_seconds = None  # SAMPLE_SECONDS rounded to whole ICON steps
     normalizer = None
@@ -136,11 +181,31 @@ def _seconds() -> float:
     return parse_icon_datetime(comin.current_get_datetime()).timestamp()
 
 
-def _patch() -> torch.Tensor:
-    """Collective: this rank's patch of the ICON variable, (n_fine, nlev) on the GPU."""
-    cells = extract_icon_cells(State.icon_var, domain.cells.ncells)
-    cells = cells.get() if hasattr(cells, "get") else cells  # cupy -> numpy for MPI
-    return torch.from_numpy(exchange.to_patch(compute_comm, cells.reshape(len(cells), -1))).to(DEVICE)
+def _patch(variables) -> torch.Tensor:
+    """Collective: this rank's patch of the ICON variables, (n_fine, levels
+    of all variables) on the GPU."""
+    columns = [np.empty((domain.cells.ncells, 0), dtype=np.float32)]  # concatenate needs one array
+    for var in variables:
+        cells = extract_icon_cells(var, domain.cells.ncells)
+        cells = cells.get() if hasattr(cells, "get") else cells  # cupy -> numpy for MPI
+        columns.append(cells.reshape(len(cells), -1))
+    return torch.from_numpy(exchange.to_patch(compute_comm, np.concatenate(columns, axis=1))).to(DEVICE)
+
+
+def _global_mean_std(patch: torch.Tensor):
+    """Collective: mean and std of every column over all patches, i.e. over
+    every ICON cell once."""
+    values = patch.double().cpu().numpy()
+    sums = np.stack([values.sum(axis=0), np.square(values).sum(axis=0)])
+    compute_comm.Allreduce(MPI.IN_PLACE, sums)
+    n = compute_comm.allreduce(len(values))
+    mean = sums[0] / n
+    std = np.sqrt(np.maximum(sums[1] / n - mean**2, 1e-12))
+    return torch.tensor(mean, dtype=torch.float32, device=DEVICE), torch.tensor(std, dtype=torch.float32, device=DEVICE)
+
+
+def _stats(names, mean, std) -> str:
+    return " ".join(f"{name}={m:.4g}±{s:.4g}" for name, m, s in zip(names, mean.tolist(), std.tolist()))
 
 
 def _write(forecast: torch.Tensor) -> None:
@@ -149,9 +214,36 @@ def _write(forecast: torch.Tensor) -> None:
     insert_icon_cells(owned.astype(np.float64), State.predict_var, indices=exchange.send_ids)
 
 
-def _trainer(nlev: int) -> OnlineReconstructorForecaster:
+def _forcing(seconds: float) -> torch.Tensor:
+    """Collective: this rank's physical forcing patch at model time
+    ``seconds``, (n_fine, len(FORCING_NAMES))."""
+    columns = [_patch(State.forcing_vars)]
+    if INSOLATION:
+        columns.append(toa_insolation(seconds, FINE_LON, FINE_LAT)[:, None])
+    return torch.cat(columns + [STATIC], dim=1)
+
+
+def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
+    """Collective: normalizes the forcings by their global mean/std at
+    ``seconds``, then builds the trainer."""
+    mean, std = _global_mean_std(_forcing(seconds))
+    comin.print_info(f"forcings (mean±std over all cells): {_stats(FORCING_NAMES, mean, std)}")
+    flat = [name for name, m, s in zip(FORCING_NAMES, mean.tolist(), std.tolist()) if s <= 1e-6 * (1 + abs(m))]
+    if flat:  # the same on every rank: the statistics are global
+        raise RuntimeError(f"forcings without spread over the globe, read wrongly? {flat}")
+    State.forcing_norm = MeanStdNormalizer({"mean": mean, "std": std}, {})
     replay_size = int(REPLAY_SECONDS // State.sample_seconds)
-    trainer = OnlineReconstructorForecaster(mgrids, LEVELS, LATENT_LEVEL, nlev, replay_size=replay_size, device=DEVICE, **MODEL)
+    trainer = OnlineReconstructorForecaster(
+        mgrids,
+        LEVELS,
+        LATENT_LEVEL,
+        nlev,
+        n_variables=1 + len(FORCING_NAMES),
+        replay_size=replay_size,
+        replay_warmup=int(REPLAY_WARMUP_SECONDS // State.sample_seconds),
+        device=DEVICE,
+        **MODEL,
+    )
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
         trainer.model.load_state_dict(ckpt["model_state_dict"])
@@ -184,6 +276,7 @@ def sec_ctor():
     ep = [comin.EP_ATM_WRITE_OUTPUT_BEFORE]
     State.icon_var = comin.var_get(ep, (VARIABLE, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG)
     State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | DEVICE_FLAG)
+    State.forcing_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG) for name in FORCINGS]
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
@@ -199,12 +292,13 @@ def sample_step():
         comin.print_info(f"dry run: {n_dry} sample steps = {n_dry * stride} ICON steps = {n_dry * State.sample_seconds:.0f} s")
         n_replay = int(REPLAY_SECONDS // State.sample_seconds)
         comin.print_info(
-            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s, "
-            f"draws {MODEL['replay_batch']} per update"
+            f"latent replay: keeps the last {n_replay} windows = {n_replay * State.sample_seconds:.0f} s "
+            f"({n_replay + MODEL['n_context']} latents, each stored once), draws {MODEL['replay_batch']} per update; "
+            f"windows from the first {REPLAY_WARMUP_SECONDS:.0f} s after the dry run are never replayed"
         )
     if round(now - State.first_seconds) % State.sample_seconds:
         return
-    patch = _patch()
+    patch = _patch([State.icon_var])
 
     if State.normalizer is None:
         State.normalizer = RunningMeanStd(patch.shape, int(DRY_RUN_SECONDS // State.sample_seconds), DEVICE)
@@ -217,7 +311,7 @@ def sample_step():
             f"{State.normalizer.count} samples (rank 0 std {float(std.min()):.3g}-{float(std.max()):.3g}); "
             f"training starts once {MODEL['n_context']} sample steps of context are cached"
         )
-        State.trainer = _trainer(nlev=patch.shape[1])
+        State.trainer = _trainer(patch.shape[1], now)
 
     # Score and write the forecast made one sample step ago, which is valid now.
     scores = ""
@@ -229,7 +323,10 @@ def sample_step():
 
     torch.cuda.synchronize()
     start = time.perf_counter()
-    stats = State.trainer.train_step(State.normalizer.normalize(patch), now)
+    # Variables: the forecast variable, then the 2D forcings on each of its levels.
+    forcing = State.forcing_norm.normalize(_forcing(now))[:, :, None].expand(-1, -1, patch.shape[1])
+    x = torch.cat([State.normalizer.normalize(patch)[:, None], forcing], dim=1)
+    stats = State.trainer.train_step(x, now)
     increment = State.trainer.predict_increment(now + State.sample_seconds)
     torch.cuda.synchronize()
     State.forecast = None if increment is None else patch + increment * std
@@ -244,7 +341,9 @@ def sample_step():
     State.step += 1
     if State.step % max(1, int(SAVE_INTERVAL_SECONDS // State.sample_seconds)) == 0:
         norm = State.normalizer.stats
-        save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, {"norm_mean": norm.mean, "norm_std": norm.std})
+        extra = {"norm_mean": norm.mean, "norm_std": norm.std}
+        extra.update(forcings=FORCING_NAMES, forcing_mean=State.forcing_norm.mean, forcing_std=State.forcing_norm.std)
+        save_checkpoint(State.trainer, CHECKPOINT_PATH, rank, State.step, extra)
         comin.print_info(f"checkpoint at step {State.step}, {comin.current_get_datetime()}: {CHECKPOINT_PATH}")
 
 
