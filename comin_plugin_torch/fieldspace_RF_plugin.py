@@ -13,10 +13,10 @@ both models and forecasts the next sample step.
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
 units) and prints, per level, the loss each model is trained on with its
-reference: ``recon`` vs ``state_ms`` (outputting zero), over all variables,
-and, per latent level (``r6`` = the R2B6' latent), ``latent_mse`` vs
-``latent_persist`` (persistence) of the forecast variable, both over the
-forecaster's whole batch.
+reference, both for the forecast variable only: ``recon`` vs ``state_ms``
+(outputting zero) and, per latent level (``r6`` = the R2B6' latent),
+``latent_mse`` vs ``latent_persist`` (persistence), over the forecaster's
+whole batch.
 
 Forcings go through both models as extra variables after the forecast
 variable (fieldspace_RF_online.py, "Variables"); only the forecast variable is

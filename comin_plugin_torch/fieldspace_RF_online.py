@@ -73,10 +73,11 @@ At sample step t (context full)
    then the EMA update.
 3. c̄_t goes into the replay buffer, where it joins the context and makes
    the live window replayable, and the plugin asks for the increment to t+1.
-4. Returned for the log, per level: both losses and their references,
-   ``state_ms`` (mean square of x_t over all variables, the loss of
-   outputting zero) and ``latent_persist`` (mean square of c̄_t - c̄_{t-1} of
-   variable 0 over the batch, the loss of persistence).
+4. Returned for the log, per level and for variable 0 only: both losses
+   and their references, ``state_ms`` (mean square of x_t, the loss of
+   outputting zero, so 1 - recon / state_ms is the fraction of variance
+   explained) and ``latent_persist`` (mean square of c̄_t - c̄_{t-1} over the
+   batch, the loss of persistence).
 """
 
 from collections import deque
@@ -444,9 +445,10 @@ class OnlineReconstructorForecaster:
 
     def _loss(self, output: Levels, target: Levels):
         """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
-        whole-field MSE) and its per-level parts, which are what is logged."""
+        whole-field MSE, summed over variables) and, for the log, the
+        per-level MSE of variable 0."""
         total, parts = self.level_loss(output, target)
-        return total, {z: float(parts[f"level{z}_MSE_loss"]) for z in target}
+        return total, {z: float(parts[f"group0_level{z}_var0_MSE_loss"]) for z in target}
 
     @staticmethod
     def _mean_square(levels: Levels) -> Dict[int, float]:
@@ -491,7 +493,7 @@ class OnlineReconstructorForecaster:
         persistence = {z: batch.target[z] - batch.context[z][:, :1, -1:] for z in batch.target}
         return {
             "recon": recon_parts,
-            "state_ms": self._mean_square(levels),
+            "state_ms": self._mean_square({z: t[:, :1] for z, t in levels.items()}),
             "latent_mse": latent_parts,
             "latent_persist": self._mean_square(persistence),
         }
