@@ -11,8 +11,8 @@ the model and forecasts the next sample step.
 
 ``var_predict`` at model time t holds the forecast valid at t, made one sample
 step earlier: the field at t - lead plus the predicted increment. The log
-scores it against persistence (``fc_rmse``, ``persistence``, in the variable's
-units) and prints the per-level losses.
+scores it (``fc_rmse``, in the variable's units; persistence is computed
+offline from the output) and prints the per-level losses.
 """
 
 import os
@@ -116,7 +116,6 @@ class State:
     normalizer = None
     trainer = None
     step = 0  # sample steps since the dry run
-    prev_patch = None  # physical patch one sample step ago
     forecast = None  # physical forecast valid at the next sample step
 
 
@@ -200,8 +199,7 @@ def sample_step():
     scores = ""
     if State.forecast is not None:
         fc_rmse = (State.forecast - patch).square().mean().sqrt()
-        persistence = (State.prev_patch - patch).square().mean().sqrt()
-        scores = f"fc_rmse={fc_rmse:.4f} persistence={persistence:.4f} "
+        scores = f"fc_rmse={fc_rmse:.4f} "
         _write(State.forecast)
 
     torch.cuda.synchronize()
@@ -210,7 +208,6 @@ def sample_step():
     increment = State.trainer.predict_increment(now + State.sample_seconds)
     torch.cuda.synchronize()
     State.forecast = None if increment is None else patch + increment * std
-    State.prev_patch = patch
 
     if stats:
         comin.print_info(

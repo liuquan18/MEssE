@@ -11,7 +11,8 @@ each showing the per-level loss the model is trained on and its reference:
   mean over its batch (newest + replayed windows), with
   ``latent_persist/<level>`` (dotted, the loss of persistence). Older runs
   logged the field increment loss ``incre`` with ``persist_mse`` instead.
-* Forecast error: ``fc_rmse`` vs ``persistence`` in the variable's units.
+* Forecast error: ``fc_rmse`` in the variable's units (persistence is
+  computed offline from the output).
 
 The "÷ reference" switch of a panel divides each curve by its reference (both
 smoothed first), so incre then reads 1 - skill against persistence. Each panel
@@ -104,7 +105,7 @@ HTML = """<!DOCTYPE html>
   <div class="bar" id="forecast-bar"></div>
   <div class="wrap"><canvas id="forecast"></canvas></div></div>
 <div class="panel"><h4>Forecast error of var_predict</h4>
-  <p>RMSE over one lead in the variable's units, model vs persistence.</p>
+  <p>RMSE over one lead in the variable's units.</p>
   <div class="bar" id="rmse-bar"></div>
   <div class="wrap"><canvas id="rmse"></canvas></div></div>
 <div id="err"></div>
@@ -119,7 +120,7 @@ const PANELS = {
               ref: n => { const [group, key] = n.split("/");
                           const r = { latent_mse: "latent_persist/", incre: "persist_mse/" }[group];
                           return r ? r + key : null; } },
-  rmse:     { match: n => n === "fc_rmse" || n === "persistence", log: false },
+  rmse:     { match: n => n === "fc_rmse", log: false },
 };
 const REFERENCE = /^(state_ms|persist_mse|latent_persist)[/]/;
 const charts = {};
@@ -147,7 +148,7 @@ function smooth(ys, n) {
 function style(name, names) {
   const key = name.split("/").pop();
   const keys = [...new Set(names.map(n => n.split("/").pop()))];
-  const fixed = { fc_rmse: "#1e88e5", persistence: "#e53935" };
+  const fixed = { fc_rmse: "#1e88e5" };
   return {
     borderColor: fixed[name] || LEVEL_COLORS[keys.indexOf(key) % LEVEL_COLORS.length],
     borderDash: REFERENCE.test(name) ? [2, 3] : [],
