@@ -13,14 +13,16 @@ both models and forecasts the next sample step.
 step earlier: the field at t - lead plus the predicted increment. The log
 scores it (``fc_rmse``, in the variable's units; persistence is computed
 offline from the output) and prints, per level, the loss each model is trained on with its
-reference, both for the forecast variable only: ``recon`` vs ``state_ms``
+reference: ``recon`` vs ``state_ms``
 (outputting zero) and, per latent level (``r6`` = the R2B6' latent),
 ``latent_mse`` vs ``latent_persist`` (persistence), over the forecaster's
 whole batch.
 
-Forcings go through both models as extra variables after the forecast
-variable (fieldspace_RF_online.py, "Variables"); only the forecast variable is
-forecast and written. In this order:
+Forcings are not compressed: they condition the blocks of both models
+(fieldspace_RF_online.py, "Forcings"). The reconstructor gets all but the
+insolation (a clock, job 28418236); the forecaster gets all of them, for its
+forecast slot those at the forecast time as far as known: the insolation then,
+SST and sea ice of now. In this order:
 
 - ``MESSE_AE_FORCINGS`` (SST, sea ice): ICON fields read from GPU memory at
   every sample step after the dry run;
@@ -88,6 +90,8 @@ INSOLATION = env("MESSE_AE_INSOLATION", "1") == "1"
 STATIC_FILE = env("MESSE_AE_STATIC_FILE", "bc_land_sso.nc")  # relative to the run directory
 STATICS = [v for v in env("MESSE_AE_STATICS", "oromea").split(",") if v]
 FORCING_NAMES = FORCINGS + ["insolation"] * INSOLATION + STATICS
+# The reconstructor gets no clock: with one, its r8 failed at some hours of the day (job 28418236).
+RECONSTRUCTOR_FORCINGS = [k for k, name in enumerate(FORCING_NAMES) if name != "insolation"]
 LEVELS = [int(v) for v in env("MESSE_AE_LEVELS", "4,6,7,8").split(",")]  # backbone first, last = ICON's grid
 LATENT_LEVEL = int(env("MESSE_AE_LATENT_LEVEL", "6"))
 GRID_DIR = env("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
@@ -103,6 +107,7 @@ MODEL = dict(
     n_blocks=int(env("MESSE_AE_N_BLOCKS", "2")),  # attention blocks per compression stage
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
     att_dim=int(env("MESSE_AE_ATT_DIM", "128")),
+    embed_dim=int(env("MESSE_AE_EMBED_DIM", "8")),  # time embedding and each cell's forcing embedding
     ema_decay=float(env("MESSE_AE_EMA_DECAY", "0.99")),  # frozen = EMA of the reconstructor
     # 0: the reconstructor gets a constant time, the forecaster the model time (job 28418236: with
     # the clock, the reconstructor's r8 failed at some hours of the day)
@@ -237,7 +242,8 @@ def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
         LEVELS,
         LATENT_LEVEL,
         nlev,
-        n_variables=1 + len(FORCING_NAMES),
+        n_forcings=len(FORCING_NAMES),
+        reconstructor_forcings=RECONSTRUCTOR_FORCINGS,
         replay_size=replay_size,
         replay_warmup=int(REPLAY_WARMUP_SECONDS // State.sample_seconds),
         device=DEVICE,
@@ -321,11 +327,10 @@ def sample_step():
 
     torch.cuda.synchronize()
     start = time.perf_counter()
-    # Variables: the forecast variable, then the 2D forcings on each of its levels.
-    forcing = State.forcing_norm.normalize(_forcing(now))[:, :, None].expand(-1, -1, patch.shape[1])
-    x = torch.cat([State.normalizer.normalize(patch)[:, None], forcing], dim=1)
-    stats = State.trainer.train_step(x, now)
-    increment = State.trainer.predict_increment(now + State.sample_seconds)
+    forcing = State.forcing_norm.normalize(_forcing(now))
+    stats = State.trainer.train_step(State.normalizer.normalize(patch), forcing, now)
+    then = now + State.sample_seconds
+    increment = State.trainer.predict_increment(then, State.forcing_norm.normalize(_forcing(then)))
     torch.cuda.synchronize()
     State.forecast = None if increment is None else patch + increment * std
 
