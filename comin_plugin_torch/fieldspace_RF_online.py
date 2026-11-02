@@ -265,24 +265,34 @@ class _BlockConfigs:
         )
 
 
-def autoencoder_configs(zooms: List[int], latent_zoom: int, channels: int, n_blocks: int, configs: _BlockConfigs):
+def autoencoder_configs(
+    zooms: List[int],
+    latent_zoom: int,
+    channels: int,
+    n_blocks: int,
+    configs: _BlockConfigs,
+    inner_channels: Optional[int] = None,
+):
     """Encoder and decoder block configs of the staged compression, and the
     channels of every latent level. The finest residual level is folded into
     the next coarser one, stage by stage, down to ``latent_zoom`` (``channels``
     per latent cell), with ``n_blocks`` attention blocks before and after each
-    stage."""
+    stage. The levels in between (e.g. R2B7') get ``inner_channels`` (default
+    ``channels``), which does not change the size of the latent."""
+    inner_channels = inner_channels or channels
     stages = [(fine, parent) for parent, fine in zip(zooms[1:], zooms[2:]) if fine > latent_zoom][::-1]
     zooms = list(zooms)
     encoder = {f"att_in_{i}": configs.attention(zooms) for i in range(n_blocks)}
     for s, (fine, parent) in enumerate(stages):
         zooms.remove(fine)
-        encoder[f"compress_{s}"] = configs.field_layer([parent, fine], [parent], parent, list(zooms), channels)
+        target = channels if s == len(stages) - 1 else inner_channels
+        encoder[f"compress_{s}"] = configs.field_layer([parent, fine], [parent], parent, list(zooms), target)
         encoder.update({f"att_{s}_{i}": configs.attention(zooms) for i in range(n_blocks)})
     latent_features = {z: channels if z in dict(stages).values() else 1 for z in zooms}
     decoder = {f"latent_att_{i}": configs.attention(zooms) for i in range(n_blocks)}
     for s, (fine, parent) in reversed(list(enumerate(stages))):
         zooms = sorted(zooms + [fine])
-        fine_channels = channels if s > 0 else 1  # fine was itself a parent in the stage before
+        fine_channels = inner_channels if s > 0 else 1  # fine was itself a parent in the stage before
         decoder[f"decompress_{s}"] = configs.field_layer(
             [parent], [parent, fine], parent, list(zooms), {parent: 1, fine: fine_channels}
         )
@@ -293,9 +303,11 @@ def autoencoder_configs(zooms: List[int], latent_zoom: int, channels: int, n_blo
 class Reconstructor(nn.Module):
     """Encoder/decoder between the field's levels and its latent."""
 
-    def __init__(self, mgrids, zooms, latent_zoom, channels, n_blocks, configs: _BlockConfigs):
+    def __init__(self, mgrids, zooms, latent_zoom, channels, n_blocks, configs: _BlockConfigs, inner_channels=None):
         super().__init__()
-        encoder, decoder, self.latent_features = autoencoder_configs(zooms, latent_zoom, channels, n_blocks, configs)
+        encoder, decoder, self.latent_features = autoencoder_configs(
+            zooms, latent_zoom, channels, n_blocks, configs, inner_channels
+        )
         self.ae = MG_AutoEncoder(
             mgrids=mgrids,
             in_zooms=zooms,
@@ -356,6 +368,7 @@ class ReconstructorForecaster(nn.Module):
         n_forcings: int = 0,
         reconstructor_forcings: Sequence[int] = (),
         latent_channels: int = 4,
+        inner_channels: Optional[int] = None,
         n_blocks: int = 2,
         n_forecaster_blocks: int = 2,
         att_dim: int = 128,
@@ -368,6 +381,8 @@ class ReconstructorForecaster(nn.Module):
         """``n_forcings`` forcing columns condition the forecaster, the columns
         ``reconstructor_forcings`` of them the reconstructor. ``embed_dim`` is
         the size of the time embedding and of each cell's forcing embedding.
+        ``inner_channels`` are the channels of the compressed levels between
+        the finest and the latent one (default ``latent_channels``).
         ``reconstructor_time=False`` gives the reconstructor a constant time:
         it compresses and rebuilds a field without the clock, while the
         forecaster still gets the model time."""
@@ -388,6 +403,7 @@ class ReconstructorForecaster(nn.Module):
             latent_channels,
             n_blocks,
             _BlockConfigs(**blocks, n_forcings=len(self.reconstructor_forcings)),
+            inner_channels,
         )
         self.forecaster = Forecaster(
             self.reconstructor.ae.grid_layers,
@@ -474,10 +490,12 @@ class OnlineReconstructorForecaster:
         replay_batch: int = 10,
         replay_warmup: int = 0,
         grad_clip: float = 1.0,
+        lr_warmup: int = 0,
         device: torch.device = torch.device("cuda", 0),
         **model_kwargs,
     ):
         self.device, self.grad_clip = device, grad_clip
+        self.lr_recon, self.lr_warmup, self.n_updates = lr_recon, lr_warmup, 0  # lr_recon ramps up over lr_warmup updates
         # FieldSpaceNN creates device-less tensors in GridLayer and in forward
         # passes; the grids must be on the same device as those.
         mgrids = [{k: v.to(device) if torch.is_tensor(v) else v for k, v in grid.items()} for grid in mgrids]
@@ -541,6 +559,9 @@ class OnlineReconstructorForecaster:
         loss_recon, recon_parts = self._loss(recon, levels)
         loss_latent, latent_parts = self._loss(forecast, batch.target)
 
+        ramp = min(1.0, (self.n_updates + 1) / self.lr_warmup) if self.lr_warmup else 1.0
+        self.optimizer.param_groups[0]["lr"] = self.lr_recon * ramp  # the reconstructor's group
+        self.n_updates += 1
         self.optimizer.zero_grad(set_to_none=True)
         (loss_recon + loss_latent).backward()
         # Gradients are averaged over ranks, so all ranks take the same branch.

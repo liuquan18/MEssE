@@ -46,7 +46,7 @@ import os
 import socket
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -339,6 +339,18 @@ def sample_interval(wanted_seconds: float, step_seconds: float) -> Tuple[int, in
         raise ValueError(f"step_seconds must be positive, got {step_seconds}")
     stride = max(1, int(round(float(wanted_seconds) / float(step_seconds))))
     return stride, int(round(stride * float(step_seconds)))
+
+
+def mean_stats(rows: Sequence[Dict]) -> Dict:
+    """Mean over log rows with the same keys, whose values are numbers or
+    ``{level: number}`` dicts (e.g. a trainer's per-step stats)."""
+    means = {}
+    for key, value in rows[0].items():
+        if isinstance(value, dict):
+            means[key] = {level: sum(row[key][level] for row in rows) / len(rows) for level in value}
+        else:
+            means[key] = sum(row[key] for row in rows) / len(rows)
+    return means
 
 
 def parse_icon_datetime(iso_str: str) -> datetime.datetime:
