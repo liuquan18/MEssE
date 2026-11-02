@@ -16,6 +16,7 @@ from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
     extract_icon_cells,
     insert_icon_cells,
+    mean_stats,
     parse_icon_datetime,
     sample_interval,
     toa_insolation,
@@ -273,3 +274,8 @@ def test_toa_insolation_global_mean_is_a_quarter_of_the_incoming_flux():
         flux = toa_insolation(seconds, torch.from_numpy(lon), torch.from_numpy(lat)).numpy()
         mean = (flux * weights).sum() / weights.sum()
         assert abs(mean - 1361 * distance_factor / 4) < 2, (when, mean)
+
+
+def test_mean_stats_averages_numbers_and_per_level_dicts():
+    rows = [{"recon": {4: 1.0, 8: 3.0}, "fc_rmse": 2.0}, {"recon": {4: 3.0, 8: 5.0}, "fc_rmse": 4.0}]
+    assert mean_stats(rows) == {"recon": {4: 2.0, 8: 4.0}, "fc_rmse": 3.0}

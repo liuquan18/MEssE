@@ -43,6 +43,16 @@ The forecaster's batch is the live window plus ``MESSE_AE_REPLAY_BATCH``
 windows drawn from the replay buffer, which keeps those of the last
 ``MESSE_AE_REPLAY_SECONDS`` of model time (latent replay, 0 = off). The replay
 buffer is not checkpointed: after a restart it fills again.
+
+The log line comes once per ``MESSE_AE_LOG_SECONDS`` of model time (one hour):
+every value is the mean over the sample steps since the last line, since single
+steps mostly show how hard that snapshot's weather is. ``step`` is the last
+sample step of the hour, and ``torch_peak_GiB`` the peak so far.
+
+The reconstructor's defaults come from an offline comparison on the stored
+uas (`.claude/recon_explore/RESULTS.md`): learning rate 1e-3 after a 300-update
+warm-up, and 8 channels at the intermediate R2B7'. The latent stays 65 values
+per 256.
 """
 
 import os
@@ -71,6 +81,7 @@ from MEssE.utils.icon_online_helper import (
     toa_insolation,
     extract_icon_cells,
     insert_icon_cells,
+    mean_stats,
     parse_icon_datetime,
     sample_interval,
     save_checkpoint,
@@ -98,12 +109,15 @@ GRID_DIR = env("MESSE_FS_GRID_DIR", "/pool/data/ICON/grids/mpim")
 SAMPLE_SECONDS = float(env("MESSE_AE_SAMPLE_SECONDS", "600"))  # forecast lead and context spacing
 DRY_RUN_SECONDS = float(env("MESSE_AE_DRY_RUN_SECONDS", "86400"))
 SAVE_INTERVAL_SECONDS = float(env("MESSE_AE_SAVE_INTERVAL_SECONDS", "86400"))
+LOG_SECONDS = float(env("MESSE_AE_LOG_SECONDS", "3600"))  # model time averaged into one log line
 REPLAY_SECONDS = float(env("MESSE_AE_REPLAY_SECONDS", "86400"))  # model time of windows the replay buffer keeps
 # Windows from this much model time after the dry run are never replayed (reconstructor not settled yet).
 REPLAY_WARMUP_SECONDS = float(env("MESSE_AE_REPLAY_WARMUP_SECONDS", "172800"))
 MODEL = dict(
     n_context=int(env("MESSE_AE_N_CONTEXT", "4")),  # latents the forecaster sees
     latent_channels=int(env("MESSE_AE_LATENT_CHANNELS", "4")),
+    # Channels of the levels between the finest and the latent one (R2B7'); 0 = the latent channels.
+    inner_channels=int(env("MESSE_AE_INNER_CHANNELS", "8")) or None,
     n_blocks=int(env("MESSE_AE_N_BLOCKS", "2")),  # attention blocks per compression stage
     n_forecaster_blocks=int(env("MESSE_AE_N_FORECASTER_BLOCKS", "2")),
     att_dim=int(env("MESSE_AE_ATT_DIM", "128")),
@@ -112,8 +126,10 @@ MODEL = dict(
     # 0: the reconstructor gets a constant time, the forecaster the model time (job 28418236: with
     # the clock, the reconstructor's r8 failed at some hours of the day)
     reconstructor_time=env("MESSE_AE_RECONSTRUCTOR_TIME", "1") == "1",
-    lr_recon=float(env("MESSE_AE_LR_RECON", "2e-4")),
+    lr_recon=float(env("MESSE_AE_LR_RECON", "1e-3")),
     lr_forecast=float(env("MESSE_AE_LR_FORECAST", "2e-4")),
+    # Model time over which lr_recon ramps up linearly from zero (converted to updates).
+    lr_warmup_seconds=float(env("MESSE_AE_LR_WARMUP_SECONDS", "180000")),
     replay_batch=int(env("MESSE_AE_REPLAY_BATCH", "10")),  # windows drawn from the replay buffer per update
 )
 CHECKPOINT_PATH = os.path.join(os.getcwd(), "saved_models", "fieldspace_rf_online.pt")
@@ -179,6 +195,7 @@ class State:
     trainer = None
     step = 0  # sample steps since the dry run
     forecast = None  # physical forecast valid at the next sample step
+    log_rows = []  # per-step values since the last log line
 
 
 def _seconds() -> float:
@@ -237,6 +254,8 @@ def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
         raise RuntimeError(f"forcings without spread over the globe, read wrongly? {flat}")
     State.forcing_norm = MeanStdNormalizer({"mean": mean, "std": std}, {})
     replay_size = int(REPLAY_SECONDS // State.sample_seconds)
+    model = dict(MODEL)
+    model["lr_warmup"] = int(model.pop("lr_warmup_seconds") // State.sample_seconds)
     trainer = OnlineReconstructorForecaster(
         mgrids,
         LEVELS,
@@ -247,13 +266,13 @@ def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
         replay_size=replay_size,
         replay_warmup=int(REPLAY_WARMUP_SECONDS // State.sample_seconds),
         device=DEVICE,
-        **MODEL,
+        **model,
     )
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
         trainer.model.load_state_dict(ckpt["model_state_dict"])
         trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        State.step = ckpt["step"]
+        State.step = trainer.n_updates = ckpt["step"]
         comin.print_info(f"restored {CHECKPOINT_PATH} at step {State.step}")
     n_recon = sum(p.numel() for p in trainer.model.reconstructor.parameters())
     n_forecast = sum(p.numel() for p in trainer.model.forecaster.parameters())
@@ -267,6 +286,16 @@ def _name(zoom: int) -> str:
 
 def _levels(values: dict) -> str:
     return " ".join(f"{_name(z)}={v:.4g}" for z, v in values.items())
+
+
+def _log_line() -> str:
+    """The means of ``State.log_rows``."""
+    means = mean_stats(State.log_rows)
+    losses = " ".join(f"{key}[{_levels(means[key])}]" for key in ("recon", "state_ms", "latent_mse", "latent_persist"))
+    return (
+        f"step={State.step} fc_rmse={means['fc_rmse']:.4f} {losses} "
+        f"train_s={means['train_s']:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -319,10 +348,9 @@ def sample_step():
         State.trainer = _trainer(patch.shape[1], now)
 
     # Score and write the forecast made one sample step ago, which is valid now.
-    scores = ""
+    fc_rmse = None
     if State.forecast is not None:
-        fc_rmse = (State.forecast - patch).square().mean().sqrt()
-        scores = f"fc_rmse={fc_rmse:.4f} "
+        fc_rmse = float((State.forecast - patch).square().mean().sqrt())
         _write(State.forecast)
 
     torch.cuda.synchronize()
@@ -334,12 +362,11 @@ def sample_step():
     torch.cuda.synchronize()
     State.forecast = None if increment is None else patch + increment * std
 
-    if stats:
-        comin.print_info(
-            f"step={State.step} {scores}recon[{_levels(stats['recon'])}] state_ms[{_levels(stats['state_ms'])}] "
-            f"latent_mse[{_levels(stats['latent_mse'])}] latent_persist[{_levels(stats['latent_persist'])}] "
-            f"train_s={time.perf_counter() - start:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
-        )
+    if stats:  # the context is full, so a forecast was scored above
+        State.log_rows.append({**stats, "fc_rmse": fc_rmse, "train_s": time.perf_counter() - start})
+        if len(State.log_rows) >= max(1, int(LOG_SECONDS // State.sample_seconds)):
+            comin.print_info(_log_line())
+            State.log_rows.clear()
     State.step += 1
     if State.step % max(1, int(SAVE_INTERVAL_SECONDS // State.sample_seconds)) == 0:
         norm = State.normalizer.stats

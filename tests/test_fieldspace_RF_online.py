@@ -358,3 +358,46 @@ def test_reconstructor_without_time_ignores_the_clock_but_the_forecaster_does_no
     _predict(trainer, N_CONTEXT)
     expected = torch.tensor([[(T0 + k * DT) / 86400 for k in range(N_CONTEXT + 1)]])
     assert torch.allclose(seen[0], expected)  # context times then the forecast time, in days
+
+
+def test_inner_channels_widen_the_intermediate_level_only():
+    """Latent 4 channels at zoom 2, the intermediate zoom 3 with 6: the encoder
+    folds r8 into 6 channels at zoom 3, then into 4 at zoom 2; the decoder
+    mirrors it; the latent and a full round trip keep their shapes."""
+    encoder, decoder, latent = autoencoder_configs([0, 2, 3, 4], 2, 4, 1, _BlockConfigs(16, 4, 16, 8, 0), 6)
+    assert latent == {0: 1, 2: 4}
+    assert [encoder[k].target_features for k in ("compress_0", "compress_1")] == [6, 4]
+    assert decoder["decompress_1"].target_features == {2: 1, 3: 6}
+    model = _trainer(inner_channels=6).model
+    levels, forcings = model.to_levels(_field(0)), model.forcing_levels(_forcings(0))
+    with torch.no_grad():
+        c = model.encode_frozen(levels, T0, forcings)
+        out = model.decode_frozen(c, T0, forcings)
+    assert {z: t.shape[-1] for z, t in c.items()} == {0: 1, 2: 4}
+    assert all(out[z].shape == levels[z].shape for z in levels)
+
+
+def test_only_the_reconstructors_learning_rate_ramps_up_over_the_warmup():
+    trainer = _trainer(lr_recon=1e-3, lr_forecast=5e-4, lr_warmup=4)
+    seen = []
+    step = trainer.optimizer.step
+    trainer.optimizer.step = lambda: seen.append([g["lr"] for g in trainer.optimizer.param_groups]) or step()
+    _train(trainer, N_CONTEXT + 6)
+    expected = [lr for f in (0.25, 0.5, 0.75, 1.0, 1.0, 1.0) for lr in (1e-3 * f, 5e-4)]
+    assert sum(seen, []) == pytest.approx(expected)
+
+
+def test_reconstructor_does_not_depend_on_the_forecasters_training():
+    """The split over many updates, not one backward: a forecaster that learns
+    (with replay) and one that does not leave the reconstructor and its frozen
+    copy the same, bit for bit."""
+    learning = _trainer(replay_size=4, replay_batch=2)
+    static = _trainer(lr_forecast=0.0)
+    initial = {k: v.clone() for k, v in learning.model.forecaster.state_dict().items()}
+    _train(learning, N_CONTEXT + 6)
+    _train(static, N_CONTEXT + 6)
+    for module in ("reconstructor", "frozen"):
+        a, b = getattr(learning.model, module).state_dict(), getattr(static.model, module).state_dict()
+        assert all(torch.equal(a[k], b[k]) for k in a), module
+    assert not all(torch.equal(learning.model.forecaster.state_dict()[k], v) for k, v in initial.items())
+    assert all(torch.equal(static.model.forecaster.state_dict()[k], v) for k, v in initial.items())
