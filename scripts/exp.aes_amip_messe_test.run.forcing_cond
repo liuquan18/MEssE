@@ -346,39 +346,8 @@ export START="srun -l --kill-on-bad-exit=1 --gpus-per-node=${num_gpus_pernode} -
 python_adapter_dir=/externals/comin/build/plugins/python_adapter
 add_comin_setup "$python_adapter_dir"
 
-# MEssE FieldSpace AE plugin (fieldspace_AE_plugin.py) configuration
-export MESSE_ICON_VAR="uas"   # AES name of the 10 m zonal wind (u_10m is the NWP name)
-# Forcings (fieldspace_RF_plugin.py): condition reconstructor (all but insolation) and forecaster, AES names.
-export MESSE_AE_FORCINGS="ts_wtr,sic"   # SST (water tile), sea ice fraction: GPU memory, every sample step
-export MESSE_AE_INSOLATION=1            # TOA incoming shortwave computed from time and cell centres
-export MESSE_AE_STATICS="oromea"        # orography, from ICON's own input file below, once at startup
-export MESSE_AE_STATIC_FILE="bc_land_sso.nc"   # ComIn's orog reads zero (GPU copy never set by AES)
-# Model levels (R2B): backbone first, then residual levels; the finest must be the grid ICON
-# runs on (icon_grid_0054_R02B08_G.nc has the same cells as Earth_IcosS_0010km.nc).
-export MESSE_AE_LEVELS="4,6,7,8"
-export MESSE_AE_LATENT_LEVEL=6               # R2B8 folded into R2B7', then into R2B6'
-export MESSE_FS_GRID_DIR="/pool/data/ICON/grids/mpim"   # Earth_IcosS_* files, every level R2B4..R2B8
-# Train, cache and forecast once per 600 s of model time: 10-minute lead, 40-minute history,
-# matching the 10-minute output interval (var_predict in a snapshot is the forecast for it).
-# The plugin converts this to whole ICON steps using the run's own timestep.
-export MESSE_AE_SAMPLE_SECONDS=600
-export MESSE_AE_ATT_DIM=128                  # was 32
-export MESSE_AE_N_BLOCKS=2                   # attention blocks per stage, as in the paper
-export MESSE_AE_DRY_RUN_SECONDS=86400         # normalization statistics from the first 24 model hours
-export MESSE_AE_SAVE_INTERVAL_SECONDS=86400   # checkpoint every model 24 hours
-# AE plugin: residual dropout of the newest history state, per residual level r6,r7,r8:
-# with this probability per rank and sample step that level and every finer one are set to 0.
-# RF plugin only: latent replay for the forecaster, model time of windows kept (86400 s = 1 day) and windows drawn per update.
-export MESSE_AE_REPLAY_SECONDS=864000    # 10 days
-export MESSE_AE_REPLAY_WARMUP_SECONDS=172800   # first 2 days after the dry run are never replayed
-export MESSE_AE_REPLAY_BATCH=10
-export MESSE_AE_N_CONTEXT=10                # context window: 10 x 600 s = 100 min
-export MESSE_AE_RECONSTRUCTOR_TIME=0          # reconstructor without the clock (forecaster keeps it)
-export MESSE_AE_SELECTIVE_GATE=0           # SelectiveGate: branch selectivity only, ignored elsewhere
-# Per-scale verification line every N sample steps (25 x 600 s = every ~4 model hours):
-# block-mean RMSE per model level for the forecast, persistence and a damped linear
-# extrapolation baseline, plus the fraction of the 10-minute change each explains.
-export MESSE_AE_VERIFY_INTERVAL=25
+# MEssE RF plugin: every setting is in this file. A copy goes to the experiment folder.
+export MESSE_RF_CONFIG="/work/mh0033/m300883/Project_week_global/MEssE/config/fieldspace_rf_r2b8.yaml"
 
 #--------------------------------------------------------------------------------------------------
 # atmospheric dynamics and physics
