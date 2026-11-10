@@ -8,7 +8,15 @@ The names below are its keys. The job's log and the experiment folder keep what
 was used.
 
 Every ICON work rank owns a GPU and one model patch: complete R2B4 backbone
-cells with all their descendants (icon_nested_mgrid.py). Once per
+cells with all their descendants (icon_nested_mgrid.py). With
+``grid.canonical_order`` the patch's cells are in canonical order (every
+backbone cell has its cells at the same places, every cell its 12 neighbours
+in the same order; FieldSpaceNN's icon_grid.py) instead of ICON's, which
+``*.token_overlap_space`` needs: a token then also sees the cells that touch
+its backbone cell. With ``grid.ghost_rings: 1`` the patch ends with the
+backbone cells of other ranks that touch its own; they get their values in the
+same exchange and are context only: losses, log and write-back cover the owned
+cells. Once per
 ``run.sample_seconds`` of model time, the owned cells of the ICON variable are
 moved to the patches, the first ``run.dry_run_seconds`` only collect the
 per-cell mean/std, and after that every sample step trains both models and
@@ -42,7 +50,12 @@ SST and sea ice of now. In this order:
 - with ``forcings.position``, the cell centre as a unit vector on the sphere
   (``cos_lat_cos_lon``, ``cos_lat_sin_lon``, ``sin_lat``), from the grid
   file's coordinates (``grid.dir``), not through ComIn. The attention has no
-  other position information.
+  other position information;
+- with ``forcings.orientation``, which way the cell's backbone cell is turned
+  (``frame_north``, ``frame_east``: the direction from its centre to its
+  corner A, about (1, 0) for a triangle pointing north and (-1, 0) for one
+  pointing south). In canonical order the cells of a backbone cell pointing
+  south lie turned by 180 degrees.
 
 Each is normalized by one global mean/std over all ranks' patches, taken when
 training starts (a per-cell std would erase static fields). Training stops
@@ -82,7 +95,7 @@ sys.path[:0] = [p for p in (_PLUGIN_DIR, _PROJECT_ROOT) if p not in sys.path]
 from fieldspace_RF_config import load_config
 from fieldspace_RF_online import OnlineReconstructorForecaster
 from fieldspacenn.src.data.normalizer import MeanStdNormalizer
-from icon_nested_mgrid import CellExchange, load_global_mgrid, patch_mgrid
+from icon_nested_mgrid import CellExchange, ghost_cells, load_global_mgrid, patch_mgrid
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
     cell_position,
@@ -122,27 +135,36 @@ if rank == 0:
 assert comm.allreduce(int(has_gpu)) == comm.Get_size(), "every ICON work rank needs its own GPU"
 
 domain = comin.descrdata_get_domain(DOMAIN_ID)
-global_mgrid = load_global_mgrid(CONFIG.grid.dir, LEVELS[0], LEVELS[-1])
+global_mgrid = load_global_mgrid(CONFIG.grid.dir, LEVELS[0], LEVELS[-1], canonical=CONFIG.grid.canonical_order)
 assert len(global_mgrid[-1]["coords"]) == domain.cells.ncells_global, "finest level must be ICON's grid"
 REFINEMENT = 4 ** (LEVELS[-1] - LEVELS[0])  # fine cells per backbone cell
 N_BACKBONE = len(global_mgrid[0]["coords"])
+# The grids' cell order: ICON's, or the canonical one (same backbone cell, another place in it).
+_icon_id = global_mgrid[-1].get("file_index", torch.arange(domain.cells.ncells_global)).numpy()  # of every grid cell
+_grid_id = np.empty_like(_icon_id)  # of every ICON cell
+_grid_id[_icon_id] = np.arange(len(_icon_id))
 
 # Local flat cell id c = (blk-1)*nproma + (idx-1), Fortran order as in
 # extract_icon_cells; glb_index is already 1D.
 _n_local = domain.cells.ncells
 _owned_local = np.flatnonzero(np.ravel(np.asarray(domain.cells.decomp_domain), order="F")[:_n_local] == 0)
-_owned_glb = np.asarray(domain.cells.glb_index, dtype=np.int64)[_owned_local] - 1
+_owned_glb = _grid_id[np.asarray(domain.cells.glb_index, dtype=np.int64)[_owned_local] - 1]
 
 # Each backbone cell goes to the rank that owns most of its fine cells.
 _counts = np.empty((n_ranks, N_BACKBONE), dtype=np.int64)
 compute_comm.Allgather(np.bincount(_owned_glb // REFINEMENT, minlength=N_BACKBONE), _counts)
 _owner = _counts.argmax(axis=0)
-_backbone = np.flatnonzero(_owner == rank)
-exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT)
+# The patch: this rank's backbone cells, then (grid.ghost_rings) those of other ranks that touch them.
+_touching = global_mgrid[0]["adjc"].numpy() if CONFIG.grid.ghost_rings else None
+_owned_backbone = np.flatnonzero(_owner == rank)
+_ghosts = ghost_cells(_owned_backbone, _touching) if CONFIG.grid.ghost_rings else _owned_backbone[:0]
+_backbone = np.concatenate([_owned_backbone, _ghosts])
+N_OWNED = len(_owned_backbone) * REFINEMENT  # the patch's first fine cells; the rest are ghost cells
+exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT, _touching)
 mgrids = patch_mgrid(global_mgrid, torch.from_numpy(_backbone))
 FINE_LON, FINE_LAT = mgrids[-1]["coords"].to(DEVICE).T  # patch cell centres [radian], for the insolation
 # Static fields of the patch: its fine cells are the backbone cells' descendants, in nested order.
-_patch_ids = (_backbone[:, None] * REFINEMENT + np.arange(REFINEMENT)).ravel()
+_patch_ids = _icon_id[(_backbone[:, None] * REFINEMENT + np.arange(REFINEMENT)).ravel()]
 STATIC = np.empty((len(_patch_ids), len(CONFIG.forcings.statics)), dtype=np.float32)
 with xr.open_dataset(CONFIG.forcings.static_file) as _ds:
     for _k, _name in enumerate(CONFIG.forcings.statics):
@@ -150,11 +172,14 @@ with xr.open_dataset(CONFIG.forcings.static_file) as _ds:
 STATIC = torch.from_numpy(STATIC).to(DEVICE)
 if CONFIG.forcings.position:  # after the file's statics, as in CONFIG.forcings.names
     STATIC = torch.cat([STATIC, cell_position(FINE_LON, FINE_LAT).float()], dim=1)
+if CONFIG.forcings.orientation:  # every fine cell gets its backbone cell's
+    STATIC = torch.cat([STATIC, mgrids[0]["frame_direction"].to(DEVICE).repeat_interleave(REFINEMENT, dim=0)], dim=1)
 del global_mgrid
 _per_rank = np.bincount(_owner, minlength=n_ranks)
 comin.print_info(
     f"patches: R2B{LEVELS[0]} backbone cells per rank {_per_rank.min()}-{_per_rank.max()}, "
-    f"R2B{LEVELS[-1]} cells {_per_rank.min() * REFINEMENT}-{_per_rank.max() * REFINEMENT}"
+    f"R2B{LEVELS[-1]} cells {_per_rank.min() * REFINEMENT}-{_per_rank.max() * REFINEMENT}; "
+    f"rank 0 has {len(_ghosts)} ghost backbone cells"
 )
 
 
@@ -191,9 +216,9 @@ def _patch(variables) -> torch.Tensor:
 
 
 def _global_mean_std(patch: torch.Tensor):
-    """Collective: mean and std of every column over all patches, i.e. over
-    every ICON cell once."""
-    values = patch.double().cpu().numpy()
+    """Collective: mean and std of every column over the owned cells of all
+    patches, i.e. over every ICON cell once."""
+    values = patch[:N_OWNED].double().cpu().numpy()
     sums = np.stack([values.sum(axis=0), np.square(values).sum(axis=0)])
     compute_comm.Allreduce(MPI.IN_PLACE, sums)
     n = compute_comm.allreduce(len(values))
@@ -209,7 +234,7 @@ def _stats(names, mean, std) -> str:
 def _write(forecast: torch.Tensor) -> None:
     """Collective: the forecast's owned cells into ``var_predict``."""
     owned = exchange.from_patch(compute_comm, forecast.cpu().numpy())
-    insert_icon_cells(owned.astype(np.float64), State.predict_var, indices=exchange.send_ids)
+    insert_icon_cells(owned.astype(np.float64), State.predict_var, indices=exchange.owned_ids)
 
 
 def _forcing(seconds: float) -> torch.Tensor:
@@ -231,7 +256,13 @@ def _trainer(nlev: int, seconds: float) -> OnlineReconstructorForecaster:
         raise RuntimeError(f"forcings without spread over the globe, read wrongly? {flat}")
     State.forcing_norm = MeanStdNormalizer({"mean": mean, "std": std}, {})
     trainer = OnlineReconstructorForecaster(
-        mgrids, LEVELS, CONFIG.grid.latent_level, nlev, device=DEVICE, **CONFIG.trainer_kwargs(State.sample_seconds)
+        mgrids,
+        LEVELS,
+        CONFIG.grid.latent_level,
+        nlev,
+        n_owned=len(_owned_backbone),
+        device=DEVICE,
+        **CONFIG.trainer_kwargs(State.sample_seconds),
     )
     if os.path.exists(CHECKPOINT_PATH):
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
@@ -316,7 +347,7 @@ def sample_step():
     # Score and write the forecast made one sample step ago, which is valid now.
     fc_rmse = None
     if State.forecast is not None:
-        fc_rmse = float((State.forecast - patch).square().mean().sqrt())
+        fc_rmse = float((State.forecast - patch)[:N_OWNED].square().mean().sqrt())
         _write(State.forecast)
 
     torch.cuda.synchronize()

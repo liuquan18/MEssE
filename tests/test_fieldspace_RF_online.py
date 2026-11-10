@@ -6,11 +6,13 @@ column 0 conditions both models, column 1 (like the insolation) only the
 forecaster. CPU only, no comin, no MPI.
 """
 
+import numpy as np
 import pytest
 import torch
 
 from fieldspace_RF_online import ReplayBuffer, OnlineReconstructorForecaster, Window, autoencoder_configs, _BlockConfigs
-from icon_nested_mgrid import patch_mgrid
+from icon_nested_mgrid import ghost_cells, patch_mgrid
+from icosahedron import icosahedral_mgrid
 from test_icon_nested_mgrid import synthetic_global_mgrid
 
 LEVELS, LATENT_LEVEL, N_CONTEXT, NLEV = [0, 2, 3, 4], 2, 3, 1
@@ -401,3 +403,95 @@ def test_reconstructor_does_not_depend_on_the_forecasters_training():
         assert all(torch.equal(a[k], b[k]) for k in a), module
     assert not all(torch.equal(learning.model.forecaster.state_dict()[k], v) for k, v in initial.items())
     assert all(torch.equal(static.model.forecaster.state_dict()[k], v) for k, v in initial.items())
+
+
+# --- canonical grids: token overlap and ghost cells --------------------------------------------
+
+N_OWNED = 2  # owned backbone cells of the canonical test patch; the rest of it are their ghost cells
+
+
+def _neighbour_trainer(n_owned=N_OWNED, **kwargs):
+    """A patch of the icosahedral test grid in canonical order (levels 0..4):
+    two owned backbone cells, then the cells that touch them. With
+    ``n_owned=None`` all of them count as owned."""
+    torch.manual_seed(0)
+    globe = icosahedral_mgrid(n_zooms=5, n_levels=5)
+    touching = globe[0]["adjc"].numpy()
+    centre = int(np.flatnonzero(~globe[0]["adjc_mask"].any(1).numpy())[0])  # a cell with all 12 neighbours
+    owned = np.array([centre, touching[centre, 1]])
+    backbone = np.concatenate([owned, ghost_cells(owned, touching)])
+    config = dict(n_context=N_CONTEXT, device=torch.device("cpu"), att_dim=16, n_head_channels=4, hidden_dim=16,
+                  embed_dim=8, n_blocks=1, n_forecaster_blocks=1, n_forcings=N_FORCINGS,
+                  reconstructor_forcings=RECONSTRUCTOR_FORCINGS, n_owned=n_owned)
+    config.update(kwargs)
+    return OnlineReconstructorForecaster(patch_mgrid(globe, torch.from_numpy(backbone)), LEVELS, LATENT_LEVEL, NLEV, **config)
+
+
+def _patch_values(trainer, k, width):
+    """Random values on the trainer's patch: (n_fine, width)."""
+    torch.manual_seed(300 + k)
+    return torch.randn(len(trainer.model.reconstructor.ae.grid_layers["4"].adjc), width)
+
+
+def _train_patch(trainer, n_steps):
+    for k in range(n_steps):
+        stats = trainer.train_step(_patch_values(trainer, k, NLEV), _patch_values(trainer, 50 + k, N_FORCINGS), T0 + k * DT)
+    return stats
+
+
+def _n_parameters(module):
+    return sum(p.numel() for p in module.parameters())
+
+
+def test_token_overlap_gives_each_model_the_ring_and_trains():
+    plain = _neighbour_trainer()
+    overlap = _neighbour_trainer(reconstructor_overlap=True, forecaster_overlap=True)
+    only_forecaster = _neighbour_trainer(forecaster_overlap=True)
+    assert _n_parameters(overlap.model.reconstructor) > _n_parameters(plain.model.reconstructor)
+    assert _n_parameters(overlap.model.forecaster) > _n_parameters(plain.model.forecaster)
+    assert _n_parameters(only_forecaster.model.reconstructor) == _n_parameters(plain.model.reconstructor)
+    # Untrained, the gates are closed: the forecast is persistence, with or without the ring.
+    _train_patch(overlap, N_CONTEXT)
+    increment = overlap.predict_increment(T0 + N_CONTEXT * DT, _patch_values(overlap, 99, N_FORCINGS))
+    assert increment.abs().max() < 1e-6
+    before = [p.detach().clone() for p in overlap.model.parameters() if p.requires_grad]
+    stats = _train_patch(overlap, N_CONTEXT + 3)
+    assert set(stats) == {"recon", "state_ms", "latent_mse", "latent_persist"}
+    assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
+    after = [p for p in overlap.model.parameters() if p.requires_grad]
+    assert any(not torch.equal(a, b) for a, b in zip(before, after))
+
+
+def test_token_overlap_needs_a_token_with_all_its_neighbours():
+    globe = icosahedral_mgrid(n_zooms=5, n_levels=5)
+    pair = patch_mgrid(globe, globe[0]["adjc"][0, :2])  # two backbone cells: neither has all its neighbours
+    with pytest.raises(AssertionError, match="too small for token overlap"):
+        OnlineReconstructorForecaster(pair, LEVELS, LATENT_LEVEL, NLEV, n_context=N_CONTEXT, device=torch.device("cpu"),
+                                      att_dim=16, n_head_channels=4, hidden_dim=16, n_blocks=1, n_forecaster_blocks=1,
+                                      reconstructor_overlap=True)
+
+
+def test_losses_and_logged_values_cover_the_owned_cells_only():
+    trainer = _neighbour_trainer()
+    levels = trainer.model.to_levels(_patch_values(trainer, 0, NLEV))
+    target = trainer.model.to_levels(_patch_values(trainer, 1, NLEV))
+    changed = {z: t.clone() for z, t in target.items()}
+    for z, t in changed.items():
+        t[:, :, :, N_OWNED * 4**z:] += 5.0  # the ghost cells
+    total, parts = trainer._loss(levels, target)
+    total_changed, parts_changed = trainer._loss(levels, changed)
+    assert total == total_changed and parts == parts_changed
+    assert trainer._mean_square(target) == trainer._mean_square(changed)
+    everything = _neighbour_trainer(n_owned=None)
+    assert everything._loss(levels, target)[0] != everything._loss(levels, changed)[0]
+    for z in levels:
+        expected = (levels[z] - target[z])[:, :, :, : N_OWNED * 4**z].square().mean()
+        assert parts[z] == pytest.approx(float(expected), rel=1e-5)
+
+
+def test_training_with_ghost_cells_and_replay_runs_end_to_end():
+    trainer = _neighbour_trainer(reconstructor_overlap=True, forecaster_overlap=True, replay_size=4, replay_batch=2)
+    stats = _train_patch(trainer, N_CONTEXT + 3)
+    assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
+    increment = trainer.predict_increment(T0 + (N_CONTEXT + 3) * DT, _patch_values(trainer, 99, N_FORCINGS))
+    assert increment.shape == (len(_patch_values(trainer, 0, NLEV)), NLEV)  # the plugin writes back the owned rows

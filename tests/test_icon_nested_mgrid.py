@@ -10,7 +10,8 @@ import threading
 import numpy as np
 import torch
 
-from icon_nested_mgrid import CellExchange, patch_mgrid
+from icon_nested_mgrid import CellExchange, ghost_cells, patch_mgrid
+from icosahedron import icosahedral_mgrid
 
 N_BASE = 12  # backbone cells of the synthetic globe
 
@@ -153,5 +154,58 @@ def test_exchange_routes_every_fine_cell_to_one_patch_and_back():
         covered.append(ids)
         glb, _, owned_local = local[r]
         assert np.array_equal(np.sort(exchange.send_ids), owned_local)
+        assert np.array_equal(exchange.owned_ids, exchange.send_ids)  # no ghost cells: every cell is sent once
         assert np.array_equal(back, field[glb[exchange.send_ids]] * 10.0)
     assert np.array_equal(np.sort(np.concatenate(covered)), np.arange(n_fine))
+
+
+def test_patch_with_ghost_cells_has_every_neighbour_of_its_owned_cells():
+    global_mgrid = icosahedral_mgrid(n_zooms=3, n_levels=3)  # zoom 0: 80 cells, 12 neighbours each
+    touching = global_mgrid[0]["adjc"].numpy()
+    owned = np.arange(20, 35)
+    ghosts = ghost_cells(owned, touching)
+    assert not np.isin(ghosts, owned).any() and np.array_equal(ghosts, np.unique(ghosts))
+    assert set(ghosts) == set(touching[owned].ravel()) - set(owned)
+    patch = patch_mgrid(global_mgrid, torch.from_numpy(np.concatenate([owned, ghosts])))
+    for zoom, (grid, local) in enumerate(zip(global_mgrid, patch)):
+        n_owned = len(owned) * 4**zoom
+        ids = (torch.from_numpy(np.concatenate([owned, ghosts]))[:, None] * 4**zoom + torch.arange(4**zoom)).flatten()
+        # Owned cells miss a neighbour only where the globe has none (5 cells at an icosahedron corner).
+        assert torch.equal(local["adjc_mask"][:n_owned], grid["adjc_mask"][ids[:n_owned]])
+        assert torch.equal(ids[local["adjc"][:n_owned]], grid["adjc"][ids[:n_owned]])
+        assert local["adjc_mask"][n_owned:].any()  # ghost cells do miss neighbours
+        assert local["grid_type"] == "icon" and torch.equal(local["file_index"], grid["file_index"][ids])
+
+
+def test_exchange_fills_ghost_cells_and_returns_only_owned_cells():
+    size, refinement, nlev = 3, 16, 2
+    global_mgrid = icosahedral_mgrid(n_zooms=3, n_levels=3)
+    touching = global_mgrid[0]["adjc"].numpy()
+    n_backbone, n_fine = len(touching), len(touching) * refinement
+    rng = np.random.default_rng(1)
+    # ICON's domains: compact groups of backbone cells with ragged edges (10% of the fine cells elsewhere).
+    rank_of_cell = np.repeat(np.arange(n_backbone) * size // n_backbone, refinement)
+    moved = rng.random(n_fine) < 0.1
+    rank_of_cell[moved] = rng.integers(0, size, moved.sum())
+    field = rng.normal(size=(n_fine, nlev)).astype(np.float32)
+    owner = np.stack([np.bincount(np.flatnonzero(rank_of_cell == r) // refinement, minlength=n_backbone) for r in range(size)]).argmax(0)
+
+    def rank_fn(comm):
+        rank = comm.Get_rank()
+        glb = rng_local[rank]
+        owned = np.flatnonzero(owner == rank)
+        backbone = np.concatenate([owned, ghost_cells(owned, touching)])
+        exchange = CellExchange.build(comm, np.arange(len(glb)), glb, owner, backbone, refinement, touching)
+        patch = exchange.to_patch(comm, field[glb])
+        return owned, backbone, patch, exchange, exchange.from_patch(comm, patch * 10.0)
+
+    rng_local = [rng.permutation(np.flatnonzero(rank_of_cell == r)) for r in range(size)]  # local order of the owned cells
+    covered = []
+    for r, (owned, backbone, patch, exchange, back) in enumerate(_run_ranks(size, rank_fn)):
+        assert len(backbone) > len(owned)
+        ids = (backbone[:, None] * refinement + np.arange(refinement)).ravel()
+        assert np.array_equal(patch, field[ids])  # owned cells, then ghost cells, each in nested order
+        covered.append(ids[: len(owned) * refinement])
+        assert np.array_equal(np.sort(exchange.owned_ids), np.arange(len(rng_local[r])))  # each owned ICON cell once
+        assert np.array_equal(back, field[rng_local[r][exchange.owned_ids]] * 10.0)
+    assert np.array_equal(np.sort(np.concatenate(covered)), np.arange(n_fine))  # every cell is owned by one patch
