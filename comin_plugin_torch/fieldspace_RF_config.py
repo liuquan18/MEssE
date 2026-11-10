@@ -13,6 +13,10 @@ from typing import Dict, List, Optional
 
 import yaml
 
+# Columns of forcings.position: the cell centre as a unit vector on the sphere,
+# icon_online_helper.cell_position. Horizontal position only; sin_lat is latitude, not height.
+POSITION_NAMES = ["cos_lat_cos_lon", "cos_lat_sin_lon", "sin_lat"]
+
 
 @dataclass(frozen=True)
 class Run:
@@ -36,12 +40,13 @@ class Forcings:
     insolation: bool
     statics: List[str]
     static_file: str
+    position: bool
     reconstructor: List[str]
 
     @property
     def names(self) -> List[str]:
         """All forcings in column order; the forecaster gets all of them."""
-        return self.icon_fields + ["insolation"] * self.insolation + self.statics
+        return self.icon_fields + ["insolation"] * self.insolation + self.statics + POSITION_NAMES * self.position
 
 
 @dataclass(frozen=True)

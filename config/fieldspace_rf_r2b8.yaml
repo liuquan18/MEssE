@@ -19,6 +19,7 @@ forcings:                        # condition the blocks, not compressed; one glo
   insolation: true               # TOA incoming shortwave, computed from time and cell centres
   statics: [oromea]              # from static_file, once at startup (ComIn's orog reads zero)
   static_file: bc_land_sso.nc    # relative to the run directory, comin bug, we use comin instead of reading in the v1.00
+  position: false                # true: cell centre as a unit vector, columns cos_lat_cos_lon, cos_lat_sin_lon, sin_lat
   reconstructor: [ts_wtr, sic, oromea]   # no clock: job 28418236; the forecaster gets all of them
 
 blocks:                          # every attention and compress block of both models

@@ -383,6 +383,13 @@ def toa_insolation(unix_seconds: float, lon: torch.Tensor, lat: torch.Tensor, ts
     return tsi * distance_factor * cos_zenith.clamp(min=0)
 
 
+def cell_position(lon: torch.Tensor, lat: torch.Tensor) -> torch.Tensor:
+    """Cell centres ``lon``/``lat`` [radian] as unit vectors on the sphere,
+    (n, 3) = (cos lat cos lon, cos lat sin lon, sin lat): position without the
+    jump of longitude at the dateline or its singularity at the poles."""
+    return torch.stack([torch.cos(lat) * torch.cos(lon), torch.cos(lat) * torch.sin(lon), torch.sin(lat)], dim=1)
+
+
 def extract_icon_cells(data_array, nc: int):
     """Return per-level data for this rank's local ICON cells (owned + halo).
 

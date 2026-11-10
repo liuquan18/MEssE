@@ -38,7 +38,11 @@ SST and sea ice of now. In this order:
   in the run directory, on ICON's grid). Not through ComIn: AES reads
   ``topography_c`` (``orog``) on the host and never copies it to the GPU, so
   the device copy is zero, and a host read makes ComIn copy that zero device
-  copy over the host values before every callback.
+  copy over the host values before every callback;
+- with ``forcings.position``, the cell centre as a unit vector on the sphere
+  (``cos_lat_cos_lon``, ``cos_lat_sin_lon``, ``sin_lat``), from the grid
+  file's coordinates (``grid.dir``), not through ComIn. The attention has no
+  other position information.
 
 Each is normalized by one global mean/std over all ranks' patches, taken when
 training starts (a per-cell std would erase static fields). Training stops
@@ -81,6 +85,7 @@ from fieldspacenn.src.data.normalizer import MeanStdNormalizer
 from icon_nested_mgrid import CellExchange, load_global_mgrid, patch_mgrid
 from MEssE.utils.icon_online_helper import (
     RunningMeanStd,
+    cell_position,
     toa_insolation,
     extract_icon_cells,
     insert_icon_cells,
@@ -143,6 +148,8 @@ with xr.open_dataset(CONFIG.forcings.static_file) as _ds:
     for _k, _name in enumerate(CONFIG.forcings.statics):
         STATIC[:, _k] = _ds[_name].values[_patch_ids]
 STATIC = torch.from_numpy(STATIC).to(DEVICE)
+if CONFIG.forcings.position:  # after the file's statics, as in CONFIG.forcings.names
+    STATIC = torch.cat([STATIC, cell_position(FINE_LON, FINE_LAT).float()], dim=1)
 del global_mgrid
 _per_rank = np.bincount(_owner, minlength=n_ranks)
 comin.print_info(
