@@ -211,3 +211,40 @@ def test_grid_file_is_read_in_canonical_order(grid, tmp_path):
     for a, b in zip(from_file, from_arrays):
         assert a["grid_type"] == "icon" and torch.equal(a["adjc"], b["adjc"]) and torch.equal(a["file_index"], b["file_index"])
         assert torch.allclose(a["coords"], b["coords"], atol=1e-5)
+
+
+@pytest.mark.parametrize("scope", ["local", "global"])
+def test_local_attention_links_a_token_to_its_12_neighbours_only(scope):
+    """One reconstructor-style attention block (tokens on zoom 0, fields on zooms 0 and 1) with
+    random weights, so its gates are open: a change in one token's cells reaches, with local
+    attention, exactly that token and its 12 neighbours; with global attention, every token."""
+    from fieldspace_RF_online import _BlockConfigs, _sample_configs
+    from fieldspacenn.src.models.mg_transformer.mg_base_model import MG_base_model, create_encoder_decoder_block
+
+    torch.manual_seed(0)
+    mgrid = canonical_mgrid(*icosahedral_grid(3), 2)  # zoom 0: 320 tokens, zoom 1: 1280 cells
+    layers = MG_base_model(mgrid).grid_layers
+    configs = _BlockConfigs(16, 4, 16, 8, 0, attention=scope)
+    block = create_encoder_decoder_block(configs.attention([0, 1]), [0, 1], [1, 1], [1], grid_layers=layers, n_head_channels=4)
+    with torch.no_grad():
+        for p in block.parameters():
+            p.normal_(0, 0.3)
+
+    def run(x):
+        emb = {"TimeEmbedder": {z: torch.zeros(1, 1) for z in (0, 1)}}
+        with torch.no_grad():
+            return block([{z: t.clone() for z, t in x.items()}], sample_configs=_sample_configs(1, 0, [0, 1]), emb_groups=[emb])[0]
+
+    x = {z: torch.randn(1, 1, 1, 320 * 4**z, 1, 1) for z in (0, 1)}
+    token = int(torch.nonzero(~mgrid[0]["adjc_mask"].any(1))[0])  # a token with all 12 neighbours
+    changed = {z: t.clone() for z, t in x.items()}
+    for z, t in changed.items():  # random: a constant shift is removed by the layer norm before q, k, v
+        t[0, 0, 0, token * 4**z: (token + 1) * 4**z] += torch.randn(4**z, 1, 1)
+    a, b = run(x), run(changed)
+    reached = set(torch.nonzero((a[0] - b[0]).abs().view(-1) > 1e-6).view(-1).tolist())
+    window = set(mgrid[0]["adjc"][token].tolist())  # the token and its 12 neighbours
+    assert len(window) == 13
+    if scope == "local":
+        assert reached == window
+    else:
+        assert len(reached) > 200

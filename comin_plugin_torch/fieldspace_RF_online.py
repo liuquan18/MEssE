@@ -226,12 +226,17 @@ class _BlockConfigs:
     backbone, conditioned on time and ``n_forcings`` forcings, ``ext`` blocks
     (the legacy blocks reject levels with different channel counts). With
     ``token_overlap_space`` a token also gets the cells around its backbone
-    cell."""
+    cell. ``attention``: "global", every token attends to all tokens of the
+    patch, or "local", a token attends to itself and its 12 neighbouring
+    backbone cells (FieldSpaceNN's ``seq_len_zoom`` 0 + ``seq_overlap_space``;
+    needs grids in canonical order)."""
 
-    def __init__(self, att_dim, n_head_channels, hidden_dim, embed_dim, n_forcings, token_overlap_space=False):
+    def __init__(self, att_dim, n_head_channels, hidden_dim, embed_dim, n_forcings, token_overlap_space=False,
+                 attention="global"):
         self.att_dim, self.n_head_channels, self.hidden_dim = att_dim, n_head_channels, hidden_dim
         self.embed_dim, self.n_forcings = embed_dim, n_forcings
         self.token_overlap_space = token_overlap_space
+        self.seq_len_zoom, self.seq_overlap_space = {"global": (-1, False), "local": (0, True)}[attention]
 
     def embedding(self, zoom: int) -> Dict:
         """Time embedding plus, with forcings, their embedding at ``zoom``
@@ -261,6 +266,8 @@ class _BlockConfigs:
             n_head_channels=self.n_head_channels,
             token_len_time=token_len_time,
             token_overlap_space=self.token_overlap_space,
+            seq_len_zoom=self.seq_len_zoom,
+            seq_overlap_space=self.seq_overlap_space,
             embed_confs=self.embedding(max(zooms)),
             block_type="ext",
         )
@@ -392,6 +399,7 @@ class ReconstructorForecaster(nn.Module):
         reconstructor_time: bool = True,
         reconstructor_overlap: bool = False,
         forecaster_overlap: bool = False,
+        reconstructor_attention: str = "global",
     ):
         """``n_forcings`` forcing columns condition the forecaster, the columns
         ``reconstructor_forcings`` of them the reconstructor. ``embed_dim`` is
@@ -402,7 +410,8 @@ class ReconstructorForecaster(nn.Module):
         it compresses and rebuilds a field without the clock, while the
         forecaster still gets the model time. ``reconstructor_overlap`` and
         ``forecaster_overlap`` turn on ``token_overlap_space`` in the attention
-        blocks of that model."""
+        blocks of that model; ``reconstructor_attention`` ("global" or "local")
+        is the attention scope of the reconstructor's blocks."""
         super().__init__()
         self.reconstructor_time = reconstructor_time
         self.reconstructor_forcings = list(reconstructor_forcings)
@@ -419,7 +428,12 @@ class ReconstructorForecaster(nn.Module):
             latent_level - levels[0],
             latent_channels,
             n_blocks,
-            _BlockConfigs(**blocks, n_forcings=len(self.reconstructor_forcings), token_overlap_space=reconstructor_overlap),
+            _BlockConfigs(
+                **blocks,
+                n_forcings=len(self.reconstructor_forcings),
+                token_overlap_space=reconstructor_overlap,
+                attention=reconstructor_attention,
+            ),
             inner_channels,
         )
         self.forecaster = Forecaster(

@@ -41,6 +41,7 @@ reconstructor:
   inner_channels: 8              # at the levels in between (R2B7'); does not change the latent size of compressed states
   time_input: false              # false: a constant time, no clock
   token_overlap_space: false     # true: a token also sees the cells that touch it from outside
+  attention: global              # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
   ema_decay: 0.99                # frozen copy: encodes every latent, decodes every forecast
   lr: 1.0e-3
   lr_warmup_seconds: 180000      # linear ramp, 300 updates at 600 s

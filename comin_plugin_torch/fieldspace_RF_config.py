@@ -77,6 +77,7 @@ class Reconstructor:
     inner_channels: Optional[int]
     time_input: bool
     token_overlap_space: bool
+    attention: str
     ema_decay: float
     lr: float
     lr_warmup_seconds: float
@@ -107,6 +108,8 @@ class Config:
         unknown = set(self.forcings.reconstructor) - set(self.forcings.names)
         if unknown:
             raise ValueError(f"forcings.reconstructor: not among {self.forcings.names}: {sorted(unknown)}")
+        if self.reconstructor.attention not in ("global", "local"):
+            raise ValueError(f"reconstructor.attention must be global or local, not {self.reconstructor.attention}")
         if self.grid.ghost_rings not in (0, 1):
             raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
         # These need the same cell order in every backbone cell and its 12 neighbours.
@@ -114,6 +117,7 @@ class Config:
             "grid.ghost_rings": self.grid.ghost_rings,
             "forcings.orientation": self.forcings.orientation,
             "reconstructor.token_overlap_space": self.reconstructor.token_overlap_space,
+            "reconstructor.attention: local": self.reconstructor.attention == "local",
             "forecaster.token_overlap_space": self.forecaster.token_overlap_space,
         }
         if not self.grid.canonical_order and any(needs_order.values()):
@@ -139,6 +143,7 @@ class Config:
             ema_decay=r.ema_decay,
             reconstructor_time=r.time_input,
             reconstructor_overlap=r.token_overlap_space,
+            reconstructor_attention=r.attention,
             forecaster_overlap=f.token_overlap_space,
             lr_recon=r.lr,
             lr_forecast=f.lr,

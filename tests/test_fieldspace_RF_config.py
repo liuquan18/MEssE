@@ -16,6 +16,8 @@ from test_icon_nested_mgrid import synthetic_global_mgrid
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config" / "fieldspace_rf_r2b8.yaml"
 LON_LAT_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_lon_lat.yaml")
 NEIGHBOURS_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours.yaml")
+LOCAL_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours_local.yaml")
+LOCAL_POS_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours_local_pos.yaml")
 
 
 def _write(tmp_path, change):
@@ -27,7 +29,11 @@ def _write(tmp_path, change):
     return path
 
 
-@pytest.mark.parametrize("path", [REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG], ids=["default", "lon_lat", "neighbours"])
+@pytest.mark.parametrize(
+    "path",
+    [REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG, LOCAL_CONFIG, LOCAL_POS_CONFIG],
+    ids=["default", "lon_lat", "neighbours", "local", "local_pos"],
+)
 def test_repository_config_builds_the_models(path):
     config = load_config(path)
     levels = config.grid.levels
@@ -102,6 +108,20 @@ def test_neighbours_config_differs_from_the_default_only_by_the_new_switches():
     assert not any(load_config(REPO_CONFIG).trainer_kwargs(600.0)[key] for key in ("reconstructor_overlap", "forecaster_overlap"))
 
 
+def test_local_configs_differ_from_neighbours_by_the_attention_and_the_position():
+    neighbours, local, local_pos = load_config(NEIGHBOURS_CONFIG), load_config(LOCAL_CONFIG), load_config(LOCAL_POS_CONFIG)
+    assert local.reconstructor.attention == local_pos.reconstructor.attention == "local"
+    assert neighbours.reconstructor.attention == "global"
+    assert local.trainer_kwargs(600.0)["reconstructor_attention"] == "local"
+    assert replace(local, reconstructor=neighbours.reconstructor) == neighbours
+    # The position run: the lon_lat branch's three columns, in both models.
+    assert local_pos.forcings.position and not local.forcings.position
+    assert local_pos.forcings.names == local.forcings.names[:4] + POSITION_NAMES + ORIENTATION_NAMES
+    assert local_pos.forcings.reconstructor == ["ts_wtr", "sic", "oromea", *POSITION_NAMES, *ORIENTATION_NAMES]
+    assert replace(local_pos, forcings=local.forcings) == local
+    assert all(load_config(p).reconstructor.attention == "global" for p in (REPO_CONFIG, LON_LAT_CONFIG))
+
+
 def test_lon_lat_config_differs_from_the_default_only_by_the_position():
     default, lon_lat = load_config(REPO_CONFIG), load_config(LON_LAT_CONFIG)
     assert lon_lat.forcings.position and not default.forcings.position
@@ -123,6 +143,9 @@ def test_lon_lat_config_differs_from_the_default_only_by_the_position():
         (lambda raw: raw["grid"].update(ghost_rings=1), "\\['grid.ghost_rings'\\] need grid.canonical_order"),
         (lambda raw: raw["forecaster"].update(token_overlap_space=True), "forecaster.token_overlap_space.* need grid.canonical_order"),
         (lambda raw: raw["forcings"].update(orientation=True), "forcings.orientation.* need grid.canonical_order"),
+        (lambda raw: raw["reconstructor"].update(attention="local"), "reconstructor.attention: local.* need grid.canonical_order"),
+        (lambda raw: raw["reconstructor"].update(attention="regional"), "reconstructor.attention must be global or local"),
+        (lambda raw: raw["reconstructor"].pop("attention"), "missing keys \\['attention'\\]"),
     ],
 )
 def test_wrong_files_stop_at_startup(tmp_path, change, message):
