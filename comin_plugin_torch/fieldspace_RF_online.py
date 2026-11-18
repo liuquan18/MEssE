@@ -53,6 +53,15 @@ the exact forcings. A zoom's forcing value is the mean over its cells.
   forcings with its latent.
 - Both decodes of the written increment use the same forcings and time.
 
+Neighbours and ghost cells
+--------------------------
+On grids in canonical order (`icon_nested_mgrid`), ``token_overlap_space``
+gives every token, at each of its zooms, the cells that touch its backbone
+cell from outside (FieldSpaceNN's token overlap). A patch may end with ghost
+backbone cells of other ranks: the blocks see them like any other cell, so the
+owned cells at the patch edge have their neighbours, but both losses and all
+logged values cover the first ``n_owned`` backbone cells only.
+
 At sample step t (context full)
 -------------------------------
 1. c̄_t = Ē(x_t | h_t).
@@ -215,11 +224,19 @@ class ReplayBuffer:
 class _BlockConfigs:
     """FieldSpaceNN block configs of one model: attention tokens on the
     backbone, conditioned on time and ``n_forcings`` forcings, ``ext`` blocks
-    (the legacy blocks reject levels with different channel counts)."""
+    (the legacy blocks reject levels with different channel counts). With
+    ``token_overlap_space`` a token also gets the cells around its backbone
+    cell. ``attention``: "global", every token attends to all tokens of the
+    patch, or "local", a token attends to itself and its 12 neighbouring
+    backbone cells (FieldSpaceNN's ``seq_len_zoom`` 0 + ``seq_overlap_space``;
+    needs grids in canonical order)."""
 
-    def __init__(self, att_dim, n_head_channels, hidden_dim, embed_dim, n_forcings):
+    def __init__(self, att_dim, n_head_channels, hidden_dim, embed_dim, n_forcings, token_overlap_space=False,
+                 attention="global"):
         self.att_dim, self.n_head_channels, self.hidden_dim = att_dim, n_head_channels, hidden_dim
         self.embed_dim, self.n_forcings = embed_dim, n_forcings
+        self.token_overlap_space = token_overlap_space
+        self.seq_len_zoom, self.seq_overlap_space = {"global": (-1, False), "local": (0, True)}[attention]
 
     def embedding(self, zoom: int) -> Dict:
         """Time embedding plus, with forcings, their embedding at ``zoom``
@@ -248,6 +265,9 @@ class _BlockConfigs:
             att_dim=self.att_dim,
             n_head_channels=self.n_head_channels,
             token_len_time=token_len_time,
+            token_overlap_space=self.token_overlap_space,
+            seq_len_zoom=self.seq_len_zoom,
+            seq_overlap_space=self.seq_overlap_space,
             embed_confs=self.embedding(max(zooms)),
             block_type="ext",
         )
@@ -377,6 +397,9 @@ class ReconstructorForecaster(nn.Module):
         embed_dim: int = 8,
         ema_decay: float = 0.99,
         reconstructor_time: bool = True,
+        reconstructor_overlap: bool = False,
+        forecaster_overlap: bool = False,
+        reconstructor_attention: str = "global",
     ):
         """``n_forcings`` forcing columns condition the forecaster, the columns
         ``reconstructor_forcings`` of them the reconstructor. ``embed_dim`` is
@@ -385,7 +408,10 @@ class ReconstructorForecaster(nn.Module):
         the finest and the latent one (default ``latent_channels``).
         ``reconstructor_time=False`` gives the reconstructor a constant time:
         it compresses and rebuilds a field without the clock, while the
-        forecaster still gets the model time."""
+        forecaster still gets the model time. ``reconstructor_overlap`` and
+        ``forecaster_overlap`` turn on ``token_overlap_space`` in the attention
+        blocks of that model; ``reconstructor_attention`` ("global" or "local")
+        is the attention scope of the reconstructor's blocks."""
         super().__init__()
         self.reconstructor_time = reconstructor_time
         self.reconstructor_forcings = list(reconstructor_forcings)
@@ -402,7 +428,12 @@ class ReconstructorForecaster(nn.Module):
             latent_level - levels[0],
             latent_channels,
             n_blocks,
-            _BlockConfigs(**blocks, n_forcings=len(self.reconstructor_forcings)),
+            _BlockConfigs(
+                **blocks,
+                n_forcings=len(self.reconstructor_forcings),
+                token_overlap_space=reconstructor_overlap,
+                attention=reconstructor_attention,
+            ),
             inner_channels,
         )
         self.forecaster = Forecaster(
@@ -410,7 +441,7 @@ class ReconstructorForecaster(nn.Module):
             self.reconstructor.latent_features,
             n_context,
             n_forecaster_blocks,
-            _BlockConfigs(**blocks, n_forcings=n_forcings),
+            _BlockConfigs(**blocks, n_forcings=n_forcings, token_overlap_space=forecaster_overlap),
         )
         self.forecast_zoom = max(self.reconstructor.latent_features)  # the forecaster's forcings
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
@@ -491,10 +522,14 @@ class OnlineReconstructorForecaster:
         replay_warmup: int = 0,
         grad_clip: float = 1.0,
         lr_warmup: int = 0,
+        n_owned: Optional[int] = None,
         device: torch.device = torch.device("cuda", 0),
         **model_kwargs,
     ):
+        """``n_owned``: the patch's first backbone cells that this rank owns
+        (default: all); the cells after them are ghosts."""
         self.device, self.grad_clip = device, grad_clip
+        self.n_owned = len(mgrids[0]["coords"]) if n_owned is None else n_owned
         self.lr_recon, self.lr_warmup, self.n_updates = lr_recon, lr_warmup, 0  # lr_recon ramps up over lr_warmup updates
         # FieldSpaceNN creates device-less tensors in GridLayer and in forward
         # passes; the grids must be on the same device as those.
@@ -517,16 +552,20 @@ class OnlineReconstructorForecaster:
         # Also holds the context. replay_warmup: sample steps after the dry run whose windows are never replayed.
         self.replay_buffer = ReplayBuffer(n_context, replay_size, replay_batch, rng, warmup=replay_warmup)
 
+    def _owned(self, levels: Levels) -> Levels:
+        """The owned cells of every level (the ghost cells come after them)."""
+        return {z: t[:, :, :, : self.n_owned * 4**z] for z, t in levels.items()}
+
     def _loss(self, output: Levels, target: Levels):
-        """Plain MGMultiLoss: the trained loss (sum of the per-level MSEs =
-        whole-field MSE) and, for the log, the per-level MSE."""
-        total, parts = self.level_loss(output, target)
+        """Plain MGMultiLoss on the owned cells: the trained loss (sum of the
+        per-level MSEs = whole-field MSE) and, for the log, the per-level MSE."""
+        total, parts = self.level_loss(self._owned(output), self._owned(target))
         return total, {z: float(parts[f"group0_level{z}_var0_MSE_loss"]) for z in target}
 
-    @staticmethod
-    def _mean_square(levels: Levels) -> Dict[int, float]:
-        """Per-level mean square: the MSE of predicting zero for ``levels``."""
-        return {z: float(t.square().mean()) for z, t in levels.items()}
+    def _mean_square(self, levels: Levels) -> Dict[int, float]:
+        """Per-level mean square over the owned cells: the MSE of predicting
+        zero for ``levels``."""
+        return {z: float(t.square().mean()) for z, t in self._owned(levels).items()}
 
     def _forecaster_forcings(self, forcings: Forcings) -> Forcings:
         return {z: f for z, f in forcings.items() if z == self.model.forecast_zoom}

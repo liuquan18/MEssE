@@ -13,6 +13,14 @@ from typing import Dict, List, Optional
 
 import yaml
 
+# Columns of forcings.position: the cell centre as a unit vector on the sphere,
+# icon_online_helper.cell_position. Horizontal position only; sin_lat is latitude, not height.
+POSITION_NAMES = ["cos_lat_cos_lon", "cos_lat_sin_lon", "sin_lat"]
+# Columns of forcings.orientation: which way the backbone cell of a cell is turned, as the north
+# and east component of the unit direction from its centre to its corner A (icon_grid.py).
+# About (1, 0) for a triangle pointing north, (-1, 0) for one pointing south.
+ORIENTATION_NAMES = ["frame_north", "frame_east"]
+
 
 @dataclass(frozen=True)
 class Run:
@@ -28,6 +36,8 @@ class Grid:
     dir: str
     levels: List[int]
     latent_level: int
+    canonical_order: bool
+    ghost_rings: int
 
 
 @dataclass(frozen=True)
@@ -36,12 +46,15 @@ class Forcings:
     insolation: bool
     statics: List[str]
     static_file: str
+    position: bool
+    orientation: bool
     reconstructor: List[str]
 
     @property
     def names(self) -> List[str]:
         """All forcings in column order; the forecaster gets all of them."""
-        return self.icon_fields + ["insolation"] * self.insolation + self.statics
+        computed = ["insolation"] * self.insolation + self.statics
+        return self.icon_fields + computed + POSITION_NAMES * self.position + ORIENTATION_NAMES * self.orientation
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,8 @@ class Reconstructor:
     latent_channels: int
     inner_channels: Optional[int]
     time_input: bool
+    token_overlap_space: bool
+    attention: str
     ema_decay: float
     lr: float
     lr_warmup_seconds: float
@@ -72,6 +87,7 @@ class Reconstructor:
 class Forecaster:
     n_blocks: int
     n_context: int
+    token_overlap_space: bool
     lr: float
     replay_seconds: float
     replay_warmup_seconds: float
@@ -92,6 +108,20 @@ class Config:
         unknown = set(self.forcings.reconstructor) - set(self.forcings.names)
         if unknown:
             raise ValueError(f"forcings.reconstructor: not among {self.forcings.names}: {sorted(unknown)}")
+        if self.reconstructor.attention not in ("global", "local"):
+            raise ValueError(f"reconstructor.attention must be global or local, not {self.reconstructor.attention}")
+        if self.grid.ghost_rings not in (0, 1):
+            raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
+        # These need the same cell order in every backbone cell and its 12 neighbours.
+        needs_order = {
+            "grid.ghost_rings": self.grid.ghost_rings,
+            "forcings.orientation": self.forcings.orientation,
+            "reconstructor.token_overlap_space": self.reconstructor.token_overlap_space,
+            "reconstructor.attention: local": self.reconstructor.attention == "local",
+            "forecaster.token_overlap_space": self.forecaster.token_overlap_space,
+        }
+        if not self.grid.canonical_order and any(needs_order.values()):
+            raise ValueError(f"{[key for key, on in needs_order.items() if on]} need grid.canonical_order: true")
 
     def trainer_kwargs(self, sample_seconds: float) -> Dict:
         """Keywords of `OnlineReconstructorForecaster`, with model times turned
@@ -112,6 +142,9 @@ class Config:
             embed_dim=self.blocks.embed_dim,
             ema_decay=r.ema_decay,
             reconstructor_time=r.time_input,
+            reconstructor_overlap=r.token_overlap_space,
+            reconstructor_attention=r.attention,
+            forecaster_overlap=f.token_overlap_space,
             lr_recon=r.lr,
             lr_forecast=f.lr,
             lr_warmup=steps(r.lr_warmup_seconds),

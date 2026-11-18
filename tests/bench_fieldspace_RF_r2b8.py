@@ -15,6 +15,11 @@ the batch is full from step ``--replay-batch`` + 1 of the timed steps.
 both models (0 = none); as with the insolation in the plugin, the last one
 conditions the forecaster only. ``--embed-dim`` is the size of each cell's
 forcing embedding and of the time embedding.
+
+``--neighbours`` is the configuration of ``config/fieldspace_rf_r2b8_neighbours.yaml``:
+canonical cell order, the ghost cells of the patch, token overlap in both
+models and two more forcing columns (the orientation). ``--device cpu`` runs
+without a GPU, e.g. to count parameters.
 """
 
 import argparse
@@ -29,7 +34,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.dirname(os.path.dirname(_HERE)), os.path.join(os.path.dirname(_HERE), "comin_plugin_torch")]
 
 from fieldspace_RF_online import OnlineReconstructorForecaster  # noqa: E402
-from icon_nested_mgrid import load_global_mgrid, patch_mgrid  # noqa: E402
+from icon_nested_mgrid import ghost_cells, load_global_mgrid, patch_mgrid  # noqa: E402
 
 
 def main():
@@ -43,13 +48,19 @@ def main():
     parser.add_argument("--n-context", type=int, default=4)
     parser.add_argument("--forcings", type=int, default=4, help="plugin default: ts_wtr, sic, oromea, insolation")
     parser.add_argument("--embed-dim", type=int, default=8)
+    parser.add_argument("--inner-channels", type=int, default=None)
+    parser.add_argument("--neighbours", action="store_true")
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--grid-dir", default="/pool/data/ICON/grids/mpim")
     args = parser.parse_args()
+    device = torch.device(args.device)
+    synchronize = torch.cuda.synchronize if device.type == "cuda" else lambda: None
+    args.forcings += 2 * args.neighbours
     levels = [int(v) for v in args.levels.split(",")]
     refinement = 4 ** (levels[-1] - levels[0])
 
     t = time.perf_counter()
-    global_mgrid = load_global_mgrid(args.grid_dir, levels[0], levels[-1])
+    global_mgrid = load_global_mgrid(args.grid_dir, levels[0], levels[-1], canonical=args.neighbours)
     lon, lat = global_mgrid[-1]["coords"].numpy().T
     # 4 equal-area latitude bands times ranks/4 longitude sectors.
     band = np.searchsorted([-0.5, 0.0, 0.5], np.sin(lat))
@@ -59,15 +70,18 @@ def main():
     counts = np.stack([np.bincount(np.flatnonzero(rank_of_cell == r) // refinement, minlength=n_backbone) for r in range(args.ranks)])
     owner = counts.argmax(axis=0)
     per_rank = np.bincount(owner, minlength=args.ranks)
-    backbone = torch.from_numpy(np.flatnonzero(owner == per_rank.argmax()))
-    mgrids = patch_mgrid(global_mgrid, backbone)
-    coords = mgrids[-1]["coords"].cuda()
+    owned = np.flatnonzero(owner == per_rank.argmax())
+    ghosts = ghost_cells(owned, global_mgrid[0]["adjc"].numpy()) if args.neighbours else owned[:0]
+    mgrids = patch_mgrid(global_mgrid, torch.from_numpy(np.concatenate([owned, ghosts])))
+    coords = mgrids[-1]["coords"].to(device)
     print(f"setup {time.perf_counter() - t:.1f}s: backbone cells per rank {per_rank.min()}-{per_rank.max()}, "
-          f"largest patch {len(coords)} R2B{levels[-1]} cells", flush=True)
+          f"largest patch {len(owned)} owned + {len(ghosts)} ghost backbone cells = {len(coords)} R2B{levels[-1]} cells", flush=True)
 
     trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1, n_context=args.n_context,
                                             n_forcings=args.forcings, reconstructor_forcings=range(args.forcings - 1),
-                                            embed_dim=args.embed_dim,
+                                            embed_dim=args.embed_dim, inner_channels=args.inner_channels,
+                                            reconstructor_overlap=args.neighbours, forecaster_overlap=args.neighbours,
+                                            n_owned=len(owned), device=device,
                                             replay_size=args.replay_size, replay_batch=args.replay_batch)
     print(f"{args.forcings} forcings, reconstructor "
           f"{sum(p.numel() for p in trainer.model.reconstructor.parameters()):,} / forecaster "
@@ -79,13 +93,13 @@ def main():
 
     for k in range(trainer.replay_buffer.n_context + args.steps):
         x = torch.sin(40 * coords[:, :1] - 0.02 * k) * torch.cos(20 * coords[:, 1:])  # (n, nlev=1)
-        torch.cuda.synchronize()
+        synchronize()
         t = time.perf_counter()
         stats = trainer.train_step(x, forcing(k), t0 + 600.0 * k)
         increment = trainer.predict_increment(t0 + 600.0 * (k + 1), forcing(k + 1))
-        torch.cuda.synchronize()
-        print(f"step {k}: {stats} step_s={time.perf_counter() - t:.2f} "
-              f"torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.2f}", flush=True)
+        synchronize()
+        peak = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else float("nan")
+        print(f"step {k}: {stats} step_s={time.perf_counter() - t:.2f} torch_peak_GiB={peak:.2f}", flush=True)
     assert torch.isfinite(increment).all()
 
 
