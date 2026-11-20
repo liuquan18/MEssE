@@ -400,6 +400,7 @@ class ReconstructorForecaster(nn.Module):
         reconstructor_overlap: bool = False,
         forecaster_overlap: bool = False,
         reconstructor_attention: str = "global",
+        forecaster_attention: str = "global",
     ):
         """``n_forcings`` forcing columns condition the forecaster, the columns
         ``reconstructor_forcings`` of them the reconstructor. ``embed_dim`` is
@@ -410,8 +411,9 @@ class ReconstructorForecaster(nn.Module):
         it compresses and rebuilds a field without the clock, while the
         forecaster still gets the model time. ``reconstructor_overlap`` and
         ``forecaster_overlap`` turn on ``token_overlap_space`` in the attention
-        blocks of that model; ``reconstructor_attention`` ("global" or "local")
-        is the attention scope of the reconstructor's blocks."""
+        blocks of that model; ``reconstructor_attention`` and
+        ``forecaster_attention`` ("global" or "local") are the attention scopes
+        of that model's blocks."""
         super().__init__()
         self.reconstructor_time = reconstructor_time
         self.reconstructor_forcings = list(reconstructor_forcings)
@@ -441,7 +443,12 @@ class ReconstructorForecaster(nn.Module):
             self.reconstructor.latent_features,
             n_context,
             n_forecaster_blocks,
-            _BlockConfigs(**blocks, n_forcings=n_forcings, token_overlap_space=forecaster_overlap),
+            _BlockConfigs(
+                **blocks,
+                n_forcings=n_forcings,
+                token_overlap_space=forecaster_overlap,
+                attention=forecaster_attention,
+            ),
         )
         self.forecast_zoom = max(self.reconstructor.latent_features)  # the forecaster's forcings
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))

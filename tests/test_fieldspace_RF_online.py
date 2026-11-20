@@ -462,6 +462,20 @@ def test_token_overlap_gives_each_model_the_ring_and_trains():
     assert any(not torch.equal(a, b) for a, b in zip(before, after))
 
 
+def test_local_forecaster_attention_keeps_the_parameters_and_trains():
+    """forecaster_attention only changes which tokens a token attends to, not the weights."""
+    plain = _neighbour_trainer(forecaster_overlap=True)
+    local = _neighbour_trainer(forecaster_overlap=True, forecaster_attention="local")
+    assert _n_parameters(local.model.forecaster) == _n_parameters(plain.model.forecaster)
+    overlaps = lambda model: [m.seq_overlap_space for m in model.modules() if hasattr(m, "seq_overlap_space")]  # noqa: E731
+    assert overlaps(local.model.forecaster) and all(overlaps(local.model.forecaster))
+    assert not any(overlaps(plain.model.forecaster))
+    stats = _train_patch(local, N_CONTEXT + 3)
+    assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
+    increment = local.predict_increment(T0 + (N_CONTEXT + 3) * DT, _patch_values(local, 99, N_FORCINGS))
+    assert torch.isfinite(increment).all()
+
+
 def test_token_overlap_needs_a_token_with_all_its_neighbours():
     globe = icosahedral_mgrid(n_zooms=5, n_levels=5)
     pair = patch_mgrid(globe, globe[0]["adjc"][0, :2])  # two backbone cells: neither has all its neighbours

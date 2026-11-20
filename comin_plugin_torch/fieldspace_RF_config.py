@@ -88,6 +88,7 @@ class Forecaster:
     n_blocks: int
     n_context: int
     token_overlap_space: bool
+    attention: str
     lr: float
     replay_seconds: float
     replay_warmup_seconds: float
@@ -108,8 +109,9 @@ class Config:
         unknown = set(self.forcings.reconstructor) - set(self.forcings.names)
         if unknown:
             raise ValueError(f"forcings.reconstructor: not among {self.forcings.names}: {sorted(unknown)}")
-        if self.reconstructor.attention not in ("global", "local"):
-            raise ValueError(f"reconstructor.attention must be global or local, not {self.reconstructor.attention}")
+        for name, model in (("reconstructor", self.reconstructor), ("forecaster", self.forecaster)):
+            if model.attention not in ("global", "local"):
+                raise ValueError(f"{name}.attention must be global or local, not {model.attention}")
         if self.grid.ghost_rings not in (0, 1):
             raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
         # These need the same cell order in every backbone cell and its 12 neighbours.
@@ -119,6 +121,7 @@ class Config:
             "reconstructor.token_overlap_space": self.reconstructor.token_overlap_space,
             "reconstructor.attention: local": self.reconstructor.attention == "local",
             "forecaster.token_overlap_space": self.forecaster.token_overlap_space,
+            "forecaster.attention: local": self.forecaster.attention == "local",
         }
         if not self.grid.canonical_order and any(needs_order.values()):
             raise ValueError(f"{[key for key, on in needs_order.items() if on]} need grid.canonical_order: true")
@@ -145,6 +148,7 @@ class Config:
             reconstructor_overlap=r.token_overlap_space,
             reconstructor_attention=r.attention,
             forecaster_overlap=f.token_overlap_space,
+            forecaster_attention=f.attention,
             lr_recon=r.lr,
             lr_forecast=f.lr,
             lr_warmup=steps(r.lr_warmup_seconds),

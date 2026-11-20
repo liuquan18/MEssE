@@ -146,6 +146,9 @@ def test_lon_lat_config_differs_from_the_default_only_by_the_position():
         (lambda raw: raw["reconstructor"].update(attention="local"), "reconstructor.attention: local.* need grid.canonical_order"),
         (lambda raw: raw["reconstructor"].update(attention="regional"), "reconstructor.attention must be global or local"),
         (lambda raw: raw["reconstructor"].pop("attention"), "missing keys \\['attention'\\]"),
+        (lambda raw: raw["forecaster"].pop("attention"), "missing keys \\['attention'\\]"),
+        (lambda raw: raw["forecaster"].update(attention="regional"), "forecaster.attention must be global or local"),
+        (lambda raw: raw["forecaster"].update(attention="local"), "forecaster.attention: local.* need grid.canonical_order"),
     ],
 )
 def test_wrong_files_stop_at_startup(tmp_path, change, message):
