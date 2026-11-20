@@ -87,6 +87,7 @@ class Reconstructor:
 class Forecaster:
     n_blocks: int
     n_context: int
+    token_len_time: int
     token_overlap_space: bool
     attention: str
     lr: float
@@ -112,6 +113,11 @@ class Config:
         for name, model in (("reconstructor", self.reconstructor), ("forecaster", self.forecaster)):
             if model.attention not in ("global", "local"):
                 raise ValueError(f"{name}.attention must be global or local, not {model.attention}")
+        f = self.forecaster
+        if not 1 <= f.token_len_time <= f.n_context + 1 or (f.n_context + 1) % f.token_len_time:
+            raise ValueError(
+                f"forecaster.token_len_time must divide n_context + 1 = {f.n_context + 1}, not {f.token_len_time}"
+            )
         if self.grid.ghost_rings not in (0, 1):
             raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
         # These need the same cell order in every backbone cell and its 12 neighbours.
@@ -149,6 +155,7 @@ class Config:
             reconstructor_attention=r.attention,
             forecaster_overlap=f.token_overlap_space,
             forecaster_attention=f.attention,
+            forecaster_token_len_time=f.token_len_time,
             lr_recon=r.lr,
             lr_forecast=f.lr,
             lr_warmup=steps(r.lr_warmup_seconds),

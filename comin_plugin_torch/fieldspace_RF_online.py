@@ -348,16 +348,24 @@ class Reconstructor(nn.Module):
 class Forecaster(nn.Module):
     """MG transformer over the latent levels: the ``n_context`` context
     latents plus one future slot (a copy of the latest, FieldSpaceNN's
-    ``repeat`` convention) form one token per backbone cell; the future slot is
-    returned. The gates start near zero, so the untrained forecast is
-    persistence."""
+    ``repeat`` convention); the future slot is returned. A token is one
+    backbone cell and ``token_len_time`` consecutive slots; the tokens of all
+    time steps form one attention sequence (``seq_len_time`` -1), with the
+    same weights for every time token. ``token_len_time = n_context + 1``
+    (default) packs all slots into one token. It must divide ``n_context + 1``,
+    so the last token holds the future slot and the newest context slots. The
+    gates start near zero, so the untrained forecast is persistence."""
 
-    def __init__(self, grid_layers, latent_features: Dict[int, int], n_context, n_blocks, configs: _BlockConfigs):
+    def __init__(self, grid_layers, latent_features: Dict[int, int], n_context, n_blocks, configs: _BlockConfigs,
+                 token_len_time: Optional[int] = None):
         super().__init__()
+        token_len_time = token_len_time or n_context + 1
+        if (n_context + 1) % token_len_time:
+            raise ValueError(f"token_len_time {token_len_time} must divide n_context + 1 = {n_context + 1}")
         zooms = sorted(latent_features)
         self.blocks = nn.ModuleList(
             create_encoder_decoder_block(
-                configs.attention(zooms, token_len_time=n_context + 1),
+                configs.attention(zooms, token_len_time=token_len_time),
                 zooms,
                 [latent_features[z] for z in zooms],
                 [1],
@@ -401,6 +409,7 @@ class ReconstructorForecaster(nn.Module):
         forecaster_overlap: bool = False,
         reconstructor_attention: str = "global",
         forecaster_attention: str = "global",
+        forecaster_token_len_time: Optional[int] = None,
     ):
         """``n_forcings`` forcing columns condition the forecaster, the columns
         ``reconstructor_forcings`` of them the reconstructor. ``embed_dim`` is
@@ -413,7 +422,8 @@ class ReconstructorForecaster(nn.Module):
         ``forecaster_overlap`` turn on ``token_overlap_space`` in the attention
         blocks of that model; ``reconstructor_attention`` and
         ``forecaster_attention`` ("global" or "local") are the attention scopes
-        of that model's blocks."""
+        of that model's blocks. ``forecaster_token_len_time``: time slots per
+        forecaster token (default ``n_context + 1``, all in one token)."""
         super().__init__()
         self.reconstructor_time = reconstructor_time
         self.reconstructor_forcings = list(reconstructor_forcings)
@@ -449,6 +459,7 @@ class ReconstructorForecaster(nn.Module):
                 token_overlap_space=forecaster_overlap,
                 attention=forecaster_attention,
             ),
+            forecaster_token_len_time,
         )
         self.forecast_zoom = max(self.reconstructor.latent_features)  # the forecaster's forcings
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))

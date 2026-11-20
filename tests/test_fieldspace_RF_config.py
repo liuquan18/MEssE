@@ -18,6 +18,7 @@ LON_LAT_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_lon_lat.yaml")
 NEIGHBOURS_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours.yaml")
 LOCAL_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours_local.yaml")
 LOCAL_POS_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours_local_pos.yaml")
+LOCAL_T3_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_local_t3.yaml")
 
 
 def _write(tmp_path, change):
@@ -122,6 +123,18 @@ def test_local_configs_differ_from_neighbours_by_the_attention_and_the_position(
     assert all(load_config(p).reconstructor.attention == "global" for p in (REPO_CONFIG, LON_LAT_CONFIG))
 
 
+def test_local_t3_config_differs_from_local_pos_only_by_the_forecasters_time_tokens_and_scope():
+    local_pos, local_t3 = load_config(LOCAL_POS_CONFIG), load_config(LOCAL_T3_CONFIG)
+    assert (local_t3.forecaster.n_context, local_t3.forecaster.token_len_time, local_t3.forecaster.attention) == (11, 3, "local")
+    kwargs = local_t3.trainer_kwargs(600.0)
+    assert (kwargs["n_context"], kwargs["forecaster_token_len_time"], kwargs["forecaster_attention"]) == (11, 3, "local")
+    assert replace(local_t3, forecaster=local_pos.forecaster) == local_pos
+    # Every other config packs all slots into one token and attends globally, as before the key existed.
+    for path in (REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG, LOCAL_CONFIG, LOCAL_POS_CONFIG):
+        forecaster = load_config(path).forecaster
+        assert forecaster.token_len_time == forecaster.n_context + 1 and forecaster.attention == "global"
+
+
 def test_lon_lat_config_differs_from_the_default_only_by_the_position():
     default, lon_lat = load_config(REPO_CONFIG), load_config(LON_LAT_CONFIG)
     assert lon_lat.forcings.position and not default.forcings.position
@@ -147,6 +160,10 @@ def test_lon_lat_config_differs_from_the_default_only_by_the_position():
         (lambda raw: raw["reconstructor"].update(attention="regional"), "reconstructor.attention must be global or local"),
         (lambda raw: raw["reconstructor"].pop("attention"), "missing keys \\['attention'\\]"),
         (lambda raw: raw["forecaster"].pop("attention"), "missing keys \\['attention'\\]"),
+        (lambda raw: raw["forecaster"].pop("token_len_time"), "missing keys \\['token_len_time'\\]"),
+        (lambda raw: raw["forecaster"].update(token_len_time=3), "forecaster.token_len_time must divide n_context \\+ 1 = 11"),
+        (lambda raw: raw["forecaster"].update(token_len_time=0), "forecaster.token_len_time must divide"),
+        (lambda raw: raw["forecaster"].update(token_len_time=22), "forecaster.token_len_time must divide"),
         (lambda raw: raw["forecaster"].update(attention="regional"), "forecaster.attention must be global or local"),
         (lambda raw: raw["forecaster"].update(attention="local"), "forecaster.attention: local.* need grid.canonical_order"),
     ],

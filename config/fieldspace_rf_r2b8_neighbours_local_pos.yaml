@@ -48,17 +48,20 @@ reconstructor:
   lr_warmup_seconds: 180000      # linear ramp, 300 updates at 600 s
 
 # Forecaster attention, on the latent levels R2B4 (1 channel) and r6' (latent_channels):
-#   TOKEN    = one R2B4 cell, with ALL n_context + 1 time slots packed inside it (FieldSpaceNN token_zoom 0,
-#              token_len_time = n_context + 1; the last slot is the future one, a copy of the newest latent,
-#              and its output is the forecast). Per slot: own 1 + 16 x 4 = 65 values, ring 12 + 30 x 4 = 132.
-#              Time is mixed only inside a token, by the slot-wise Q/K/V/out projections and the MLP; there
-#              is no attention over time.
-#   SEQUENCE = set by `attention` (FieldSpaceNN seq_len_zoom / seq_overlap_space):
-#              global (-1, False): every R2B4 token of the patch (owned + ghost, ~800)
-#              local  (0, True):   the token + its 12 neighbouring R2B4 tokens (13)
+#   SLOTS    = n_context context latents + 1 future slot (a copy of the newest latent; its output is the forecast).
+#   TOKEN    = one R2B4 cell x token_len_time consecutive slots (FieldSpaceNN token_zoom 0, token_len_time).
+#              Here token_len_time = n_context + 1: ALL slots packed in one token, so time is mixed only inside
+#              the token, by the slot-wise Q/K/V/out projections and the MLP; there is no attention over time.
+#              Per slot: own 1 + 16 x 4 = 65 values, ring 12 + 30 x 4 = 132.
+#   SEQUENCE = space, set by `attention` (FieldSpaceNN seq_len_zoom / seq_overlap_space):
+#                global (-1, False): every R2B4 token of the patch (owned + ghost, ~800)
+#                local  (0, True):   the token + its 12 neighbouring R2B4 tokens (13)
+#              x time: all (n_context + 1) / token_len_time time tokens (FieldSpaceNN seq_len_time -1, fixed); here 1.
+#   Weights are shared by all cells and all time tokens.
 forecaster:
   n_blocks: 2                    # FieldSpaceNN attention blocks
-  n_context: 10                  # frozen latents it sees: 100 min at 600 s; token_len_time = 11
+  n_context: 10                  # frozen latents it sees: 100 min at 600 s
+  token_len_time: 11             # n_context + 1: all slots in one token (packed)
   token_overlap_space: true      # a token also holds the ring of cells touching it: R2B4 12, r6 30 per slot
   attention: global              # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
   lr: 2.0e-4

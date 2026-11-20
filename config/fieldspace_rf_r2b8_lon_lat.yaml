@@ -49,6 +49,7 @@ reconstructor:
 forecaster:
   n_blocks: 2
   n_context: 10                  # frozen latents it sees: 100 min at 600 s
+  token_len_time: 11             # n_context + 1: all slots in one token (packed)
   token_overlap_space: false     # true: a token also sees the cells that touch it from outside
   attention: global              # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
   lr: 2.0e-4

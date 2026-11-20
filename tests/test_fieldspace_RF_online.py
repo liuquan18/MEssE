@@ -476,6 +476,22 @@ def test_local_forecaster_attention_keeps_the_parameters_and_trains():
     assert torch.isfinite(increment).all()
 
 
+def test_forecaster_time_tokens_start_at_persistence_and_train():
+    """token_len_time 2: the N_CONTEXT + 1 = 4 slots form 2 time tokens that share their weights, so
+    the forecaster is smaller than the packed one; with local attention, the ring and ghost cells."""
+    packed = _neighbour_trainer(forecaster_overlap=True, forecaster_attention="local")
+    tokens = _neighbour_trainer(forecaster_overlap=True, forecaster_attention="local", forecaster_token_len_time=2)
+    assert _n_parameters(tokens.model.forecaster) < _n_parameters(packed.model.forecaster)
+    assert _n_parameters(tokens.model.reconstructor) == _n_parameters(packed.model.reconstructor)
+    _train_patch(tokens, N_CONTEXT)
+    increment = tokens.predict_increment(T0 + N_CONTEXT * DT, _patch_values(tokens, 99, N_FORCINGS))
+    assert increment.abs().max() < 1e-6  # closed gates: persistence
+    before = [p.detach().clone() for p in tokens.model.forecaster.parameters()]
+    stats = _train_patch(tokens, N_CONTEXT + 3)
+    assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
+    assert any(not torch.equal(a, b) for a, b in zip(before, tokens.model.forecaster.parameters()))
+
+
 def test_token_overlap_needs_a_token_with_all_its_neighbours():
     globe = icosahedral_mgrid(n_zooms=5, n_levels=5)
     pair = patch_mgrid(globe, globe[0]["adjc"][0, :2])  # two backbone cells: neither has all its neighbours
