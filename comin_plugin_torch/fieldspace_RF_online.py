@@ -97,8 +97,26 @@ forecaster is trained on these plus the new (live) window as one batch.
 Stored latents are not re-encoded: the buffer length bounds how much older the
 encoder that made them is, and windows from the first ``replay_warmup`` sample
 steps, encoded before the reconstructor had settled, are never replayed.
+
+Key/value memory
+----------------
+Optional (``memory_size`` > 0), so that the past beyond the one time token of
+the context can reach the forecast (Memorizing Transformers, `kv_memory.py`).
+Needs local attention and one time token (``token_len_time = n_context + 1``).
+Only the last forecaster block has a memory, as the paper's one kNN layer near
+the top. After each update it stores the block's own-cell keys and values of
+the live window, one entry per sample step. Every window (the live one,
+replayed ones and the written forecast) reads, per cell and head, the
+``memory_topk`` entries most similar (cosine) to its query among those of its
+13-cell window from the ``memory_seconds`` before its first context step; a
+learned gate per head mixes them into the block's local attention. The gates
+and the per-head score scales have their own learning rate
+(``lr_memory_gate``). The memory holds enough steps for the oldest replayable
+window. It is not checkpointed, and the first ``memory_warmup`` updates are not
+stored in it.
 """
 
+import math
 from collections import deque
 from typing import Dict, List, NamedTuple, Optional, Sequence
 
@@ -113,8 +131,10 @@ from fieldspacenn.src.models.mg_transformer.mg_base_model import create_encoder_
 from fieldspacenn.src.modules.embedding import embedder as fs_embedder
 from fieldspacenn.src.modules.field_space.field_space_attention import FieldSpaceAttentionConfig
 from fieldspacenn.src.modules.field_space.field_space_layer import FieldSpaceLayerConfig
+from fieldspacenn.src.modules.grids.grid_layer import tokens_with_ring
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms, encode_zooms, to_zoom
 from fieldspacenn.src.utils.losses import MGMultiLoss
+from kv_memory import KVMemory
 
 # {zoom: (b, v=1, t, n_zoom, d=nlev, f)}, FieldSpaceNN's layout.
 Levels = Dict[int, torch.Tensor]
@@ -354,10 +374,13 @@ class Forecaster(nn.Module):
     same weights for every time token. ``token_len_time = n_context + 1``
     (default) packs all slots into one token. It must divide ``n_context + 1``,
     so the last token holds the future slot and the newest context slots. The
-    gates start near zero, so the untrained forecast is persistence."""
+    gates start near zero, so the untrained forecast is persistence. With
+    ``memory`` (`KVMemory` keywords but the window) the last block also reads
+    its key/value memory; ``live_kv`` then holds that block's own-cell keys and
+    values of window 0 of the latest pass, which :meth:`remember` stores."""
 
     def __init__(self, grid_layers, latent_features: Dict[int, int], n_context, n_blocks, configs: _BlockConfigs,
-                 token_len_time: Optional[int] = None):
+                 token_len_time: Optional[int] = None, memory: Optional[Dict] = None):
         super().__init__()
         token_len_time = token_len_time or n_context + 1
         if (n_context + 1) % token_len_time:
@@ -375,12 +398,42 @@ class Forecaster(nn.Module):
             for _ in range(n_blocks)
         )
         self.sample_configs = _sample_configs(n_context, 1, range(len(grid_layers)))
+        self.memory, self.live_kv, self.memory_age = None, None, None
+        if memory:
+            if token_len_time != n_context + 1 or not configs.seq_overlap_space:
+                raise ValueError("the key/value memory needs local attention and one time token per cell")
+            layer = self.blocks[-1].blocks[0].grid_layer_att  # the 13-cell windows of the local attention
+            self.memory = KVMemory(**memory, window=tokens_with_ring(layer.adjc, layer.adjc_mask, 1))
+            heads = configs.att_dim // configs.n_head_channels
+            self.memory_gate = nn.Parameter(torch.zeros(heads))  # sigmoid(0) = 0.5
+            self.memory_log_scale = nn.Parameter(torch.full((heads,), math.log(10.0)))  # cosine x 10
 
-    def forward(self, context: Levels, emb) -> Levels:
+    def forward(self, context: Levels, emb, times: Optional[Sequence[Sequence[float]]] = None) -> Levels:
+        """``times``: one row of valid times per window, context steps then
+        the forecast (only the memory needs them)."""
         x = [{z: torch.cat([c, c[:, :, -1:]], dim=2) for z, c in context.items()}]  # append the future slot
-        for block in self.blocks:
-            x = block(x, sample_configs=self.sample_configs, emb_groups=[emb])
+        for i, block in enumerate(self.blocks):
+            if self.memory is not None and i == len(self.blocks) - 1:
+                x = self._block_with_memory(block, x, emb, times)
+            else:
+                x = block(x, sample_configs=self.sample_configs, emb_groups=[emb])
         return {z: t[:, :, -1:] for z, t in x[0].items()}
+
+    def _block_with_memory(self, module, x, emb, times):
+        """FieldSpaceNN's `FieldSpaceAttentionModule.forward` for its one group,
+        with the memory in the attention."""
+        block = module.blocks[0]
+        x_base, q, k, v, _, shape = block.create_QKV(x[0], emb=emb, sample_configs=self.sample_configs)
+        out, self.memory_age = self.memory.attend(q, k, v, times, self.memory_gate, self.memory_log_scale)
+        cells = self.memory.window.shape[0]  # own cell = slot 0 of each window; window 0 of the batch
+        self.live_kv = [t[:cells, :, 0].detach().transpose(0, 1) for t in (k, v)]  # (heads, cells, channels)
+        x_zooms = block.forward_mlp(x[0], x_base, out, shape, emb=emb, sample_configs=self.sample_configs)
+        return [{z: x_zooms[z] for z in module.out_zooms}]
+
+    def remember(self, seconds: float) -> None:
+        """Stores the last block's own-cell keys and values of window 0 of the
+        latest pass, whose last context step is at ``seconds``."""
+        self.memory.write(*self.live_kv, seconds)
 
 
 class ReconstructorForecaster(nn.Module):
@@ -410,6 +463,7 @@ class ReconstructorForecaster(nn.Module):
         reconstructor_attention: str = "global",
         forecaster_attention: str = "global",
         forecaster_token_len_time: Optional[int] = None,
+        memory: Optional[Dict] = None,
     ):
         """``n_forcings`` forcing columns condition the forecaster, the columns
         ``reconstructor_forcings`` of them the reconstructor. ``embed_dim`` is
@@ -423,7 +477,9 @@ class ReconstructorForecaster(nn.Module):
         blocks of that model; ``reconstructor_attention`` and
         ``forecaster_attention`` ("global" or "local") are the attention scopes
         of that model's blocks. ``forecaster_token_len_time``: time slots per
-        forecaster token (default ``n_context + 1``, all in one token)."""
+        forecaster token (default ``n_context + 1``, all in one token).
+        ``memory`` (`KVMemory` keywords) gives the last forecaster block a
+        key/value memory."""
         super().__init__()
         self.reconstructor_time = reconstructor_time
         self.reconstructor_forcings = list(reconstructor_forcings)
@@ -460,6 +516,7 @@ class ReconstructorForecaster(nn.Module):
                 attention=forecaster_attention,
             ),
             forecaster_token_len_time,
+            memory,
         )
         self.forecast_zoom = max(self.reconstructor.latent_features)  # the forecaster's forcings
         self.frozen = AveragedModel(self.reconstructor, multi_avg_fn=get_ema_multi_avg_fn(ema_decay))
@@ -511,7 +568,7 @@ class ReconstructorForecaster(nn.Module):
         """Latent forecast for a batch of contexts. ``forcings`` and ``times``
         cover the context steps, then the forecast; ``times`` has one row per
         sample."""
-        return self.forecaster(context, self.emb(times, forcings))
+        return self.forecaster(context, self.emb(times, forcings), times)
 
     def forward(self, levels: Levels, seconds: float, forcings: Forcings, batch: Window):
         """Training pass: the reconstruction of x_t and the latent forecasts of
@@ -541,14 +598,23 @@ class OnlineReconstructorForecaster:
         grad_clip: float = 1.0,
         lr_warmup: int = 0,
         n_owned: Optional[int] = None,
+        memory_size: int = 0,
+        memory_seconds: float = 0.0,
+        memory_topk: int = 32,
+        memory_warmup: int = 0,
+        lr_memory_gate: float = 1e-2,
         device: torch.device = torch.device("cuda", 0),
         **model_kwargs,
     ):
         """``n_owned``: the patch's first backbone cells that this rank owns
-        (default: all); the cells after them are ghosts."""
+        (default: all); the cells after them are ghosts. ``memory_size`` > 0
+        turns on the key/value memory: that many sample steps, searched over
+        ``memory_seconds`` before each window's context."""
         self.device, self.grad_clip = device, grad_clip
         self.n_owned = len(mgrids[0]["coords"]) if n_owned is None else n_owned
         self.lr_recon, self.lr_warmup, self.n_updates = lr_recon, lr_warmup, 0  # lr_recon ramps up over lr_warmup updates
+        if memory_size:
+            model_kwargs["memory"] = dict(size=memory_size, span=memory_seconds, topk=memory_topk, warmup=memory_warmup)
         # FieldSpaceNN creates device-less tensors in GridLayer and in forward
         # passes; the grids must be on the same device as those.
         mgrids = [{k: v.to(device) if torch.is_tensor(v) else v for k, v in grid.items()} for grid in mgrids]
@@ -559,12 +625,15 @@ class OnlineReconstructorForecaster:
             if dist.is_initialized() and dist.get_world_size() > 1
             else self.model
         )
-        self.optimizer = torch.optim.Adam(
-            [
-                {"params": self.model.reconstructor.parameters(), "lr": lr_recon},
-                {"params": self.model.forecaster.parameters(), "lr": lr_forecast},
-            ]
-        )
+        forecaster = self.model.forecaster
+        memory_params = ("memory_gate", "memory_log_scale")
+        groups = [
+            {"params": self.model.reconstructor.parameters(), "lr": lr_recon},
+            {"params": [p for name, p in forecaster.named_parameters() if name not in memory_params], "lr": lr_forecast},
+        ]
+        if forecaster.memory is not None:  # at lr_forecast a gate logit would move only ~lr per update
+            groups.append({"params": [getattr(forecaster, name) for name in memory_params], "lr": lr_memory_gate})
+        self.optimizer = torch.optim.Adam(groups)
         self.level_loss = MGMultiLoss({str(z): {"MSE_loss": 1.0} for z in self.model.zooms})
         rng = torch.Generator().manual_seed(dist.get_rank() if dist.is_initialized() else 0)
         # Also holds the context. replay_warmup: sample steps after the dry run whose windows are never replayed.
@@ -629,12 +698,24 @@ class OnlineReconstructorForecaster:
 
         # Each loss per level, with the loss of outputting zero (x_t) or of persistence (c̄_{t-1} for c̄_t).
         persistence = {z: batch.target[z] - batch.context[z][:, :, -1:] for z in batch.target}
-        return {
+        stats = {
             "recon": recon_parts,
             "state_ms": self._mean_square(levels),
             "latent_mse": latent_parts,
             "latent_persist": self._mean_square(persistence),
         }
+        forecaster = self.model.forecaster
+        if forecaster.memory is not None:
+            forecaster.remember(context_seconds[-1])
+            # The last block's mean gate and score scale, and how far back the live window's owned cells looked
+            # (0 = nothing visible).
+            age = forecaster.memory_age
+            stats["memory"] = {
+                "gate": float(torch.sigmoid(forecaster.memory_gate).mean()),
+                "scale": float(forecaster.memory_log_scale.exp().mean()),
+                "age_h": 0.0 if age is None else float(age[:, : self.n_owned].mean()),
+            }
+        return stats
 
     @torch.no_grad()
     def predict_increment(self, seconds: float, forcings: torch.Tensor):

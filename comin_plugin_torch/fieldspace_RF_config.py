@@ -94,6 +94,10 @@ class Forecaster:
     replay_seconds: float
     replay_warmup_seconds: float
     replay_batch: int
+    memory_seconds: float  # key/value memory searched before each window's context; 0 = off
+    memory_warmup_seconds: float
+    memory_topk: int
+    memory_gate_lr: float
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,10 @@ class Config:
             raise ValueError(
                 f"forecaster.token_len_time must divide n_context + 1 = {f.n_context + 1}, not {f.token_len_time}"
             )
+        if f.memory_seconds and (f.memory_topk < 1 or f.attention != "local" or f.token_len_time != f.n_context + 1):
+            raise ValueError(
+                "forecaster.memory_seconds > 0 needs memory_topk >= 1, attention: local and token_len_time = n_context + 1"
+            )
         if self.grid.ghost_rings not in (0, 1):
             raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
         # These need the same cell order in every backbone cell and its 12 neighbours.
@@ -137,6 +145,8 @@ class Config:
         into sample steps of the realized interval."""
         steps = lambda seconds: int(seconds // sample_seconds)  # noqa: E731
         r, f, names = self.reconstructor, self.forecaster, self.forcings.names
+        # The key/value memory holds the span before the context of the oldest window replay can draw.
+        memory_size = f.n_context + steps(f.replay_seconds) + steps(f.memory_seconds) if steps(f.memory_seconds) else 0
         return dict(
             n_context=f.n_context,
             n_forcings=len(names),
@@ -162,6 +172,11 @@ class Config:
             replay_size=steps(f.replay_seconds),
             replay_warmup=steps(f.replay_warmup_seconds),
             replay_batch=f.replay_batch,
+            memory_size=memory_size,
+            memory_seconds=f.memory_seconds,
+            memory_topk=f.memory_topk,
+            memory_warmup=steps(f.memory_warmup_seconds),
+            lr_memory_gate=f.memory_gate_lr,
             grad_clip=self.training.grad_clip,
         )
 

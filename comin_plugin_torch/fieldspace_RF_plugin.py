@@ -64,7 +64,12 @@ with an error if a forcing has no spread over the globe, i.e. was read wrongly.
 The forecaster's batch is the live window plus ``forecaster.replay_batch``
 windows drawn from the replay buffer, which keeps those of the last
 ``forecaster.replay_seconds`` of model time (latent replay, 0 = off). The replay
-buffer is not checkpointed: after a restart it fills again.
+buffer is not checkpointed: after a restart it fills again. With
+``forecaster.memory_seconds`` > 0, the last forecaster block also reads a
+key/value memory of the earlier windows (`kv_memory.py`); it is not
+checkpointed either, and the log line adds ``memory[gate= scale= age_h=]``:
+the mean gate (0 = local attention only, 1 = memory only), the mean score
+scale, and the age of the read entries before the forecast time.
 
 The log line comes once per ``run.log_seconds`` of model time (one hour):
 every value is the mean over the sample steps since the last line, since single
@@ -288,6 +293,8 @@ def _log_line() -> str:
     """The means of ``State.log_rows``."""
     means = mean_stats(State.log_rows)
     losses = " ".join(f"{key}[{_levels(means[key])}]" for key in ("recon", "state_ms", "latent_mse", "latent_persist"))
+    if "memory" in means:
+        losses += " memory[" + " ".join(f"{key}={value:.4g}" for key, value in means["memory"].items()) + "]"
     return (
         f"step={State.step} fc_rmse={means['fc_rmse']:.4f} {losses} "
         f"train_s={means['train_s']:.2f} torch_peak_GiB={torch.cuda.max_memory_allocated() / 2**30:.1f}"
@@ -326,6 +333,15 @@ def sample_step():
             f"({n_replay + CONFIG.forecaster.n_context} latents, each stored once), "
             f"draws {CONFIG.forecaster.replay_batch} per update; windows from the first "
             f"{CONFIG.forecaster.replay_warmup_seconds:.0f} s after the dry run are never replayed"
+        )
+        kwargs = CONFIG.trainer_kwargs(State.sample_seconds)
+        comin.print_info(
+            f"key/value memory (last forecaster block): keeps {kwargs['memory_size']} sample steps; a window reads "
+            f"the top {kwargs['memory_topk']} entries of each cell's 13-cell window from the "
+            f"{CONFIG.forecaster.memory_seconds:.0f} s before its context, through a gate with learning rate "
+            f"{kwargs['lr_memory_gate']:g}; the first {kwargs['memory_warmup']} updates are not stored"
+            if kwargs["memory_size"]
+            else "key/value memory: off"
         )
     if round(now - State.first_seconds) % State.sample_seconds:
         return
