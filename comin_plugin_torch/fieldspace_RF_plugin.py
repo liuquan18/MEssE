@@ -129,9 +129,7 @@ DEVICE = torch.device("cuda", 0)
 # ----------------------------------------------------------------------------
 # Ranks, grids, patches
 # ----------------------------------------------------------------------------
-glob = comin.descrdata_get_global()
-DEVICE_FLAG = comin.COMIN_FLAG_DEVICE if glob.has_device else 0
-comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
+comm =MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 compute_comm, rank, n_ranks, has_gpu = setup_mpi_dist(comm)
 comin.print_info(f"config {CONFIG_PATH}: {CONFIG}")
 if rank == 0:
@@ -165,7 +163,7 @@ _owned_backbone = np.flatnonzero(_owner == rank)
 _ghosts = ghost_cells(_owned_backbone, _touching) if CONFIG.grid.ghost_rings else _owned_backbone[:0]
 _backbone = np.concatenate([_owned_backbone, _ghosts])
 N_OWNED = len(_owned_backbone) * REFINEMENT  # the patch's first fine cells; the rest are ghost cells
-exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT, _touching)
+exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT, DEVICE, _touching)
 mgrids = patch_mgrid(global_mgrid, torch.from_numpy(_backbone))
 FINE_LON, FINE_LAT = mgrids[-1]["coords"].to(DEVICE).T  # patch cell centres [radian], for the insolation
 # Static fields of the patch: its fine cells are the backbone cells' descendants, in nested order.
@@ -211,25 +209,22 @@ def _seconds() -> float:
 
 def _patch(variables) -> torch.Tensor:
     """Collective: this rank's patch of the ICON variables, (n_fine, levels
-    of all variables) on the GPU."""
-    columns = [np.empty((domain.cells.ncells, 0), dtype=np.float32)]  # concatenate needs one array
-    for var in variables:
-        cells = extract_icon_cells(var, domain.cells.ncells)
-        cells = cells.get() if hasattr(cells, "get") else cells  # cupy -> numpy for MPI
-        columns.append(cells.reshape(len(cells), -1))
-    return torch.from_numpy(exchange.to_patch(compute_comm, np.concatenate(columns, axis=1))).to(DEVICE)
+    of all variables), from ICON's GPU memory to the patches without leaving
+    the GPU."""
+    n = domain.cells.ncells
+    columns = [torch.as_tensor(extract_icon_cells(var, n), device=DEVICE).reshape(n, -1).float() for var in variables]
+    return exchange.to_patch(compute_comm, torch.cat([torch.empty(n, 0, device=DEVICE), *columns], dim=1))
 
 
 def _global_mean_std(patch: torch.Tensor):
     """Collective: mean and std of every column over the owned cells of all
     patches, i.e. over every ICON cell once."""
-    values = patch[:N_OWNED].double().cpu().numpy()
-    sums = np.stack([values.sum(axis=0), np.square(values).sum(axis=0)])
+    values = patch[:N_OWNED].double()
+    sums = torch.stack([values.sum(dim=0), values.square().sum(dim=0)])
+    torch.cuda.synchronize()  # MPI does not wait for the CUDA stream that wrote sums
     compute_comm.Allreduce(MPI.IN_PLACE, sums)
-    n = compute_comm.allreduce(len(values))
-    mean = sums[0] / n
-    std = np.sqrt(np.maximum(sums[1] / n - mean**2, 1e-12))
-    return torch.tensor(mean, dtype=torch.float32, device=DEVICE), torch.tensor(std, dtype=torch.float32, device=DEVICE)
+    mean, mean_square = sums / compute_comm.allreduce(len(values))
+    return mean.float(), (mean_square - mean**2).clamp(min=1e-12).sqrt().float()
 
 
 def _stats(names, mean, std) -> str:
@@ -238,8 +233,8 @@ def _stats(names, mean, std) -> str:
 
 def _write(forecast: torch.Tensor) -> None:
     """Collective: the forecast's owned cells into ``var_predict``."""
-    owned = exchange.from_patch(compute_comm, forecast.cpu().numpy())
-    insert_icon_cells(owned.astype(np.float64), State.predict_var, indices=exchange.owned_ids)
+    owned = exchange.from_patch(compute_comm, forecast)
+    insert_icon_cells(owned.double(), State.predict_var, indices=exchange.owned_ids)
 
 
 def _forcing(seconds: float) -> torch.Tensor:
@@ -311,9 +306,9 @@ comin.metadata_set(("var_predict", DOMAIN_ID), zaxis_id=comin.COMIN_ZAXIS_2D)
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
     ep = [comin.EP_ATM_WRITE_OUTPUT_BEFORE]
-    State.icon_var = comin.var_get(ep, (CONFIG.run.icon_var, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG)
-    State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | DEVICE_FLAG)
-    State.forcing_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG) for name in CONFIG.forcings.icon_fields]
+    State.icon_var = comin.var_get(ep, (CONFIG.run.icon_var, DOMAIN_ID), comin.COMIN_FLAG_READ | comin.COMIN_FLAG_DEVICE)
+    State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | comin.COMIN_FLAG_DEVICE)
+    State.forcing_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ | comin.COMIN_FLAG_DEVICE) for name in CONFIG.forcings.icon_fields]
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)

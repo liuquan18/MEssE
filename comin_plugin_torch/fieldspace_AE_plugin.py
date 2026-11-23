@@ -71,8 +71,6 @@ DEVICE = torch.device("cuda", 0)
 # ----------------------------------------------------------------------------
 # Ranks, grids, patches
 # ----------------------------------------------------------------------------
-glob = comin.descrdata_get_global()
-DEVICE_FLAG = comin.COMIN_FLAG_DEVICE if glob.has_device else 0
 comm = MPI.Comm.f2py(comin.parallel_get_host_mpi_comm())
 compute_comm, rank, n_ranks, has_gpu = setup_mpi_dist(comm)
 # The cell exchange needs every work rank; the runscript puts 4 per node.
@@ -95,7 +93,7 @@ _counts = np.empty((n_ranks, N_BACKBONE), dtype=np.int64)
 compute_comm.Allgather(np.bincount(_owned_glb // REFINEMENT, minlength=N_BACKBONE), _counts)
 _owner = _counts.argmax(axis=0)
 _backbone = np.flatnonzero(_owner == rank)
-exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT)
+exchange = CellExchange.build(compute_comm, _owned_local, _owned_glb, _owner, _backbone, REFINEMENT, DEVICE)
 mgrids = patch_mgrid(global_mgrid, torch.from_numpy(_backbone))
 del global_mgrid
 _per_rank = np.bincount(_owner, minlength=n_ranks)
@@ -124,16 +122,17 @@ def _seconds() -> float:
 
 
 def _patch() -> torch.Tensor:
-    """Collective: this rank's patch of the ICON variable, (n_fine, nlev) on the GPU."""
-    cells = extract_icon_cells(State.icon_var, domain.cells.ncells)
-    cells = cells.get() if hasattr(cells, "get") else cells  # cupy -> numpy for MPI
-    return torch.from_numpy(exchange.to_patch(compute_comm, cells.reshape(len(cells), -1))).to(DEVICE)
+    """Collective: this rank's patch of the ICON variable, (n_fine, nlev),
+    exchanged without leaving the GPU."""
+    n = domain.cells.ncells
+    cells = torch.as_tensor(extract_icon_cells(State.icon_var, n), device=DEVICE).reshape(n, -1)
+    return exchange.to_patch(compute_comm, cells)
 
 
 def _write(forecast: torch.Tensor) -> None:
     """Collective: the forecast's owned cells into ``var_predict``."""
-    owned = exchange.from_patch(compute_comm, forecast.cpu().numpy())
-    insert_icon_cells(owned.astype(np.float64), State.predict_var, indices=exchange.send_ids)
+    owned = exchange.from_patch(compute_comm, forecast)
+    insert_icon_cells(owned.double(), State.predict_var, indices=exchange.owned_ids)
 
 
 def _trainer(nlev: int) -> OnlineFieldSpaceAE:
@@ -168,8 +167,8 @@ comin.metadata_set(("var_predict", DOMAIN_ID), zaxis_id=comin.COMIN_ZAXIS_2D)
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
 def sec_ctor():
     ep = [comin.EP_ATM_WRITE_OUTPUT_BEFORE]
-    State.icon_var = comin.var_get(ep, (VARIABLE, DOMAIN_ID), comin.COMIN_FLAG_READ | DEVICE_FLAG)
-    State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | DEVICE_FLAG)
+    State.icon_var = comin.var_get(ep, (VARIABLE, DOMAIN_ID), comin.COMIN_FLAG_READ | comin.COMIN_FLAG_DEVICE)
+    State.predict_var = comin.var_get(ep, ("var_predict", DOMAIN_ID), comin.COMIN_FLAG_WRITE | comin.COMIN_FLAG_DEVICE)
 
 
 @comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
