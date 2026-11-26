@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from messe.common.training import RunningMeanStd, mean_stats
+from messe.common_utils.training import RunningMeanStd, mean_stats
 
 
 # ----------------------------------------------------------------------------

@@ -10,7 +10,7 @@ import threading
 import numpy as np
 import torch
 
-from messe.common.nested_grid import CellExchange, ghost_cells, patch_mgrid
+from messe.common_utils.nested_grid import CellExchange, ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
 
 N_BASE = 12  # backbone cells of the synthetic globe

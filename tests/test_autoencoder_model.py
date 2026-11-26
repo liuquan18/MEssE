@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from messe.other_models.autoencoder.model import OnlineFieldSpaceAE
-from messe.common.nested_grid import patch_mgrid
+from messe.common_utils.nested_grid import patch_mgrid
 from test_nested_grid import synthetic_global_mgrid
 
 LEVELS, LATENT_LEVEL, N_HISTORY, NLEV = [0, 2, 3, 4], 2, 3, 1

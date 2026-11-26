@@ -9,7 +9,7 @@ import yaml
 
 from messe.reconstructor_forecaster.config import ORIENTATION_NAMES, POSITION_NAMES, load_config
 from messe.reconstructor_forecaster.model import OnlineReconstructorForecaster
-from messe.common.nested_grid import ghost_cells, patch_mgrid
+from messe.common_utils.nested_grid import ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
 from test_nested_grid import synthetic_global_mgrid
 

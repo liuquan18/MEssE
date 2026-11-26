@@ -7,7 +7,7 @@ import datetime
 import numpy as np
 import pytest
 
-from messe.common.icon_data import extract_icon_cells, insert_icon_cells, parse_icon_datetime, sample_interval
+from messe.common_utils.icon_data import extract_icon_cells, insert_icon_cells, parse_icon_datetime, sample_interval
 
 
 # ----------------------------------------------------------------------------
