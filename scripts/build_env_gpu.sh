@@ -54,7 +54,6 @@ printf '{ yac_*; };\n' > yac_export.list
 sed -i "s|^LDFLAGS=.*|& -Wl,--dynamic-list=$(pwd)/yac_export.list|" icon.mk
 
 make -j $(nproc)
-./make_runscripts --all
 
 popd
 
