@@ -14,10 +14,10 @@ if [[ $# -ne 1 ]]; then
     exit 1
 fi
 
-BASEDIR="$1"
+BASE_DIR="$1"
 # check directory exists
-if [[ ! -d "$BASEDIR" ]]; then
-    echo "Error: directory does not exist: $BASEDIR" >&2
+if [[ ! -d "$BASE_DIR" ]]; then
+    echo "Error: directory does not exist: $BASE_DIR" >&2
     exit 1
 fi
 
@@ -40,31 +40,14 @@ pip install --upgrade "jax[cuda13]"
 
 # clone the repositories
 ICON_DIR_NAME=icon-model
+git clone --recursive https://git.gitlab.dkrz.de/icon/icon-model.git $SRC_DIR/$ICON_DIR_NAME
 
-git_checkout_or_update() {
-    local repo_url="$1"
-    local branch="$2"
-    local target_dir="$3"
-
-    if [[ -d "$target_dir/.git" ]]; then
-        echo "Using existing checkout in $target_dir"
-        git -C "$target_dir" fetch --all --prune
-        git -C "$target_dir" checkout "$branch"
-        git -C "$target_dir" pull --rebase
-    else
-        echo "Cloning fresh checkout into $target_dir"
-        git clone -b "$branch" --recurse-submodules -j8 "$repo_url" "$target_dir"
-    fi
-}
-
-git_checkout_or_update https://gitlab.dkrz.de/icon/icon-model.git release-2025.10-public $SRC_DIR/$ICON_DIR_NAME
 
 # out-of-source builds for icon
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
 mkdir -p $ICON_BUILD_DIR
 pushd $ICON_BUILD_DIR
-# $SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
-$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-ecrad --enable-bundled-python=comin  --disable-silent-rules
+$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
 # Export ICON's YAC symbols globally so the Python yac.so shares the same lookup table
 # --export-dynamic-symbol requires binutils>=2.35; use --dynamic-list for compatibility with RHEL8 ld (~2.30)
 printf '{ yac_*; };\n' > yac_export.list
