@@ -230,7 +230,7 @@ comin.var_request_add(("var_predict", DOMAIN_ID), lmodexclusive=True)
 comin.request_metadata(("var_predict", DOMAIN_ID)).update(zaxis_id=comin.COMIN_ZAXIS_2D)
 
 
-@comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
+@comin.EP_SECONDARY_CONSTRUCTOR
 def sec_ctor():
     ep = [comin.EP_ATM_WRITE_OUTPUT_BEFORE]
     State.icon_var = comin.var_get(ep, (CONFIG.run.icon_var, DOMAIN_ID), comin.COMIN_FLAG_READ | comin.COMIN_FLAG_DEVICE)
@@ -238,7 +238,7 @@ def sec_ctor():
     State.forcing_vars = [comin.var_get(ep, (name, DOMAIN_ID), comin.COMIN_FLAG_READ | comin.COMIN_FLAG_DEVICE) for name in CONFIG.forcings.icon_fields]
 
 
-@comin.register_callback(comin.EP_ATM_WRITE_OUTPUT_BEFORE)
+@comin.EP_ATM_WRITE_OUTPUT_BEFORE
 def sample_step():
     """Acts once per sample interval of model time. All ranks see the same
     ICON time, so they take the same branches, as the exchange and DDP need."""
@@ -311,7 +311,7 @@ def sample_step():
         comin.print_info(f"checkpoint at step {State.step}, {comin.current_get_datetime()}: {CHECKPOINT_PATH}")
 
 
-@comin.register_callback(comin.EP_DESTRUCTOR)
+@comin.EP_DESTRUCTOR
 def destructor():
     if dist.is_initialized():
         dist.destroy_process_group()
