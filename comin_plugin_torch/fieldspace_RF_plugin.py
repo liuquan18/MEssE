@@ -1,80 +1,18 @@
-"""ComIn plugin: online RECONSTRUCTOR + FORECASTER (fieldspace_RF_online.py,
-`.claude/schematic.pdf`) inside a running ICON simulation on its native grid,
-e.g. R2B8.
+"""ComIn plugin: training RECONSTRUCTOR + FORECASTER (RF) in real time while ICON
+is running. 
 
-All settings are in one YAML file, ``config/fieldspace_rf_r2b8.yaml``; the
-runscript points to it with ``MESSE_RF_CONFIG`` (fieldspace_RF_config.py).
-The names below are its keys. The job's log and the experiment folder keep what
-was used.
+ICON in R2B8 is running on 32 GPUs, and the AI model is trained on the same
+devices with DDP. The data on each GPU at each time step is accessed through 
+ComIn. 
 
-Every ICON work rank owns a GPU and one model patch: complete R2B4 backbone
-cells with all their descendants (icon_nested_mgrid.py). With
-``grid.canonical_order`` the patch's cells are in canonical order (every
-backbone cell has its cells at the same places, every cell its 12 neighbours
-in the same order; FieldSpaceNN's icon_grid.py) instead of ICON's, which
-``*.token_overlap_space`` needs: a token then also sees the cells that touch
-its backbone cell. With ``grid.ghost_rings: 1`` the patch ends with the
-backbone cells of other ranks that touch its own; they get their values in the
-same exchange and are context only: losses, log and write-back cover the owned
-cells. Once per
-``run.sample_seconds`` of model time, the owned cells of the ICON variable are
-moved to the patches, the first ``run.dry_run_seconds`` only collect the
-per-cell mean/std, and after that every sample step trains both models and
-forecasts the next sample step.
+ICON is firstly dry run for ``run.dry_run_seconds`` of model time, collecting 
+the per-cell mean/std for normalization. After that, every ``run.sample_seconds`` 
+of model time, the RF is trained. 
 
-``var_predict`` at model time t holds the forecast valid at t, made one sample
-step earlier: the field at t - lead plus the predicted increment. The log
-scores it (``fc_rmse``, in the variable's units; persistence is computed
-offline from the output) and prints, per level, the loss each model is trained on with its
-reference: ``recon`` vs ``state_ms``
-(outputting zero) and, per latent level (``r6`` = the R2B6' latent),
-``latent_mse`` vs ``latent_persist`` (persistence), over the forecaster's
-whole batch.
-
-Forcings are not compressed: they condition the blocks of both models
-(fieldspace_RF_online.py, "Forcings"). The reconstructor gets all but the
-insolation (a clock, job 28418236); the forecaster gets all of them, for its
-forecast slot those at the forecast time as far as known: the insolation then,
-SST and sea ice of now. In this order:
-
-- ``forcings.icon_fields`` (SST, sea ice): ICON fields read from GPU memory at
-  every sample step after the dry run;
-- with ``forcings.insolation``, the TOA incoming shortwave flux computed
-  from the model time and the cell centres (ComIn's ``rsdt`` read as zero);
-- ``forcings.statics`` (orography, ``oromea``): read at startup from
-  ``forcings.static_file``, the file ICON reads them from (``bc_land_sso.nc``
-  in the run directory, on ICON's grid). Not through ComIn: AES reads
-  ``topography_c`` (``orog``) on the host and never copies it to the GPU, so
-  the device copy is zero, and a host read makes ComIn copy that zero device
-  copy over the host values before every callback;
-- with ``forcings.position``, the cell centre as a unit vector on the sphere
-  (``cos_lat_cos_lon``, ``cos_lat_sin_lon``, ``sin_lat``), from the grid
-  file's coordinates (``grid.dir``), not through ComIn. The attention has no
-  other position information;
-- with ``forcings.orientation``, which way the cell's backbone cell is turned
-  (``frame_north``, ``frame_east``: the direction from its centre to its
-  corner A, about (1, 0) for a triangle pointing north and (-1, 0) for one
-  pointing south). In canonical order the cells of a backbone cell pointing
-  south lie turned by 180 degrees.
-
-Each is normalized by one global mean/std over all ranks' patches, taken when
-training starts (a per-cell std would erase static fields). Training stops
-with an error if a forcing has no spread over the globe, i.e. was read wrongly.
-
-The forecaster's batch is the live window plus ``forecaster.replay_batch``
-windows drawn from the replay buffer, which keeps those of the last
-``forecaster.replay_seconds`` of model time (latent replay, 0 = off). The replay
-buffer is not checkpointed: after a restart it fills again. With
-``forecaster.memory_seconds`` > 0, the last forecaster block also reads a
-key/value memory of the earlier windows (`kv_memory.py`); it is not
-checkpointed either, and the log line adds ``memory[gate= scale= age_h=]``:
-the mean gate (0 = local attention only, 1 = memory only), the mean score
-scale, and the age of the read entries before the forecast time.
-
-The log line comes once per ``run.log_seconds`` of model time (one hour):
-every value is the mean over the sample steps since the last line, since single
-steps mostly show how hard that snapshot's weather is. ``step`` is the last
-sample step of the hour, and ``torch_peak_GiB`` the peak so far.
+The forcing fields are `forcings.icon_fields`` (SST, sea ice), ``forcings.insolation``
+(TOA incoming shortwave flux), ``forcings.statics`` (orography, ``oromea``), 
+``forcings.position`` (cell centre as a unit vector on the sphere), and 
+``forcings.orientation`` (the direction of the backbone cell (up or down)).
 
 """
 
@@ -89,6 +27,11 @@ import torch
 import xarray as xr
 import torch.distributed as dist
 from mpi4py import MPI
+
+
+# ComIn adds this file's directory to sys.path; MEssE.* also needs the repo root.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.environ["MESSE_PLUGIN_DIR"])))
+
 
 try:
     _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
