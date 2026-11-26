@@ -47,7 +47,8 @@ git clone --recursive https://git.gitlab.dkrz.de/icon/icon-model.git $SRC_DIR/$I
 ICON_BUILD_DIR=$BUILD_DIR/$ICON_DIR_NAME
 mkdir -p $ICON_BUILD_DIR
 pushd $ICON_BUILD_DIR
-$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules
+$SRC_DIR/$ICON_DIR_NAME/config/dkrz/levante.gpu.nvhpc-24.7 --enable-comin --enable-yac --disable-quincy --disable-rte-rrtmgp --enable-bundled-python=comin  --disable-silent-rules \
+    PYTHON=$PY_ENV_DIR/bin/python3  # the wrapper hardcodes a CI venv (Python 3.10); ComIn's python adapter must embed this env's Python
 # Export ICON's YAC symbols globally so the Python yac.so shares the same lookup table
 # --export-dynamic-symbol requires binutils>=2.35; use --dynamic-list for compatibility with RHEL8 ld (~2.30)
 printf '{ yac_*; };\n' > yac_export.list
