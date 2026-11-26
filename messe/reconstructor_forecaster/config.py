@@ -1,10 +1,10 @@
-"""Configuration of fieldspace_RF_plugin.py, read from one YAML file
+"""Configuration of reconstructor_forecaster/plugin.py, read from one YAML file
 (``config/fieldspace_rf_r2b8.yaml``; the runscript sets ``MESSE_RF_CONFIG``).
 
 There are no defaults here: every key is required and unknown keys are errors,
 so a file always states a whole run and a typo stops it at startup, not after
 the dry run. The attention and compress blocks are not listed in the file:
-`fieldspace_RF_online.autoencoder_configs` derives them from the levels and
+`model.autoencoder_configs` derives them from the levels and
 channels, so their zoom lists always agree.
 """
 
@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 import yaml
 
 # Columns of forcings.position: the cell centre as a unit vector on the sphere,
-# icon_online_helper.cell_position. Horizontal position only; sin_lat is latitude, not height.
+# reconstructor_forecaster.forcings.cell_position. Horizontal position only; sin_lat is latitude, not height.
 POSITION_NAMES = ["cos_lat_cos_lon", "cos_lat_sin_lon", "sin_lat"]
 # Columns of forcings.orientation: which way the backbone cell of a cell is turned, as the north
 # and east component of the unit direction from its centre to its corner A (icon_grid.py).

@@ -1,4 +1,4 @@
-"""Tests for fieldspace_AE_online.py on a small synthetic nested patch.
+"""Tests for other_models/autoencoder/model.py on a small synthetic nested patch.
 
 Levels 0, 2, 3, 4 (backbone 0, level 1 has a grid layer but no data), latent
 level 2: two compression stages. CPU only, no comin, no MPI.
@@ -9,9 +9,9 @@ import math
 import pytest
 import torch
 
-from fieldspace_AE_online import OnlineFieldSpaceAE
-from icon_nested_mgrid import patch_mgrid
-from test_icon_nested_mgrid import synthetic_global_mgrid
+from messe.other_models.autoencoder.model import OnlineFieldSpaceAE
+from messe.common.nested_grid import patch_mgrid
+from test_nested_grid import synthetic_global_mgrid
 
 LEVELS, LATENT_LEVEL, N_HISTORY, NLEV = [0, 2, 3, 4], 2, 3, 1
 T0, DT = 1.78e9, 600.0

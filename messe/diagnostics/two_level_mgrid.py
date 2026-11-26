@@ -15,7 +15,7 @@ neighbors, tiled into the 8 slots -- see
 Two zooms are built:
 
 * Fine zoom (zoom index 1): the rank's own local ICON native-grid patch
-  (owned cells + halo), same node space as `graph_utils.build_local_graph`.
+  (owned cells + halo), same node space as `graph.build_local_graph`.
   Unlike FieldSpaceNN's disk-based `icon_neighbor_cell_index_to_adjc`
   (which assumes a *closed* global grid -- every cell has exactly 3 real
   neighbors), a rank's local patch is not closed: a boundary halo cell can
@@ -57,12 +57,7 @@ import xarray as xr
 
 from fieldspacenn.src.modules.grids.grid_utils import icon_neighbor_cell_index_to_adjc
 
-# Callers (decomposition_probe_plugin.py, and MEssE/tests/conftest.py for unit tests)
-# already put the project root on sys.path before importing this module --
-# see their own _PLUGIN_DIR/_PROJECT_ROOT bootstrap -- so a plain dotted
-# import is safe here without repeating that bootstrap (same approach
-# graph_utils.py itself uses for this same import).
-from MEssE.utils.icon_online_helper import flat_index
+from messe.common.icon_data import flat_index
 
 # The 3 real ICON neighbors tiled into GridLayer's 8 non-self columns,
 # matching fieldspacenn.grid_utils.icon_neighbor_cell_index_to_adjc's
@@ -82,7 +77,7 @@ _GRIDLAYER_POLAR_FIX_COLUMNS = (2, 6)
 @dataclass
 class FineAdjacency:
     """Local fine-zoom adjacency, in the same flat node-id space as
-    `graph_utils.LocalGraph` (owned + halo + unused padding)."""
+    `graph.LocalGraph` (owned + halo + unused padding)."""
 
     n_nodes: int
     n_valid: int
@@ -136,7 +131,7 @@ def _local_cell_basics(domain, nproma: int):
     """The handful of per-cell fields every local-grid builder in this
     project needs (n_nodes, n_valid, owned_mask, clon, clat), computed
     directly from COMIN's `domain.cells`. Deliberately not shared with
-    `graph_utils.build_local_graph` (which duplicates this same
+    `graph.build_local_graph` (which duplicates this same
     computation for its own edge-list construction) -- kept as two
     independent, self-contained modules rather than have one import the
     other for a handful of fields.

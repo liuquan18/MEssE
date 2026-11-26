@@ -1,13 +1,8 @@
 """YAC + HEALPix-specific grid setup and face-reshaping helpers.
 
-Used by the interpolation-based UNet plugin (`unet_plugin.py`), which
-regrids the ICON native grid to HEALPix via YAC before training. Kept
-separate from `icon_online_helper.py` (the generic COMIN<->tensor helpers
-and online-training bookkeeping) on purpose: plugins that train directly on
-the ICON native grid (`gnn_plugin.py`, and the eventual native-grid
-FieldSpaceNN plugin — see CLAUDE.md) have no business depending on YAC or
-HEALPix at all. Native-grid training is the direction this project is
-headed in, so this module is expected to shrink, not grow.
+Used only by the UNet plugin (`plugin.py` in this folder), which regrids the
+ICON native grid to HEALPix via YAC before training. The other models train
+on the native grid and do not depend on YAC or HEALPix.
 """
 
 from __future__ import annotations

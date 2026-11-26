@@ -1,4 +1,4 @@
-"""Unit tests for icon_mgrid_utils.build_local_mgrid, using a synthetic
+"""Unit tests for two_level_mgrid.build_local_mgrid, using a synthetic
 stand-in for COMIN's `domain.cells` instead of a live ICON simulation.
 
 Scenario: nproma=11, one block (nblks=1) -> 11 local node slots, all valid
@@ -29,7 +29,7 @@ import numpy as np
 import pytest
 import torch
 
-from icon_mgrid_utils import (
+from messe.diagnostics.two_level_mgrid import (
     CoarseGrid,
     build_fine_adjacency,
     build_local_mgrid,
@@ -242,7 +242,7 @@ def test_fine_adjc_mask_never_masks_gridlayer_polar_fix_columns():
     slot-1/slot-2 neighbor, i.e. would be masked at columns 2 and/or 6
     without the fix in build_local_mgrid). Confirmed on a live run that
     this is not just a toy-test artifact. See
-    icon_mgrid_utils._GRIDLAYER_POLAR_FIX_COLUMNS.
+    two_level_mgrid._GRIDLAYER_POLAR_FIX_COLUMNS.
     """
     domain = _make_domain()
     mgrid = build_local_mgrid(

@@ -55,7 +55,7 @@ the exact forcings. A zoom's forcing value is the mean over its cells.
 
 Neighbours and ghost cells
 --------------------------
-On grids in canonical order (`icon_nested_mgrid`), ``token_overlap_space``
+On grids in canonical order (`common.nested_grid`), ``token_overlap_space``
 gives every token, at each of its zooms, the cells that touch its backbone
 cell from outside (FieldSpaceNN's token overlap). A patch may end with ghost
 backbone cells of other ranks: the blocks see them like any other cell, so the
@@ -134,7 +134,7 @@ from fieldspacenn.src.modules.field_space.field_space_layer import FieldSpaceLay
 from fieldspacenn.src.modules.grids.grid_layer import tokens_with_ring
 from fieldspacenn.src.modules.grids.grid_utils import decode_zooms, encode_zooms, to_zoom
 from fieldspacenn.src.utils.losses import MGMultiLoss
-from kv_memory import KVMemory
+from messe.reconstructor_forecaster.kv_memory import KVMemory
 
 # {zoom: (b, v=1, t, n_zoom, d=nlev, f)}, FieldSpaceNN's layout.
 Levels = Dict[int, torch.Tensor]

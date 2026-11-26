@@ -1,4 +1,4 @@
-"""Tests for fieldspace_RF_online.py on a small synthetic nested patch.
+"""Tests for reconstructor_forecaster/model.py on a small synthetic nested patch.
 
 Levels 0, 2, 3, 4 (backbone 0, level 1 has a grid layer but no data), latent
 level 2: two compression stages. Two forcings unless a test says otherwise:
@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 import torch
 
-from fieldspace_RF_online import ReplayBuffer, OnlineReconstructorForecaster, Window, autoencoder_configs, _BlockConfigs
-from icon_nested_mgrid import ghost_cells, patch_mgrid
+from messe.reconstructor_forecaster.model import ReplayBuffer, OnlineReconstructorForecaster, Window, autoencoder_configs, _BlockConfigs
+from messe.common.nested_grid import ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
-from test_icon_nested_mgrid import synthetic_global_mgrid
+from test_nested_grid import synthetic_global_mgrid
 
 LEVELS, LATENT_LEVEL, N_CONTEXT, NLEV = [0, 2, 3, 4], 2, 3, 1
 N_FORCINGS, RECONSTRUCTOR_FORCINGS = 2, [0]

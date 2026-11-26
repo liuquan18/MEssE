@@ -23,42 +23,21 @@ from yac import (
     Reduction,
 )
 
-try:
-    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    # __file__ may be undefined when COMIN loads the plugin via exec().
-    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
-
-# MEssE.utils.* is a real package (MEssE/__init__.py, MEssE/utils/__init__.py),
-# so importing it needs the repo root (two directories up from this file:
-# .../Project_week_global/MEssE/comin_plugin_torch -> .../Project_week_global)
-# on sys.path — derived from _PLUGIN_DIR above, so it inherits the same
-# __file__-may-be-undefined fallback. If COMIN execs this file with neither a
-# usable __file__ nor MESSE_PLUGIN_DIR set, _PLUGIN_DIR falls back to
-# os.getcwd(), which may not be two levels under the repo root; set
-# MESSE_PLUGIN_DIR explicitly in that case.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-# unet_online is a plain sibling module in this same directory, imported by
-# bare name (not through the MEssE package) — matches how COMIN itself loads
-# this plugin file (flat, no package machinery).
-from unet_online import UNetSnapshot, OnlineUNetTrainer
-from MEssE.utils.icon_online_helper import (
-    setup_mpi_dist,
-    parse_icon_datetime,
-    save_checkpoint,
-    rollback_checkpoint,
+from messe.common.icon_data import (
     extract_icon_cells,
     insert_icon_cells,
-    sample_horizon,
-    enqueue_snapshot,
-    ForecastExample,
+    parse_icon_datetime,
+    setup_mpi_dist,
 )
-from MEssE.utils.healpix_grids import (
+from messe.common.training import rollback_checkpoint, save_checkpoint
+from messe.other_models.unet.model import (
+    ForecastExample,
+    OnlineUNetTrainer,
+    UNetSnapshot,
+    enqueue_snapshot,
+    sample_horizon,
+)
+from messe.other_models.unet.healpix import (
     setup_icon_grid,
     setup_hpx_grid,
     to_hpx_faces,
@@ -78,7 +57,7 @@ EXPERIMENTS_DIR = os.path.abspath(os.getcwd())
 SAVED_MODELS_DIR = os.path.join(EXPERIMENTS_DIR, "saved_models")
 
 os.makedirs(SAVED_MODELS_DIR, exist_ok=True)
-CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet_online.pt")
+CHECKPOINT_PATH = os.path.join(SAVED_MODELS_DIR, "unet.model.pt")
 SNAPSHOTS_DIR = os.path.join(EXPERIMENTS_DIR, "snapshots")
 os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
 DRY_RUN_TIME_SECONDS: int = 2592000  # 1 month

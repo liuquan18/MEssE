@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from fieldspacenn.src.modules.transformer.transformer_base import safe_scaled_dot_product_attention
-from kv_memory import KVMemory
+from messe.reconstructor_forecaster.kv_memory import KVMemory
 
 HEADS, CELLS, CHANNELS = 2, 5, 4
 # Each cell's window: itself, then its neighbours. Cell 4 misses one neighbour (repeated self, not searched).

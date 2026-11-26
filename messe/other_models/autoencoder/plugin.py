@@ -1,9 +1,9 @@
-"""ComIn plugin: online FieldSpace autoencoder forecaster (fieldspace_AE_online.py,
+"""ComIn plugin: online FieldSpace autoencoder forecaster (model.py,
 one model trained with one loss) inside a running ICON simulation on its
 native grid, e.g. R2B8.
 
 Every ICON work rank owns a GPU and one model patch: complete R2B4 backbone
-cells with all their descendants (icon_nested_mgrid.py). Once per
+cells with all their descendants (messe/common/nested_grid.py). Once per
 ``MESSE_AE_SAMPLE_SECONDS`` of model time, the owned cells of the ICON
 variable are moved to the patches, the first ``MESSE_AE_DRY_RUN_SECONDS``
 only collect the per-cell mean/std, and after that every sample step trains
@@ -16,7 +16,6 @@ offline from the output) and prints the per-level losses.
 """
 
 import os
-import sys
 import time
 
 import comin
@@ -25,24 +24,16 @@ import torch
 import torch.distributed as dist
 from mpi4py import MPI
 
-try:
-    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:  # COMIN may exec the plugin without __file__
-    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
-sys.path[:0] = [p for p in (_PLUGIN_DIR, _PROJECT_ROOT) if p not in sys.path]
-
-from fieldspace_AE_online import OnlineFieldSpaceAE
-from icon_nested_mgrid import CellExchange, load_global_mgrid, patch_mgrid
-from MEssE.utils.icon_online_helper import (
-    RunningMeanStd,
+from messe.common.icon_data import (
     extract_icon_cells,
     insert_icon_cells,
     parse_icon_datetime,
     sample_interval,
-    save_checkpoint,
     setup_mpi_dist,
 )
+from messe.common.nested_grid import CellExchange, load_global_mgrid, patch_mgrid
+from messe.common.training import RunningMeanStd, save_checkpoint
+from messe.other_models.autoencoder.model import OnlineFieldSpaceAE
 
 # ----------------------------------------------------------------------------
 # Configuration

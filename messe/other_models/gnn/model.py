@@ -5,7 +5,7 @@ decoder" pattern (see https://github.com/ecmwf/anemoi), but message
 passing is implemented directly in PyTorch (scatter-add via
 ``index_add_``) rather than depending on ``torch_geometric``/``anemoi``,
 since neither is a prerequisite of this repository and the local patch
-graph built in :mod:`graph_utils` is small enough (one ICON rank's
+graph built in :mod:`graph` is small enough (one ICON rank's
 domain-decomposed cells) that a hand-rolled interaction network is
 sufficient. If ``anemoi-models``/``torch_geometric`` are available in the
 runtime environment this module can be swapped for their processor
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -29,13 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from graph_utils import LocalGraph
-
-# Online normalization (RunningMeanStd) and fixed-horizon scheduling
-# (RolloutBuffer) are generic, model-agnostic bookkeeping — not specific to
-# this GNN — and live in online_training.py, shared with unet_plugin.py and
-# the eventual FieldSpaceNN plugin. gnn_plugin.py imports them from there
-# directly, not from this module.
+from messe.other_models.gnn.graph import LocalGraph
 
 
 def _mlp(in_dim: int, hidden_dim: int, out_dim: int, n_hidden: int = 1) -> nn.Sequential:
@@ -287,3 +281,58 @@ class OnlineGNNTrainer:
         for _ in range(n_steps):
             x = self._forward(x)
         return x
+
+
+# ----------------------------------------------------------------------------
+# Fixed-horizon, single-target scheduling
+# ----------------------------------------------------------------------------
+
+
+class RolloutBuffer:
+    """Accumulates a source snapshot and waits ``n_steps`` pushes for a
+    single target ``n_steps`` steps later.
+
+    ``n_steps`` is a horizon *distance*, not a window length: the loss is
+    evaluated exactly once per training example, against the one real
+    snapshot observed ``n_steps`` steps after the source — snapshots pushed
+    in between are not kept or compared against. The model computation
+    itself still rolls forward autoregressively through that ``n_steps``
+    gap, feeding each step's own prediction back in (see
+    `gnn.model.OnlineGNNTrainer.train_rollout_step`); this class only
+    controls *when* the loss gets evaluated, not how many forward passes
+    the model takes to get there. For a horizon that varies randomly each
+    round instead of a fixed one, see :func:`sample_horizon` below.
+
+    Pure bookkeeping over whatever snapshot object is pushed in — no
+    `comin`/MPI dependency — so it is unit-testable standalone.
+    """
+
+    def __init__(self, n_steps: int) -> None:
+        self.n_steps = int(n_steps)
+        self.source: Optional[Any] = None
+        self._pushes_since_source = 0
+
+    def push(self, snapshot: Any) -> Optional[Tuple[Any, Any]]:
+        """Push the latest snapshot.
+
+        Returns ``(source, target)`` once ``n_steps`` pushes have occurred
+        since the current source was set, else ``None``. After a pair is
+        returned, the just-pushed snapshot becomes the *next* example's
+        source — the horizon slides forward rather than resetting to empty.
+        """
+        if self.source is None:
+            self.source = snapshot
+            self._pushes_since_source = 0
+            return None
+        self._pushes_since_source += 1
+        if self._pushes_since_source < self.n_steps:
+            return None
+        ready = (self.source, snapshot)
+        self.source = snapshot
+        self._pushes_since_source = 0
+        return ready
+
+    def reset(self) -> None:
+        self.source = None
+        self._pushes_since_source = 0
+

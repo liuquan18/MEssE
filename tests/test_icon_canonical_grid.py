@@ -218,7 +218,7 @@ def test_local_attention_links_a_token_to_its_12_neighbours_only(scope):
     """One reconstructor-style attention block (tokens on zoom 0, fields on zooms 0 and 1) with
     random weights, so its gates are open: a change in one token's cells reaches, with local
     attention, exactly that token and its 12 neighbours; with global attention, every token."""
-    from fieldspace_RF_online import _BlockConfigs, _sample_configs
+    from messe.reconstructor_forecaster.model import _BlockConfigs, _sample_configs
     from fieldspacenn.src.models.mg_transformer.mg_base_model import MG_base_model, create_encoder_decoder_block
 
     torch.manual_seed(0)
@@ -257,7 +257,7 @@ def test_local_forecaster_links_old_time_tokens_to_the_forecast_in_the_window_on
     cell and its 12 neighbours. With token_len_time 3 the oldest slot is in the other time token
     than the forecast, so it gets there only by attention over time tokens; with 6 (packed) it is
     in the forecast's own token."""
-    from fieldspace_RF_online import Forecaster, _BlockConfigs
+    from messe.reconstructor_forecaster.model import Forecaster, _BlockConfigs
     from fieldspacenn.src.models.mg_transformer.mg_base_model import MG_base_model
 
     torch.manual_seed(0)
@@ -286,7 +286,7 @@ def test_local_forecaster_links_old_time_tokens_to_the_forecast_in_the_window_on
 
 
 def test_forecaster_token_len_time_must_divide_the_slots():
-    from fieldspace_RF_online import Forecaster, _BlockConfigs
+    from messe.reconstructor_forecaster.model import Forecaster, _BlockConfigs
     from fieldspacenn.src.models.mg_transformer.mg_base_model import MG_base_model
 
     layers = MG_base_model(canonical_mgrid(*icosahedral_grid(2), 2)).grid_layers

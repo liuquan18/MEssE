@@ -1,4 +1,4 @@
-# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8: fieldspace_rf_r2b8_neighbours_local_pos.yaml
+# RF plugin (messe/reconstructor_forecaster/plugin.py) at R2B8: fieldspace_rf_r2b8_neighbours_local_pos.yaml
 # (job 28880044) with a forecaster that attends locally in space and over time:
 #   - attention: local (was global): each R2B4 token attends to itself + its 12 neighbouring R2B4 tokens;
 #   - token_len_time: 3 (was all slots packed in one token), so a token holds 3 consecutive time slots

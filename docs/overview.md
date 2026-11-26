@@ -34,9 +34,9 @@ ICON-atmosphere R4B4, traning on the variable "pres_fsc" with UNet architecture,
 ![snapshot](./assets/snapshots.gif)
 
 
-## GNN on the ICON native grid (`gnn_plugin.py`)
+## GNN on the ICON native grid (`messe/other_models/gnn/`)
 
-`comin_plugin_torch/gnn_plugin.py` is an alternative to the UNet/HEALPix
+`messe/other_models/gnn/plugin.py` is an alternative to the UNet/HEALPix
 plugin that trains a graph neural network **directly on the ICON native
 (triangular) grid**, avoiding YAC and HEALPix interpolation entirely.
 
@@ -46,7 +46,7 @@ Design:
   cells plus a halo ring shared by ICON's own MPI halo exchange). We treat
   that region as one training sample/graph, so the GPU layout and DDP
   world are inherited unmodified from ICON.
-* **Graph construction** (`graph_utils.py`): nodes are all local cells
+* **Graph construction** (`graph.py`): nodes are all local cells
   returned by COMIN for a rank (owned + halo), edges come from ICON's
   native cell-to-cell adjacency (`domain.cells.neighbor_idx`/`neighbor_blk`),
   added in both directions with self-loops. Halo cells are kept as
@@ -54,18 +54,18 @@ Design:
   boundary cells still receive correct neighbor information.
 * **`nproma` vs. owned+halo cell count**: `glob.nproma` is only the block
   length used to flatten COMIN's `(idx, blk)` addressing into a single
-  flat id (`graph_utils._flat_index`); it is *not* the number of local
+  flat id (`common.icon_data.flat_index`); it is *not* the number of local
   cells. The padded per-rank node array has size
   `n_nodes = domain.cells.nblks * nproma` (`LocalGraph.n_nodes`), which
   includes unused block padding. The actual owned+halo cell count is
   `domain.cells.ncells` (`LocalGraph.n_valid`), which is `<= n_nodes`.
-* **Halo handling**: `utils.extract_icon_cells(data, domain.cells.ncells)`
+* **Halo handling**: `common.icon_data.extract_icon_cells(data, domain.cells.ncells)`
   returns owned **and** halo cells (halos are *not* excluded) — this is
   needed so the GNN's message passing has correct input features for
   nodes near the patch boundary. Halo predictions are never written back
-  to ICON: `gnn_plugin.py` masks the model output with
+  to ICON: the GNN plugin masks the model output with
   `LocalGraph.owned_mask` (`domain.cells.decomp_domain == 0`) before
-  calling `utils.insert_icon_cells(..., indices=owned_idx)`, and the
+  calling `common.icon_data.insert_icon_cells(..., indices=owned_idx)`, and the
   training loss is likewise masked to owned cells only
   (`OnlineGNNTrainer._masked_mse`), so halo cells only ever pass messages
   and never contribute to the loss or the model's output.

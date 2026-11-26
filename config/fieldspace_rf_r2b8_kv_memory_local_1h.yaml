@@ -1,4 +1,4 @@
-# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8: the local forecaster of
+# RF plugin (messe/reconstructor_forecaster/plugin.py) at R2B8: the local forecaster of
 # Copy of fieldspace_rf_r2b8_kv_memory_local.yaml (job 29150124) with memory_seconds 3600 (1 hour) instead of
 # 86400 (1 day), to compare the effect of the memory length by region.
 # fieldspace_rf_r2b8_local_t3.yaml with a kNN key/value memory (Memorizing Transformers,

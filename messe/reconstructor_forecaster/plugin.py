@@ -18,7 +18,6 @@ The forcing fields are `forcings.icon_fields`` (SST, sea ice), ``forcings.insola
 
 import os
 import shutil
-import sys
 import time
 
 import comin
@@ -26,36 +25,21 @@ import numpy as np
 import torch
 import xarray as xr
 import torch.distributed as dist
+from fieldspacenn.src.data.normalizer import MeanStdNormalizer
 from mpi4py import MPI
 
-
-# ComIn adds this file's directory to sys.path; MEssE.* also needs the repo root.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.environ["MESSE_PLUGIN_DIR"])))
-
-
-try:
-    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:  # COMIN may exec the plugin without __file__
-    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
-sys.path[:0] = [p for p in (_PLUGIN_DIR, _PROJECT_ROOT) if p not in sys.path]
-
-from fieldspace_RF_config import load_config
-from fieldspace_RF_online import OnlineReconstructorForecaster
-from fieldspacenn.src.data.normalizer import MeanStdNormalizer
-from icon_nested_mgrid import CellExchange, ghost_cells, load_global_mgrid, patch_mgrid
-from MEssE.utils.icon_online_helper import (
-    RunningMeanStd,
-    cell_position,
-    toa_insolation,
+from messe.common.icon_data import (
     extract_icon_cells,
     insert_icon_cells,
-    mean_stats,
     parse_icon_datetime,
     sample_interval,
-    save_checkpoint,
     setup_mpi_dist,
 )
+from messe.common.nested_grid import CellExchange, ghost_cells, load_global_mgrid, patch_mgrid
+from messe.common.training import RunningMeanStd, mean_stats, save_checkpoint
+from messe.reconstructor_forecaster.config import load_config
+from messe.reconstructor_forecaster.forcings import cell_position, toa_insolation
+from messe.reconstructor_forecaster.model import OnlineReconstructorForecaster
 
 # ----------------------------------------------------------------------------
 # Configuration

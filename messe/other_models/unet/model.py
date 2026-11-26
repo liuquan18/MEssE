@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import os
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import math
@@ -13,19 +10,6 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
-
-
-def _ensure_fieldspacenn_on_path() -> None:
-    env_root = os.environ.get("FIELDSPACENN_ROOT", "")
-    if env_root:
-        fieldspacenn_root = Path(env_root).resolve()
-    else:
-        src_root = Path(__file__).resolve().parents[2]
-        fieldspacenn_root = src_root / "FieldSpaceNN"
-    if fieldspacenn_root.exists():
-        path = str(fieldspacenn_root)
-        if path not in sys.path:
-            sys.path.insert(0, path)
 
 
 def _build_fscnn(nlev: int, model_channels: int = 64) -> nn.Module:
@@ -95,8 +79,6 @@ class OnlineUNetTrainer:
         log_fn: Optional[Callable[[str], None]] = None,
         rank: Optional[int] = None,
     ) -> None:
-        _ensure_fieldspacenn_on_path()
-
         self.nlev = int(nlev)
         self.device = torch.device("cuda", 0) if device is None else device
         self.grad_clip = grad_clip
@@ -232,3 +214,53 @@ class OnlineUNetTrainer:
         self.model.eval()
         pred = self.forward_model(self._to_cnn_input(snapshot.faces), emb=None)
         return self._from_cnn_output(pred)
+
+
+# ----------------------------------------------------------------------------
+# Single-target, variable-horizon scheduling
+# ----------------------------------------------------------------------------
+
+
+def sample_horizon(compute_rank: int, max_horizon: int) -> int:
+    """Sample a random forecast horizon in [1, max_horizon].
+    Only compute rank 0 samples the horizon, then broadcasts it to all ranks
+    so every rank trains on the same horizon this round.
+    """
+    horizon_t = torch.zeros(1, dtype=torch.int64, device="cuda")
+    if compute_rank == 0:
+        horizon_t[0] = torch.randint(1, max_horizon + 1, (1,)).item()
+    dist.broadcast(horizon_t, src=0)
+    return int(horizon_t.item())
+
+
+@dataclass
+class ForecastExample:
+    """A pending (source, due future step) training example: source ->
+    a single target ``horizon`` steps ahead. ``mean``/``std`` ride along so
+    the prediction can be denormalized once the target snapshot arrives,
+    keeping the example self-contained regardless of the source snapshot
+    type (works with any model's snapshot dataclass, e.g.
+    `unet.model.UNetSnapshot`)."""
+
+    source_snapshot: Any
+    horizon: int
+    due_step: int
+    mean: torch.Tensor  # Per-level mean for denormalization
+    std: torch.Tensor  # Per-level std for denormalization
+
+
+def enqueue_snapshot(
+    snapshot: Any,
+    current_step: int,
+    horizon: int,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+) -> ForecastExample:
+    return ForecastExample(
+        source_snapshot=snapshot,
+        horizon=horizon,
+        due_step=current_step + horizon,
+        mean=mean,
+        std=std,
+    )
+

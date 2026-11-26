@@ -1,4 +1,4 @@
-"""Tests for icon_nested_mgrid.py: rank patches and the cell exchange.
+"""Tests for common/nested_grid.py: rank patches and the cell exchange.
 
 Synthetic nested grids in FieldSpaceNN's ``mgrids`` format. The exchange runs
 on an in-process communicator (one thread per rank) with mpi4py's
@@ -10,7 +10,7 @@ import threading
 import numpy as np
 import torch
 
-from icon_nested_mgrid import CellExchange, ghost_cells, patch_mgrid
+from messe.common.nested_grid import CellExchange, ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
 
 N_BASE = 12  # backbone cells of the synthetic globe

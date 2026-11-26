@@ -1,8 +1,5 @@
-"""Unit tests for gnn_online.py: the GNN model itself and OnlineGNNTrainer.
-
-(RunningMeanStd/RolloutBuffer — the generic online-training bookkeeping
-gnn_plugin.py also uses — live in MEssE.utils.icon_online_helper and are
-tested in test_icon_online_helper.py.)
+"""Unit tests for messe.other_models.gnn.model: the GNN model, OnlineGNNTrainer
+and RolloutBuffer.
 
 All of this runs on CPU with plain synthetic tensors — no comin, no MPI, no
 GPU, no live ICON simulation required. This is deliberately the fast
@@ -17,8 +14,8 @@ import math
 import pytest
 import torch
 
-from gnn_online import GNNModel, GNNSnapshot, OnlineGNNTrainer
-from graph_utils import LocalGraph
+from messe.other_models.gnn.model import GNNModel, GNNSnapshot, OnlineGNNTrainer, RolloutBuffer
+from messe.other_models.gnn.graph import LocalGraph
 
 
 # ----------------------------------------------------------------------------
@@ -165,3 +162,50 @@ def test_predict_preserves_shape():
 
     pred = trainer.predict(snapshot, n_steps=3)
     assert pred.shape == (n_nodes, nlev)
+
+
+# ----------------------------------------------------------------------------
+# RolloutBuffer
+# ----------------------------------------------------------------------------
+
+
+def test_rollout_buffer_fixed_horizon_and_slides():
+    buf = RolloutBuffer(n_steps=3)
+
+    assert buf.push("s0") is None  # becomes source
+    assert buf.push("t1") is None  # 1 step after source
+    assert buf.push("t2") is None  # 2 steps after source
+    ready = buf.push("t3")  # 3 steps after source -> horizon reached
+    assert ready == ("s0", "t3")
+    # Snapshots pushed in between (t1, t2) were never returned or compared.
+
+    # Horizon slides forward: "t3" becomes the next source.
+    assert buf.push("t4") is None
+    assert buf.push("t5") is None
+    ready2 = buf.push("t6")
+    assert ready2 == ("t3", "t6")
+
+
+def test_rollout_buffer_reset():
+    buf = RolloutBuffer(n_steps=2)
+    buf.push("s0")
+    buf.push("t1")
+    assert buf.source is not None
+    assert buf._pushes_since_source == 1
+
+    buf.reset()
+    assert buf.source is None
+    assert buf._pushes_since_source == 0
+    # After reset, the buffer behaves like a fresh one.
+    assert buf.push("s0") is None
+    assert buf.push("t1") is None
+    assert buf.push("t2") == ("s0", "t2")
+
+
+def test_rollout_buffer_single_step_horizon():
+    """n_steps=1 is a degenerate but valid case: every push after the first
+    immediately returns a ready (source, target) pair."""
+    buf = RolloutBuffer(n_steps=1)
+    assert buf.push("s0") is None
+    assert buf.push("t1") == ("s0", "t1")
+    assert buf.push("t2") == ("t1", "t2")

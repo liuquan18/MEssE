@@ -1,4 +1,4 @@
-# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8, with ICON's neighbours made usable
+# RF plugin (messe/reconstructor_forecaster/plugin.py) at R2B8, with ICON's neighbours made usable
 # (FieldSpaceNN branch icon_neighbours): canonical cell order, token overlap, ghost cells, orientation.
 # Otherwise as fieldspace_rf_r2b8.yaml (job 28662600). The runscript points to this file
 # with MESSE_RF_CONFIG. Every key is required and unknown keys stop the run at startup. A copy of

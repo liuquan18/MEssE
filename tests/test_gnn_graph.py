@@ -1,4 +1,4 @@
-"""Unit tests for graph_utils.build_local_graph, using a synthetic
+"""Unit tests for graph.build_local_graph, using a synthetic
 stand-in for COMIN's `domain.cells` descriptive data instead of a live
 ICON simulation.
 
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from graph_utils import build_local_graph
+from messe.other_models.gnn.graph import build_local_graph
 
 
 def _make_domain():

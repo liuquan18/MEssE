@@ -1,4 +1,4 @@
-# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8: ICON's neighbours (canonical cell order,
+# RF plugin (messe/reconstructor_forecaster/plugin.py) at R2B8: ICON's neighbours (canonical cell order,
 # token overlap, ghost cells, orientation) and local attention in the reconstructor, without the cell
 # position. As fieldspace_rf_r2b8_neighbours_local_pos.yaml but position: false, to measure the position.
 # The runscript points to this file with MESSE_RF_CONFIG. Every key is required and unknown keys stop the

@@ -1,4 +1,4 @@
-# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8. The runscript points to this file
+# RF plugin (messe/reconstructor_forecaster/plugin.py) at R2B8. The runscript points to this file
 # with MESSE_RF_CONFIG. Every key is required and unknown keys stop the run at startup. A copy of
 # the file goes to the experiment folder, so edit it freely between jobs.
 

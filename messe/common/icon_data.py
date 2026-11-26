@@ -1,42 +1,13 @@
-"""Generic, YAC/HEALPix-independent helpers for online (in-simulation)
-training: moving data between COMIN and PyTorch, MPI/DDP process-group
-bootstrap, checkpoint I/O, online normalization statistics, and turning a
-stream of per-timestep snapshots into training examples.
+"""Moving data between ICON (through ComIn) and PyTorch, used by every plugin.
 
-Every online-training plugin (`unet_plugin.py`, `gnn_plugin.py`, and the
-eventual FieldSpaceNN plugin) needs all of this, and none of it is specific
-to a model architecture or to a grid (HEALPix vs. ICON native) — nothing
-here assumes an interpolation step (YAC) or a specific target grid. This is
-what lets plugins that train directly on the ICON native grid
-(`gnn_plugin.py`) depend on this module without dragging in `yac`/`healpy`
-at import time. The YAC- and HEALPix-specific counterparts (grid setup,
-HEALPix face reshaping) used by the interpolation-based UNet plugin live in
-`healpix_grids.py`, a sibling module in this package.
+- `setup_mpi_dist`: split ICON's MPI ranks into GPU ranks and start DDP;
+- `extract_icon_cells` / `insert_icon_cells` / `flat_index`: ComIn's (nproma, nlev, nblks)
+  arrays <-> flat per-cell arrays;
+- `parse_icon_datetime`, `sample_interval`: ICON's clock.
 
-Two schemes are used for turning per-timestep pushes into a (source,
-target) training example, both single-target (one loss evaluation per
-example, not one per intermediate step) but differing in how the horizon
-is chosen:
-  - `RolloutBuffer` — a *fixed* horizon of ``n_steps``: waits for
-    ``n_steps`` pushes after a source, then pairs the source with that
-    single target. The model still rolls forward autoregressively through
-    the ``n_steps`` gap using its own predictions (see
-    `gnn_online.OnlineGNNTrainer.train_rollout_step`) — only the loss
-    evaluation is single-target, not the forward computation.
-    (`gnn_plugin.py`.)
-  - `sample_horizon` / `ForecastExample` / `enqueue_snapshot` — a
-    *randomly sampled* horizon each round instead of a fixed one,
-    otherwise the same single-target idea. (`unet_plugin.py`.)
-
-``cupy`` is optional: if a CUDA-capable cupy is not importable (no GPU, or
-a numpy/cupy version mismatch), array ops fall back to numpy. Every array
-this module hands back is immediately wrapped in a torch tensor by
-callers, so correctness only depends on producing a plain array-like
-object. `mpi4py` is imported lazily inside `setup_mpi_dist` (not at module
-level): merely importing it triggers an implicit `MPI_Init`, which aborts
-the process outside a real MPI job on some builds — keeping the import
-local means the rest of this module stays importable, and unit-testable,
-without an MPI job context.
+``cupy`` is optional: without a usable GPU, array ops fall back to numpy. ``mpi4py`` is
+imported inside `setup_mpi_dist` only, because importing it calls ``MPI_Init``, which
+aborts the process outside an MPI job (e.g. in the unit tests).
 """
 
 from __future__ import annotations
@@ -45,8 +16,7 @@ import datetime
 import os
 import socket
 import sys
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -140,173 +110,6 @@ def setup_mpi_dist(comm):
 
 
 # ----------------------------------------------------------------------------
-# Online normalization statistics
-# ----------------------------------------------------------------------------
-
-
-@dataclass
-class NormalizationStats:
-    mean: torch.Tensor
-    std: torch.Tensor
-
-
-class RunningMeanStd:
-    """Accumulates per-node mean/std over a fixed number of samples, then freezes.
-
-    Pure tensor bookkeeping — the caller is responsible for feeding it one
-    already-extracted sample per step via :meth:`update`.
-    """
-
-    def __init__(
-        self,
-        shape: Tuple[int, ...],
-        n_samples: int,
-        device: torch.device,
-        eps: float = 1e-6,
-    ) -> None:
-        self.n_samples = int(n_samples)
-        self.eps = eps
-        self.count = 0
-        self._sum = torch.zeros(shape, dtype=torch.float64, device=device)
-        self._sumsq = torch.zeros(shape, dtype=torch.float64, device=device)
-        self.stats: Optional[NormalizationStats] = None
-
-    @property
-    def done(self) -> bool:
-        return self.stats is not None
-
-    def update(self, x: torch.Tensor) -> bool:
-        """Accumulate one sample. Returns True once statistics are frozen.
-
-        No-op (returns True immediately) once already done, so callers can
-        call this unconditionally every step without checking ``done`` first.
-        """
-        if self.done:
-            return True
-        x64 = x.double()
-        self._sum += x64
-        self._sumsq += x64 * x64
-        self.count += 1
-        if self.count >= self.n_samples:
-            mean = (self._sum / self.count).float()
-            e_x2 = (self._sumsq / self.count).float()
-            var = torch.clamp(e_x2 - mean * mean, min=self.eps)
-            self.stats = NormalizationStats(mean=mean, std=torch.sqrt(var))
-        return self.done
-
-    def normalize(self, x: torch.Tensor) -> torch.Tensor:
-        assert self.stats is not None, "RunningMeanStd: statistics not finalized yet"
-        return (x - self.stats.mean) / self.stats.std
-
-    def denormalize(self, x: torch.Tensor) -> torch.Tensor:
-        assert self.stats is not None, "RunningMeanStd: statistics not finalized yet"
-        return x * self.stats.std + self.stats.mean
-
-
-# ----------------------------------------------------------------------------
-# Fixed-horizon, single-target scheduling
-# ----------------------------------------------------------------------------
-
-
-class RolloutBuffer:
-    """Accumulates a source snapshot and waits ``n_steps`` pushes for a
-    single target ``n_steps`` steps later.
-
-    ``n_steps`` is a horizon *distance*, not a window length: the loss is
-    evaluated exactly once per training example, against the one real
-    snapshot observed ``n_steps`` steps after the source — snapshots pushed
-    in between are not kept or compared against. The model computation
-    itself still rolls forward autoregressively through that ``n_steps``
-    gap, feeding each step's own prediction back in (see
-    `gnn_online.OnlineGNNTrainer.train_rollout_step`); this class only
-    controls *when* the loss gets evaluated, not how many forward passes
-    the model takes to get there. For a horizon that varies randomly each
-    round instead of a fixed one, see :func:`sample_horizon` below.
-
-    Pure bookkeeping over whatever snapshot object is pushed in — no
-    `comin`/MPI dependency — so it is unit-testable standalone.
-    """
-
-    def __init__(self, n_steps: int) -> None:
-        self.n_steps = int(n_steps)
-        self.source: Optional[Any] = None
-        self._pushes_since_source = 0
-
-    def push(self, snapshot: Any) -> Optional[Tuple[Any, Any]]:
-        """Push the latest snapshot.
-
-        Returns ``(source, target)`` once ``n_steps`` pushes have occurred
-        since the current source was set, else ``None``. After a pair is
-        returned, the just-pushed snapshot becomes the *next* example's
-        source — the horizon slides forward rather than resetting to empty.
-        """
-        if self.source is None:
-            self.source = snapshot
-            self._pushes_since_source = 0
-            return None
-        self._pushes_since_source += 1
-        if self._pushes_since_source < self.n_steps:
-            return None
-        ready = (self.source, snapshot)
-        self.source = snapshot
-        self._pushes_since_source = 0
-        return ready
-
-    def reset(self) -> None:
-        self.source = None
-        self._pushes_since_source = 0
-
-
-# ----------------------------------------------------------------------------
-# Single-target, variable-horizon scheduling
-# ----------------------------------------------------------------------------
-
-
-def sample_horizon(compute_rank: int, max_horizon: int) -> int:
-    """Sample a random forecast horizon in [1, max_horizon].
-    Only compute rank 0 samples the horizon, then broadcasts it to all ranks
-    so every rank trains on the same horizon this round.
-    """
-    horizon_t = torch.zeros(1, dtype=torch.int64, device="cuda")
-    if compute_rank == 0:
-        horizon_t[0] = torch.randint(1, max_horizon + 1, (1,)).item()
-    dist.broadcast(horizon_t, src=0)
-    return int(horizon_t.item())
-
-
-@dataclass
-class ForecastExample:
-    """A pending (source, due future step) training example: source ->
-    a single target ``horizon`` steps ahead. ``mean``/``std`` ride along so
-    the prediction can be denormalized once the target snapshot arrives,
-    keeping the example self-contained regardless of the source snapshot
-    type (works with any model's snapshot dataclass, e.g.
-    `unet_online.UNetSnapshot`)."""
-
-    source_snapshot: Any
-    horizon: int
-    due_step: int
-    mean: torch.Tensor  # Per-level mean for denormalization
-    std: torch.Tensor  # Per-level std for denormalization
-
-
-def enqueue_snapshot(
-    snapshot: Any,
-    current_step: int,
-    horizon: int,
-    mean: torch.Tensor,
-    std: torch.Tensor,
-) -> ForecastExample:
-    return ForecastExample(
-        source_snapshot=snapshot,
-        horizon=horizon,
-        due_step=current_step + horizon,
-        mean=mean,
-        std=std,
-    )
-
-
-# ----------------------------------------------------------------------------
 # COMIN <-> tensor data marshalling
 # ----------------------------------------------------------------------------
 
@@ -318,7 +121,7 @@ def flat_index(idx: np.ndarray, blk: np.ndarray, nproma: int) -> np.ndarray:
     used throughout this module (:func:`extract_icon_cells`/
     :func:`insert_icon_cells`) and by every local-patch grid/graph builder
     that addresses cells in COMIN's native (nproma, nblks) layout
-    (``graph_utils.build_local_graph``, ``icon_mgrid_utils``).
+    (``graph.build_local_graph``, ``two_level_mgrid``).
     """
     return (blk.astype(np.int64) - 1) * nproma + (idx.astype(np.int64) - 1)
 
@@ -341,53 +144,11 @@ def sample_interval(wanted_seconds: float, step_seconds: float) -> Tuple[int, in
     return stride, int(round(stride * float(step_seconds)))
 
 
-def mean_stats(rows: Sequence[Dict]) -> Dict:
-    """Mean over log rows with the same keys, whose values are numbers or
-    ``{level: number}`` dicts (e.g. a trainer's per-step stats)."""
-    means = {}
-    for key, value in rows[0].items():
-        if isinstance(value, dict):
-            means[key] = {level: sum(row[key][level] for row in rows) / len(rows) for level in value}
-        else:
-            means[key] = sum(row[key] for row in rows) / len(rows)
-    return means
-
-
 def parse_icon_datetime(iso_str: str) -> datetime.datetime:
     """Parse the ISO 8601 string returned by comin.current_get_datetime()."""
     clean = str(iso_str).split(".")[0].rstrip("Z")
     dt = datetime.datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S")
     return dt.replace(tzinfo=datetime.timezone.utc)
-
-
-def toa_insolation(unix_seconds: float, lon: torch.Tensor, lat: torch.Tensor, tsi: float = 1361.0) -> torch.Tensor:
-    """Incoming shortwave flux at the top of the atmosphere [W/m2] at UTC time
-    ``unix_seconds`` for cell centres ``lon``/``lat`` [radian]:
-    ``tsi * (r0/r)^2 * max(0, cos(solar zenith angle))``, the form of ICON's
-    AES ``rsdt = rsdt0 * cosmu0``. Declination, equation of time and
-    Earth-Sun distance from Spencer (1971), accurate to a few W/m2."""
-    time = datetime.datetime.fromtimestamp(unix_seconds, tz=datetime.timezone.utc)
-    start = datetime.datetime(time.year, 1, 1, tzinfo=time.tzinfo)
-    year_days = (datetime.datetime(time.year + 1, 1, 1, tzinfo=time.tzinfo) - start).days
-    day = (time - start).total_seconds() / 86400.0  # fractional day of the year, 0 at Jan 1 00 UTC
-    g = 2 * np.pi * day / year_days
-    declination = (0.006918 - 0.399912 * np.cos(g) + 0.070257 * np.sin(g) - 0.006758 * np.cos(2 * g)
-                   + 0.000907 * np.sin(2 * g) - 0.002697 * np.cos(3 * g) + 0.00148 * np.sin(3 * g))
-    equation_of_time = 229.18 * (0.000075 + 0.001868 * np.cos(g) - 0.032077 * np.sin(g)
-                                 - 0.014615 * np.cos(2 * g) - 0.040849 * np.sin(2 * g))  # minutes
-    distance_factor = (1.000110 + 0.034221 * np.cos(g) + 0.001280 * np.sin(g)
-                       + 0.000719 * np.cos(2 * g) + 0.000077 * np.sin(2 * g))  # (r0/r)^2
-    utc_minutes = (day % 1.0) * 1440.0
-    hour_angle = (utc_minutes + equation_of_time) / 1440.0 * 2 * np.pi + lon - np.pi
-    cos_zenith = torch.sin(lat) * np.sin(declination) + torch.cos(lat) * np.cos(declination) * torch.cos(hour_angle)
-    return tsi * distance_factor * cos_zenith.clamp(min=0)
-
-
-def cell_position(lon: torch.Tensor, lat: torch.Tensor) -> torch.Tensor:
-    """Cell centres ``lon``/``lat`` [radian] as unit vectors on the sphere,
-    (n, 3) = (cos lat cos lon, cos lat sin lon, sin lat): position without the
-    jump of longitude at the dateline or its singularity at the poles."""
-    return torch.stack([torch.cos(lat) * torch.cos(lon), torch.cos(lat) * torch.sin(lon), torch.sin(lat)], dim=1)
 
 
 def extract_icon_cells(data_array, nc: int):
@@ -401,7 +162,7 @@ def extract_icon_cells(data_array, nc: int):
     values (e.g. final predictions written back to ICON) need to further
     filter by ``domain.cells.decomp_domain == 0`` (see
     :func:`insert_icon_cells`'s ``indices`` argument and
-    ``graph_utils.LocalGraph.owned_mask``).
+    ``graph.LocalGraph.owned_mask``).
     """
     data_xp = xp.asarray(data_array)
     # Drop trailing singleton dimensions added by COMIN
@@ -430,7 +191,7 @@ def insert_icon_cells(pred_cells: np.ndarray, buffer, indices: Optional[np.ndarr
         extract_icon_cells) that each row of ``pred_cells`` should be
         written to. Defaults to ``np.arange(n)``, i.e. the first ``n``
         cells (owned + halo, no reordering). Pass e.g. the owned-cell ids
-        from ``graph_utils.LocalGraph.owned_mask`` to only write
+        from ``graph.LocalGraph.owned_mask`` to only write
         predictions for owned cells and leave halo cells untouched.
     """
     n, nlev = pred_cells.shape
@@ -441,62 +202,3 @@ def insert_icon_cells(pred_cells: np.ndarray, buffer, indices: Optional[np.ndarr
     c = np.arange(n) if indices is None else np.asarray(indices)
     # Invert Fortran-order reshape: unravel index c in Fortran order
     buf[c % nproma_val, :, c // nproma_val] = xp.asarray(pred_cells).reshape(n, nlev)
-
-
-# ----------------------------------------------------------------------------
-# Checkpoint load/save helpers
-# ----------------------------------------------------------------------------
-
-
-def save_checkpoint(
-    trainer: Any,
-    checkpoint_path: str,
-    compute_rank: int,
-    step: int,
-    extra: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Save model + optimizer state to ``checkpoint_path``.
-
-    ``trainer`` is any object exposing ``.model`` and ``.optimizer``
-    (``gnn_online.OnlineGNNTrainer``, ``unet_online.OnlineUNetTrainer``, ...).
-    Only compute rank 0 writes to avoid concurrent writes on the shared
-    filesystem; all other GPU ranks return immediately.
-
-    ``extra`` is merged into the saved dict, for state a checkpoint is useless
-    without but that does not live on the model - notably the normalization
-    mean/std, which are derived from the dry run and cannot be recovered from
-    the weights. Keys never override the three written here.
-    """
-    if compute_rank != 0:
-        return
-    payload = dict(extra or {})
-    payload.update(
-        {
-            "model_state_dict": trainer.model.state_dict(),
-            "optimizer_state_dict": trainer.optimizer.state_dict(),
-            "step": step,
-        }
-    )
-    # Write to a temporary file first, then rename for an atomic replace.
-    tmp_path = checkpoint_path + ".tmp"
-    torch.save(payload, tmp_path)
-    os.replace(tmp_path, checkpoint_path)
-
-
-def rollback_checkpoint(trainer: Any, checkpoint_path: str) -> int:
-    """Reload model + optimizer from the last saved checkpoint on all GPU ranks.
-
-    Returns the step stored in the checkpoint, or 0 if no checkpoint exists.
-    All compute ranks reload the same file so weights and optimizer moments stay
-    consistent after a NaN-triggered recovery.
-    """
-    if not os.path.exists(checkpoint_path):
-        return 0
-    ckpt = torch.load(
-        checkpoint_path,
-        map_location=torch.device("cuda", 0),
-        weights_only=False,
-    )
-    trainer.model.load_state_dict(ckpt["model_state_dict"])
-    trainer.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    return int(ckpt.get("step", 0))

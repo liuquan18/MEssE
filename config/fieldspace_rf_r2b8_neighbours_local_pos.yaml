@@ -1,4 +1,4 @@
-# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8, the current main configuration:
+# RF plugin (messe/reconstructor_forecaster/plugin.py) at R2B8, the current main configuration:
 # ICON's neighbours (canonical cell order, token overlap, ghost cells, orientation), local attention in
 # the reconstructor, and the cell position as a forcing (branch lon_lat). Otherwise as
 # fieldspace_rf_r2b8.yaml (job 28662600). The runscript points to this file with MESSE_RF_CONFIG.

@@ -1,27 +1,13 @@
-"""Unit tests for MEssE.utils.icon_online_helper: the generic,
-YAC/HEALPix-independent COMIN<->tensor/MPI helpers, online normalization
-statistics, and per-timestep training-example scheduling shared across
-online-training plugins. Pure numpy/torch — no comin, no MPI, no GPU, no
-live ICON simulation required.
+"""Unit tests for messe.common.icon_data: ComIn arrays <-> flat cell arrays and ICON's
+clock. Pure numpy/torch: no comin, no MPI, no GPU.
 """
 
 import datetime
 
 import numpy as np
 import pytest
-import torch
 
-from MEssE.utils.icon_online_helper import (
-    RolloutBuffer,
-    RunningMeanStd,
-    cell_position,
-    extract_icon_cells,
-    insert_icon_cells,
-    mean_stats,
-    parse_icon_datetime,
-    sample_interval,
-    toa_insolation,
-)
+from messe.common.icon_data import extract_icon_cells, insert_icon_cells, parse_icon_datetime, sample_interval
 
 
 # ----------------------------------------------------------------------------
@@ -123,109 +109,6 @@ def test_insert_icon_cells_respects_indices():
     assert np.allclose(buf[3, :, 0], [0.0, 0.0])
 
 
-# ----------------------------------------------------------------------------
-# RunningMeanStd
-# ----------------------------------------------------------------------------
-
-
-def test_running_mean_std_matches_torch_moments():
-    torch.manual_seed(0)
-    n_samples, shape = 50, (6, 3)
-    samples = torch.randn(n_samples, *shape) * 2.0 + 5.0
-
-    acc = RunningMeanStd(shape=shape, n_samples=n_samples, device=torch.device("cpu"))
-    for i in range(n_samples):
-        done = acc.update(samples[i])
-        assert done == (i == n_samples - 1)
-
-    assert acc.done
-    expected_mean = samples.mean(dim=0)
-    expected_std = samples.std(dim=0, unbiased=False)
-    assert torch.allclose(acc.stats.mean, expected_mean, atol=1e-4)
-    assert torch.allclose(acc.stats.std, expected_std, atol=1e-4)
-
-
-def test_running_mean_std_freezes_after_n_samples():
-    acc = RunningMeanStd(shape=(2,), n_samples=3, device=torch.device("cpu"))
-    acc.update(torch.tensor([1.0, 1.0]))
-    acc.update(torch.tensor([2.0, 2.0]))
-    assert not acc.done
-    acc.update(torch.tensor([3.0, 3.0]))
-    assert acc.done
-    frozen_mean = acc.stats.mean.clone()
-
-    # Further updates must be no-ops once frozen.
-    assert acc.update(torch.tensor([1000.0, -1000.0])) is True
-    assert torch.equal(acc.stats.mean, frozen_mean)
-    assert acc.count == 3
-
-
-def test_running_mean_std_normalize_denormalize_roundtrip():
-    acc = RunningMeanStd(shape=(4,), n_samples=2, device=torch.device("cpu"))
-    acc.update(torch.tensor([1.0, 2.0, 3.0, 4.0]))
-    acc.update(torch.tensor([3.0, 4.0, 5.0, 6.0]))
-    assert acc.done
-
-    x = torch.tensor([2.5, 3.5, 4.5, 5.5])
-    normalized = acc.normalize(x)
-    x_back = acc.denormalize(normalized)
-    assert torch.allclose(x_back, x, atol=1e-5)
-
-
-def test_running_mean_std_raises_before_finalized():
-    acc = RunningMeanStd(shape=(2,), n_samples=5, device=torch.device("cpu"))
-    acc.update(torch.zeros(2))
-    with pytest.raises(AssertionError):
-        acc.normalize(torch.zeros(2))
-
-
-# ----------------------------------------------------------------------------
-# RolloutBuffer
-# ----------------------------------------------------------------------------
-
-
-def test_rollout_buffer_fixed_horizon_and_slides():
-    buf = RolloutBuffer(n_steps=3)
-
-    assert buf.push("s0") is None  # becomes source
-    assert buf.push("t1") is None  # 1 step after source
-    assert buf.push("t2") is None  # 2 steps after source
-    ready = buf.push("t3")  # 3 steps after source -> horizon reached
-    assert ready == ("s0", "t3")
-    # Snapshots pushed in between (t1, t2) were never returned or compared.
-
-    # Horizon slides forward: "t3" becomes the next source.
-    assert buf.push("t4") is None
-    assert buf.push("t5") is None
-    ready2 = buf.push("t6")
-    assert ready2 == ("t3", "t6")
-
-
-def test_rollout_buffer_reset():
-    buf = RolloutBuffer(n_steps=2)
-    buf.push("s0")
-    buf.push("t1")
-    assert buf.source is not None
-    assert buf._pushes_since_source == 1
-
-    buf.reset()
-    assert buf.source is None
-    assert buf._pushes_since_source == 0
-    # After reset, the buffer behaves like a fresh one.
-    assert buf.push("s0") is None
-    assert buf.push("t1") is None
-    assert buf.push("t2") == ("s0", "t2")
-
-
-def test_rollout_buffer_single_step_horizon():
-    """n_steps=1 is a degenerate but valid case: every push after the first
-    immediately returns a ready (source, target) pair."""
-    buf = RolloutBuffer(n_steps=1)
-    assert buf.push("s0") is None
-    assert buf.push("t1") == ("s0", "t1")
-    assert buf.push("t2") == ("t1", "t2")
-
-
 # --------------------------------------------------------------------------
 # sample_interval
 # --------------------------------------------------------------------------
@@ -247,67 +130,3 @@ def test_sample_interval_is_at_least_one_step_and_needs_a_positive_timestep():
     assert sample_interval(5, 60) == (1, 60)         # asked for less than one step
     with pytest.raises(ValueError):
         sample_interval(600, 0)
-
-
-# ----------------------------------------------------------------------------
-# toa_insolation
-# ----------------------------------------------------------------------------
-
-
-def test_toa_insolation_geometry():
-    def at(when, lon_deg, lat_deg):
-        seconds = datetime.datetime(*when, tzinfo=datetime.timezone.utc).timestamp()
-        return float(toa_insolation(seconds, torch.tensor([np.deg2rad(lon_deg)]), torch.tensor([np.deg2rad(lat_deg)]))[0])
-
-    noon_equinox = (2020, 3, 20, 12, 0)
-    assert 1330 < at(noon_equinox, 0, 0) < 1375  # sun near the zenith at 0E, 0N
-    assert at(noon_equinox, 180, 0) == 0  # night side
-    january = (2020, 1, 3, 6, 0)
-    assert at(january, 30, 89.9) == 0  # polar night
-    assert 500 < at(january, 30, -89.9) < 560  # polar day: tsi * sin(22.8 deg) * (r0/r)^2
-
-
-def test_toa_insolation_global_mean_is_a_quarter_of_the_incoming_flux():
-    lon, lat = np.meshgrid(np.linspace(-np.pi, np.pi, 721)[:-1], np.linspace(-np.pi / 2, np.pi / 2, 361))
-    weights = np.cos(lat)
-    for when, distance_factor in [((2020, 1, 3, 17, 0), 1.0342), ((2020, 7, 4, 3, 0), 0.9670)]:
-        seconds = datetime.datetime(*when, tzinfo=datetime.timezone.utc).timestamp()
-        flux = toa_insolation(seconds, torch.from_numpy(lon), torch.from_numpy(lat)).numpy()
-        mean = (flux * weights).sum() / weights.sum()
-        assert abs(mean - 1361 * distance_factor / 4) < 2, (when, mean)
-
-
-# ----------------------------------------------------------------------------
-# cell_position
-# ----------------------------------------------------------------------------
-
-
-def test_cell_position_is_a_unit_vector_without_a_dateline_or_pole_jump():
-    def at(lon_deg, lat_deg):
-        lon, lat = torch.tensor([np.deg2rad(lon_deg)]).float(), torch.tensor([np.deg2rad(lat_deg)]).float()
-        return cell_position(lon, lat)[0]
-
-    torch.testing.assert_close(at(0, 0), torch.tensor([1.0, 0.0, 0.0]))
-    torch.testing.assert_close(at(90, 0), torch.tensor([0.0, 1.0, 0.0]), atol=1e-7, rtol=0)
-    torch.testing.assert_close(at(0, 90), torch.tensor([0.0, 0.0, 1.0]), atol=1e-7, rtol=0)
-    torch.testing.assert_close(at(180, 30), at(-180, 30))  # dateline
-    torch.testing.assert_close(at(10, 90), at(-120, 90), atol=1e-7, rtol=0)  # every longitude at the pole
-
-    lon, lat = torch.rand(1000) * 2 * np.pi - np.pi, torch.rand(1000) * np.pi - np.pi / 2
-    torch.testing.assert_close(cell_position(lon, lat).norm(dim=1), torch.ones(1000))
-
-
-def test_cell_position_global_mean_is_zero_and_std_one_over_sqrt3():
-    # what the plugin's global normalization of the position columns sees
-    lon, lat = np.meshgrid(np.linspace(-np.pi, np.pi, 721)[:-1], np.linspace(-np.pi / 2, np.pi / 2, 361))
-    weights = np.cos(lat).ravel()[:, None]
-    position = cell_position(torch.from_numpy(lon.ravel()), torch.from_numpy(lat.ravel())).numpy()
-    mean = (position * weights).sum(axis=0) / weights.sum()
-    std = np.sqrt((position**2 * weights).sum(axis=0) / weights.sum() - mean**2)
-    np.testing.assert_allclose(mean, 0, atol=1e-3)
-    np.testing.assert_allclose(std, 1 / np.sqrt(3), atol=2e-3)
-
-
-def test_mean_stats_averages_numbers_and_per_level_dicts():
-    rows = [{"recon": {4: 1.0, 8: 3.0}, "fc_rmse": 2.0}, {"recon": {4: 3.0, 8: 5.0}, "fc_rmse": 4.0}]
-    assert mean_stats(rows) == {"recon": {4: 2.0, 8: 4.0}, "fc_rmse": 3.0}

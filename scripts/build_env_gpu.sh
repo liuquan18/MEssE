@@ -123,6 +123,15 @@ make install
 popd
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# MEssE (package `messe`) and FieldSpaceNN as editable installs: the plugins import
+# `messe.*` and `fieldspacenn.*` through the env, and ICON's embedded Python reads them
+# from the env's site-packages. FieldSpaceNN is expected next to MEssE.
+pip install --no-deps --no-build-isolation -e "$SCRIPTS_DIR/.."
+if [[ -d "$SCRIPTS_DIR/../../FieldSpaceNN" ]]; then
+    pip install --no-deps -e "$SCRIPTS_DIR/../../FieldSpaceNN"
+fi
+
 pushd $ICON_BUILD_DIR
 
 

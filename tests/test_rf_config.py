@@ -1,4 +1,4 @@
-"""Tests for fieldspace_RF_config.py: the file states a whole run, or it stops at startup."""
+"""Tests for reconstructor_forecaster/config.py: the file states a whole run, or it stops at startup."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -7,11 +7,11 @@ import pytest
 import torch
 import yaml
 
-from fieldspace_RF_config import ORIENTATION_NAMES, POSITION_NAMES, load_config
-from fieldspace_RF_online import OnlineReconstructorForecaster
-from icon_nested_mgrid import ghost_cells, patch_mgrid
+from messe.reconstructor_forecaster.config import ORIENTATION_NAMES, POSITION_NAMES, load_config
+from messe.reconstructor_forecaster.model import OnlineReconstructorForecaster
+from messe.common.nested_grid import ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
-from test_icon_nested_mgrid import synthetic_global_mgrid
+from test_nested_grid import synthetic_global_mgrid
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config" / "fieldspace_rf_r2b8.yaml"
 LON_LAT_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_lon_lat.yaml")

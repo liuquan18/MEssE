@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "messe"
+version = "0.1.0"
+description = "Online training of AI models inside a running ICON simulation, through ComIn plugins"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+include = ["messe*"]

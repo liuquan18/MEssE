@@ -1,4 +1,4 @@
-"""GPU cost of one sample step of fieldspace_RF_plugin.py at R2B8, without ICON.
+"""GPU cost of one sample step of the RF plugin (reconstructor_forecaster/plugin.py) at R2B8, without ICON.
 
 Splits the R2B8 grid into ``--ranks`` equal-area lat/lon boxes as a stand-in
 for ICON's domain decomposition, assigns backbone cells to ranks as the plugin
@@ -7,7 +7,7 @@ does, builds the largest rank's patch from the real grid files, and times
 by pytest. Run on a GPU node, from the project root:
 
     srun -A mh0033 -p gpu --gpus=1 --time=00:20:00 --mem=64G \\
-        MEssE/build_nwp/messe_env/py_env/bin/python MEssE/tests/bench_fieldspace_RF_r2b8.py
+        MEssE/build_nwp/messe_env/py_env/bin/python MEssE/messe/diagnostics/bench_rf_r2b8.py
 
 ``--replay-batch 0`` times the forecaster without latent replay; with replay,
 the batch is full from step ``--replay-batch`` + 1 of the timed steps.
@@ -34,18 +34,13 @@ a run. The configuration of ``config/fieldspace_rf_r2b8_kv_memory_local.yaml``:
 """
 
 import argparse
-import os
-import sys
 import time
 
 import numpy as np
 import torch
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [os.path.dirname(os.path.dirname(_HERE)), os.path.join(os.path.dirname(_HERE), "comin_plugin_torch")]
-
-from fieldspace_RF_online import OnlineReconstructorForecaster  # noqa: E402
-from icon_nested_mgrid import ghost_cells, load_global_mgrid, patch_mgrid  # noqa: E402
+from messe.common.nested_grid import ghost_cells, load_global_mgrid, patch_mgrid
+from messe.reconstructor_forecaster.model import OnlineReconstructorForecaster
 
 
 def main():

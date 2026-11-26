@@ -5,18 +5,12 @@ on CPU purely to inspect its shapes/stats).
 
 Submit like any other plugin via run_icon_gpu.sh:
     ./run_icon_gpu.sh <ICON_BUILD_DIR> \
-        .../MEssE/tests/decomposition_probe_plugin.py <ACCOUNT> <EXPNAME>
+        .../MEssE/messe/diagnostics/decomposition_probe_plugin.py <ACCOUNT> <EXPNAME>
 then read the results straight out of the job's log file -- everything
 this script prints happens at plugin-load time (module level, before any
 simulation timestep), so the job can be cancelled (`scancel`) as soon as
 the printout appears; there is no need to let it run its full wall-clock
 allocation.
-
-Not a pytest test (imports `comin`, only importable inside a live
-ICON/COMIN process) -- lives in MEssE/tests/ for colocation with the rest
-of the FieldSpaceNN-plugin test suite only. Deliberately NOT named
-`test_*.py`/`*_test.py` so pytest's default discovery does not try (and
-fail) to collect it.
 """
 
 import os
@@ -27,28 +21,7 @@ import numpy as np
 import torch
 from mpi4py import MPI
 
-try:
-    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    # __file__ may be undefined when COMIN loads the plugin via exec().
-    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
-
-# This file lives in MEssE/tests/, which is the SAME depth under the
-# project root as the real plugins' MEssE/comin_plugin_torch/ (both one
-# level under MEssE/) -- so _PROJECT_ROOT needs the same two dirname()
-# calls the real plugins use (tests/ -> MEssE/ -> Project_week_global/),
-# not just one (an earlier version of this file got this wrong: one
-# dirname() lands on MEssE/ itself, not the project root, so
-# "MEssE"/comin_plugin_torch got joined onto MEssE/ a second time and
-# icon_mgrid_utils was never actually found -- confirmed by
-# ModuleNotFoundError on a real run, job 27402376).
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
-_COMIN_PLUGIN_TORCH_DIR = os.path.join(_PROJECT_ROOT, "MEssE", "comin_plugin_torch")
-for _p_path in (_PROJECT_ROOT, _COMIN_PLUGIN_TORCH_DIR):
-    if _p_path not in sys.path:
-        sys.path.insert(0, _p_path)
-
-from icon_mgrid_utils import build_local_mgrid, load_coarse_grid, load_parent_index
+from messe.diagnostics.two_level_mgrid import build_local_mgrid, load_coarse_grid, load_parent_index
 
 DOMAIN_ID = int(os.environ.get("MESSE_DOMAIN_ID", "1"))
 COARSE_GRID_PATH = os.environ.get(
@@ -75,7 +48,7 @@ world_size = comm.Get_size()
 rank = comm.Get_rank()
 local_rank = int(os.environ.get("SLURM_LOCALID", "-1"))
 
-# Same classification icon_online_helper.setup_mpi_dist uses for the real
+# Same classification common.icon_data.setup_mpi_dist uses for the real
 # plugins: this runscript launches 5 MPI tasks per node (4 GPU/compute +
 # 1 dedicated I/O rank, per parallel_nml's num_io_procs=1), and
 # SLURM_LOCALID < gpus_per_node is how those two roles are told apart --

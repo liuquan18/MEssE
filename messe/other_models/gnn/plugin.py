@@ -9,30 +9,15 @@ import torch.distributed as dist
 
 from mpi4py import MPI
 
-try:
-    _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    # __file__ may be undefined when COMIN loads the plugin via exec().
-    _PLUGIN_DIR = os.environ.get("MESSE_PLUGIN_DIR", os.getcwd())
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
-
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_PLUGIN_DIR))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-from graph_utils import build_local_graph
-from gnn_online import GNNSnapshot, OnlineGNNTrainer
-from MEssE.utils.icon_online_helper import (
-    RunningMeanStd,
-    RolloutBuffer,
-    setup_mpi_dist,
-    parse_icon_datetime,
-    save_checkpoint,
-    rollback_checkpoint,
+from messe.common.icon_data import (
     extract_icon_cells,
     insert_icon_cells,
+    parse_icon_datetime,
+    setup_mpi_dist,
 )
+from messe.common.training import RunningMeanStd, rollback_checkpoint, save_checkpoint
+from messe.other_models.gnn.graph import build_local_graph
+from messe.other_models.gnn.model import GNNSnapshot, OnlineGNNTrainer, RolloutBuffer
 
 
 # ----------------------------------------------------------------------------
@@ -290,7 +275,7 @@ def training():
     the model rolls forward `ROLLOUT_STEPS` autoregressive steps from a
     source snapshot, and the loss is evaluated once against the single
     real snapshot observed that many steps later (see
-    gnn_online.OnlineGNNTrainer.train_rollout_step and
+    gnn.model.OnlineGNNTrainer.train_rollout_step and
     online_training.RolloutBuffer for the fixed-horizon scheduling)."""
 
     if not has_gpu:
@@ -331,7 +316,7 @@ def training():
     pred_denorm = _state.normalizer.denormalize(pred)
     # Only write back predictions for owned (non-halo) cells: halo nodes are
     # only present in the graph so message passing near the patch boundary
-    # sees correct neighbor information (see graph_utils.py).
+    # sees correct neighbor information (see graph.py).
     pred_owned_np = pred_denorm[_owned_idx_np].cpu().numpy()
     insert_icon_cells(
         pred_owned_np.astype(np.float64), _state.AI_var, indices=_owned_idx_np

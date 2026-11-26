@@ -42,11 +42,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-# Callers (gnn_plugin.py, and MEssE/tests/conftest.py for unit tests) already
-# put the project root on sys.path before importing this module — see their
-# own _PLUGIN_DIR/_PROJECT_ROOT bootstrap — so a plain dotted import is safe
-# here without repeating that bootstrap.
-from MEssE.utils.icon_online_helper import flat_index as _flat_index
+from messe.common.icon_data import flat_index as _flat_index
 
 
 @dataclass
