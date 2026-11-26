@@ -50,8 +50,14 @@ reconstructor:
 forecaster:
   n_blocks: 2
   n_context: 10                  # frozen latents it sees: 100 min at 600 s
+  token_len_time: 11             # n_context + 1: all slots in one token (packed)
   token_overlap_space: true      # a token also sees the cells that touch it from outside
+  attention: global              # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
   lr: 2.0e-4
   replay_seconds: 864000         # model time of windows kept: 10 days; 0 = off
   replay_warmup_seconds: 172800  # windows touching the first 2 days after the dry run are never drawn
   replay_batch: 10               # windows drawn per update, on top of the live one
+  memory_seconds: 0              # key/value memory (last block) searched before each window's context; 0 = off
+  memory_warmup_seconds: 0       # updates in this first model time are not stored in the memory
+  memory_topk: 32                # entries read per cell and head
+  memory_gate_lr: 1.0e-2         # learning rate of the memory gates and score scales

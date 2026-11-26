@@ -87,11 +87,17 @@ class Reconstructor:
 class Forecaster:
     n_blocks: int
     n_context: int
+    token_len_time: int
     token_overlap_space: bool
+    attention: str
     lr: float
     replay_seconds: float
     replay_warmup_seconds: float
     replay_batch: int
+    memory_seconds: float  # key/value memory searched before each window's context; 0 = off
+    memory_warmup_seconds: float
+    memory_topk: int
+    memory_gate_lr: float
 
 
 @dataclass(frozen=True)
@@ -108,8 +114,18 @@ class Config:
         unknown = set(self.forcings.reconstructor) - set(self.forcings.names)
         if unknown:
             raise ValueError(f"forcings.reconstructor: not among {self.forcings.names}: {sorted(unknown)}")
-        if self.reconstructor.attention not in ("global", "local"):
-            raise ValueError(f"reconstructor.attention must be global or local, not {self.reconstructor.attention}")
+        for name, model in (("reconstructor", self.reconstructor), ("forecaster", self.forecaster)):
+            if model.attention not in ("global", "local"):
+                raise ValueError(f"{name}.attention must be global or local, not {model.attention}")
+        f = self.forecaster
+        if not 1 <= f.token_len_time <= f.n_context + 1 or (f.n_context + 1) % f.token_len_time:
+            raise ValueError(
+                f"forecaster.token_len_time must divide n_context + 1 = {f.n_context + 1}, not {f.token_len_time}"
+            )
+        if f.memory_seconds and (f.memory_topk < 1 or f.attention != "local" or f.token_len_time != f.n_context + 1):
+            raise ValueError(
+                "forecaster.memory_seconds > 0 needs memory_topk >= 1, attention: local and token_len_time = n_context + 1"
+            )
         if self.grid.ghost_rings not in (0, 1):
             raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
         # These need the same cell order in every backbone cell and its 12 neighbours.
@@ -119,6 +135,7 @@ class Config:
             "reconstructor.token_overlap_space": self.reconstructor.token_overlap_space,
             "reconstructor.attention: local": self.reconstructor.attention == "local",
             "forecaster.token_overlap_space": self.forecaster.token_overlap_space,
+            "forecaster.attention: local": self.forecaster.attention == "local",
         }
         if not self.grid.canonical_order and any(needs_order.values()):
             raise ValueError(f"{[key for key, on in needs_order.items() if on]} need grid.canonical_order: true")
@@ -128,6 +145,8 @@ class Config:
         into sample steps of the realized interval."""
         steps = lambda seconds: int(seconds // sample_seconds)  # noqa: E731
         r, f, names = self.reconstructor, self.forecaster, self.forcings.names
+        # The key/value memory holds the span before the context of the oldest window replay can draw.
+        memory_size = f.n_context + steps(f.replay_seconds) + steps(f.memory_seconds) if steps(f.memory_seconds) else 0
         return dict(
             n_context=f.n_context,
             n_forcings=len(names),
@@ -145,12 +164,19 @@ class Config:
             reconstructor_overlap=r.token_overlap_space,
             reconstructor_attention=r.attention,
             forecaster_overlap=f.token_overlap_space,
+            forecaster_attention=f.attention,
+            forecaster_token_len_time=f.token_len_time,
             lr_recon=r.lr,
             lr_forecast=f.lr,
             lr_warmup=steps(r.lr_warmup_seconds),
             replay_size=steps(f.replay_seconds),
             replay_warmup=steps(f.replay_warmup_seconds),
             replay_batch=f.replay_batch,
+            memory_size=memory_size,
+            memory_seconds=f.memory_seconds,
+            memory_topk=f.memory_topk,
+            memory_warmup=steps(f.memory_warmup_seconds),
+            lr_memory_gate=f.memory_gate_lr,
             grad_clip=self.training.grad_clip,
         )
 

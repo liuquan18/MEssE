@@ -1,0 +1,87 @@
+# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8: the local forecaster of
+# Copy of fieldspace_rf_r2b8_kv_memory_local.yaml (job 29150124) with memory_seconds 3600 (1 hour) instead of
+# 86400 (1 day), to compare the effect of the memory length by region.
+# fieldspace_rf_r2b8_local_t3.yaml with a kNN key/value memory (Memorizing Transformers,
+# .claude/MEMORIZING TRANSFORMERS.pdf) in place of the long context window:
+#   - n_context: 2 (was 11), so the only time token is (c_{t-2}, c_{t-1}, F);
+#   - the last forecaster block reads a 1-day memory of earlier time tokens.
+# Everything else, the reconstructor included, is as in fieldspace_rf_r2b8_neighbours_local_pos.yaml (job 28880044).
+# Earlier memory run: job 29098852 (branch kv_memory: global attention, own-cell memory in every block, no
+# normalization). The runscript points to a config file with MESSE_RF_CONFIG. Every key is required and
+# unknown keys stop the run at startup. A copy goes to the experiment folder.
+
+run:
+  icon_var: uas                  # AES 10 m zonal wind (u_10m in NWP)
+  sample_seconds: 600            # forecast lead and context spacing; rounded to whole ICON steps
+  dry_run_seconds: 86400         # per-cell mean/std of the field
+  save_interval_seconds: 86400
+  log_seconds: 3600              # one log line, the mean over its sample steps
+
+grid:
+  dir: /pool/data/ICON/grids/mpim   # Earth_IcosS_* files, nested at every level
+  levels: [4, 6, 7, 8]           # R2B levels, backbone first; the last must be ICON's grid
+  latent_level: 6                # each residual level finer than this is folded into the next coarser one
+  canonical_order: true          # every R2B4 cell has its cells at the same places, 12 neighbours per cell
+  ghost_rings: 1                 # a patch also holds the R2B4 cells of other ranks that touch its own
+
+forcings:                        # condition the blocks, not compressed; one global mean/std each
+  icon_fields: [ts_wtr, sic]     # SST (water tile) and sea ice from ICON's GPU memory, each sample step
+  insolation: true               # TOA incoming shortwave, computed from time and cell centres
+  statics: [oromea]              # from static_file, once at startup (ComIn's orog reads zero)
+  static_file: bc_land_sso.nc    # relative to the run directory, comin bug, we use comin instead of reading in the v1.00
+  position: true                 # cell centre as a unit vector, columns cos_lat_cos_lon, cos_lat_sin_lon, sin_lat
+  orientation: true              # which way each R2B4 cell is turned, columns frame_north, frame_east
+  reconstructor: [ts_wtr, sic, oromea, cos_lat_cos_lon, cos_lat_sin_lon, sin_lat, frame_north, frame_east]   # no clock: job 28418236; the forecaster gets all of them
+
+blocks:                          # every attention and compress block of both models
+  att_dim: 128
+  n_head_channels: 8
+  hidden_dim: 64                 # MLP of the compress/decompress layers
+  embed_dim: 8                   # time embedding and each cell's forcing embedding; at least 6
+
+training:
+  grad_clip: 1.0                 # per model
+
+reconstructor:
+  n_blocks: 2                    # attention blocks before and after each compression stage
+  latent_channels: 4             # at latent_level: 1 + 16 x 4 = 65 values per 256 R2B8 values
+  inner_channels: 8              # at the levels in between (R2B7'); does not change the latent size of compressed states
+  time_input: false              # false: a constant time, no clock
+  token_overlap_space: true      # a token also sees the cells that touch it from outside
+  attention: local               # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
+  ema_decay: 0.99                # frozen copy: encodes every latent, decodes every forecast
+  lr: 1.0e-3
+  lr_warmup_seconds: 180000      # linear ramp, 300 updates at 600 s
+
+# Forecaster attention, on the latent levels R2B4 (1 channel) and r6' (latent_channels):
+#   SLOTS    = c_{t-2}, c_{t-1}, F: n_context context latents + 1 future slot F (a copy of the newest latent;
+#              its output is the forecast).
+#   TOKEN    = one R2B4 cell x all 3 slots (token_len_time = n_context + 1: one time token), so the token
+#              holds the tendency c_{t-1} - c_{t-2}. Per slot: own 1 + 16 x 4 = 65 values, ring 12 + 30 x 4 = 132.
+#   SEQUENCE = local (FieldSpaceNN seq_len_zoom 0 + seq_overlap_space): the token + its 12 neighbouring R2B4
+#              tokens, 13 keys per query.
+#   MEMORY   (last block only, as the paper's one kNN layer near the top; kv_memory.py):
+#     stored:  after each update, every cell's own key and value of the live window, stamped with its last
+#              context time: one entry per cell per sample step (144 per day). Not re-encoded, no gradient.
+#     read:    every window (live, replayed, the written forecast) searches, per cell and head, the entries of
+#              its 13-cell window stamped within memory_seconds before its first context step (13 x 6 = 78
+#              candidates per hour), takes the memory_topk with the largest cosine of query and key (both
+#              L2-normalized, paper section 3.2) and attends over them with a learned scale per head.
+#     mixed:   g * memory + (1 - g) * local attention, one gate g = sigmoid(b) per head, b = 0 at start.
+#     ring:    fixed length n_context + replay + memory steps, so the oldest replayable window still sees its
+#              whole hour; the first memory_warmup_seconds after the dry run are not stored, as for replay.
+#   Weights are shared by all cells.
+forecaster:
+  n_blocks: 2                    # FieldSpaceNN attention blocks; the last one reads the memory
+  n_context: 2                   # frozen latents in the token: 20 min at 600 s
+  token_len_time: 3              # n_context + 1: one time token (the memory needs this)
+  token_overlap_space: true      # a token also holds the ring of cells touching it: R2B4 12, r6 30 per slot
+  attention: local               # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
+  lr: 2.0e-4
+  replay_seconds: 864000         # model time of windows kept: 10 days; 0 = off
+  replay_warmup_seconds: 172800  # windows touching the first 2 days after the dry run are never drawn
+  replay_batch: 10               # windows drawn per update, on top of the live one
+  memory_seconds: 3600           # memory searched before each window's context: 1 hour; 0 = off
+  memory_warmup_seconds: 172800  # updates in the first 2 days after the dry run are not stored, as for replay
+  memory_topk: 32                # entries read per cell and head
+  memory_gate_lr: 1.0e-2         # learning rate of the memory gates and score scales

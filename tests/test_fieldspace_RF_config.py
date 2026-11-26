@@ -18,6 +18,8 @@ LON_LAT_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_lon_lat.yaml")
 NEIGHBOURS_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours.yaml")
 LOCAL_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours_local.yaml")
 LOCAL_POS_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_neighbours_local_pos.yaml")
+LOCAL_T3_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_local_t3.yaml")
+MEMORY_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_kv_memory_local.yaml")
 
 
 def _write(tmp_path, change):
@@ -31,8 +33,8 @@ def _write(tmp_path, change):
 
 @pytest.mark.parametrize(
     "path",
-    [REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG, LOCAL_CONFIG, LOCAL_POS_CONFIG],
-    ids=["default", "lon_lat", "neighbours", "local", "local_pos"],
+    [REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG, LOCAL_CONFIG, LOCAL_POS_CONFIG, LOCAL_T3_CONFIG, MEMORY_CONFIG],
+    ids=["default", "lon_lat", "neighbours", "local", "local_pos", "local_t3", "kv_memory_local"],
 )
 def test_repository_config_builds_the_models(path):
     config = load_config(path)
@@ -55,6 +57,7 @@ def test_repository_config_builds_the_models(path):
     )
     latent = config.grid.latent_level - levels[0]
     assert trainer.model.reconstructor.latent_features[latent] == config.reconstructor.latent_channels
+    assert (trainer.model.forecaster.memory is not None) == bool(config.forecaster.memory_seconds)
 
 
 def test_model_times_become_sample_steps_and_forcing_names_become_columns(tmp_path):
@@ -122,6 +125,33 @@ def test_local_configs_differ_from_neighbours_by_the_attention_and_the_position(
     assert all(load_config(p).reconstructor.attention == "global" for p in (REPO_CONFIG, LON_LAT_CONFIG))
 
 
+def test_local_t3_config_differs_from_local_pos_only_by_the_forecasters_time_tokens_and_scope():
+    local_pos, local_t3 = load_config(LOCAL_POS_CONFIG), load_config(LOCAL_T3_CONFIG)
+    assert (local_t3.forecaster.n_context, local_t3.forecaster.token_len_time, local_t3.forecaster.attention) == (11, 3, "local")
+    kwargs = local_t3.trainer_kwargs(600.0)
+    assert (kwargs["n_context"], kwargs["forecaster_token_len_time"], kwargs["forecaster_attention"]) == (11, 3, "local")
+    assert replace(local_t3, forecaster=local_pos.forecaster) == local_pos
+    # Every other config packs all slots into one token and attends globally, as before the key existed.
+    for path in (REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG, LOCAL_CONFIG, LOCAL_POS_CONFIG):
+        forecaster = load_config(path).forecaster
+        assert forecaster.token_len_time == forecaster.n_context + 1 and forecaster.attention == "global"
+
+
+def test_memory_config_differs_from_local_t3_by_the_context_and_the_memory():
+    local_t3, memory = load_config(LOCAL_T3_CONFIG), load_config(MEMORY_CONFIG)
+    f = memory.forecaster
+    assert (f.n_context, f.token_len_time, f.attention) == (2, 3, "local")
+    assert (f.memory_seconds, f.memory_warmup_seconds, f.memory_topk, f.memory_gate_lr) == (86400, 172800, 32, 1e-2)
+    off = replace(f, n_context=11, memory_seconds=0, memory_warmup_seconds=0)
+    assert replace(memory, forecaster=off) == local_t3
+    # 2 context steps + 10 days of replay + 1 day of memory, in 600 s steps.
+    kwargs = memory.trainer_kwargs(600.0)
+    assert (kwargs["memory_size"], kwargs["memory_seconds"], kwargs["memory_warmup"]) == (2 + 1440 + 144, 86400, 288)
+    assert (kwargs["memory_topk"], kwargs["lr_memory_gate"]) == (32, 1e-2)
+    for path in (REPO_CONFIG, LON_LAT_CONFIG, NEIGHBOURS_CONFIG, LOCAL_CONFIG, LOCAL_POS_CONFIG, LOCAL_T3_CONFIG):
+        assert load_config(path).trainer_kwargs(600.0)["memory_size"] == 0
+
+
 def test_lon_lat_config_differs_from_the_default_only_by_the_position():
     default, lon_lat = load_config(REPO_CONFIG), load_config(LON_LAT_CONFIG)
     assert lon_lat.forcings.position and not default.forcings.position
@@ -146,6 +176,15 @@ def test_lon_lat_config_differs_from_the_default_only_by_the_position():
         (lambda raw: raw["reconstructor"].update(attention="local"), "reconstructor.attention: local.* need grid.canonical_order"),
         (lambda raw: raw["reconstructor"].update(attention="regional"), "reconstructor.attention must be global or local"),
         (lambda raw: raw["reconstructor"].pop("attention"), "missing keys \\['attention'\\]"),
+        (lambda raw: raw["forecaster"].pop("attention"), "missing keys \\['attention'\\]"),
+        (lambda raw: raw["forecaster"].pop("token_len_time"), "missing keys \\['token_len_time'\\]"),
+        (lambda raw: raw["forecaster"].pop("memory_topk"), "missing keys \\['memory_topk'\\]"),
+        (lambda raw: raw["forecaster"].update(memory_seconds=3600), "memory_seconds > 0 needs .*attention: local"),
+        (lambda raw: raw["forecaster"].update(token_len_time=3), "forecaster.token_len_time must divide n_context \\+ 1 = 11"),
+        (lambda raw: raw["forecaster"].update(token_len_time=0), "forecaster.token_len_time must divide"),
+        (lambda raw: raw["forecaster"].update(token_len_time=22), "forecaster.token_len_time must divide"),
+        (lambda raw: raw["forecaster"].update(attention="regional"), "forecaster.attention must be global or local"),
+        (lambda raw: raw["forecaster"].update(attention="local"), "forecaster.attention: local.* need grid.canonical_order"),
     ],
 )
 def test_wrong_files_stop_at_startup(tmp_path, change, message):

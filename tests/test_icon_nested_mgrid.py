@@ -14,6 +14,7 @@ from icon_nested_mgrid import CellExchange, ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
 
 N_BASE = 12  # backbone cells of the synthetic globe
+CPU = torch.device("cpu")  # the exchange's device (the GPU in the plugins)
 
 
 def synthetic_global_mgrid(n_levels=3):
@@ -63,7 +64,8 @@ class _Hub:
 
 
 class _ThreadComm:
-    """One rank of an in-process communicator with mpi4py's buffer semantics."""
+    """One rank of an in-process communicator with mpi4py's buffer semantics
+    (numpy arrays and CPU torch tensors)."""
 
     def __init__(self, hub, rank):
         self.hub, self.rank, self.calls = hub, rank, 0
@@ -89,8 +91,8 @@ class _ThreadComm:
     def Alltoallv(self, send, recv):
         sendbuf, (scounts, sdispls) = send
         recvbuf, (rcounts, rdispls) = recv
-        sends = self._rendezvous((sendbuf.ravel().copy(), list(scounts), list(sdispls)))
-        flat = recvbuf.reshape(-1)
+        sends = self._rendezvous((np.asarray(sendbuf).ravel().copy(), list(scounts), list(sdispls)))
+        flat = np.asarray(recvbuf).reshape(-1)  # shares the tensor's memory
         for src, (buf, counts, displs) in enumerate(sends):
             n = counts[self.rank]
             assert n == rcounts[src]
@@ -143,19 +145,20 @@ def test_exchange_routes_every_fine_cell_to_one_patch_and_back():
     def rank_fn(comm):
         glb, values, owned_local = local[comm.Get_rank()]
         backbone = np.flatnonzero(owner == comm.Get_rank())
-        exchange = CellExchange.build(comm, owned_local, glb[owned_local], owner, backbone, refinement)
-        patch = exchange.to_patch(comm, values)
+        exchange = CellExchange.build(comm, owned_local, glb[owned_local], owner, backbone, refinement, CPU)
+        patch = exchange.to_patch(comm, torch.from_numpy(values))
         return backbone, patch, exchange, exchange.from_patch(comm, patch * 10.0)
 
     covered = []
     for r, (backbone, patch, exchange, back) in enumerate(_run_ranks(size, rank_fn)):
         ids = (backbone[:, None] * refinement + np.arange(refinement)).ravel()
+        assert patch.dtype == back.dtype == torch.float32
         assert np.array_equal(patch, field[ids])  # nested order, no halo values
         covered.append(ids)
         glb, _, owned_local = local[r]
-        assert np.array_equal(np.sort(exchange.send_ids), owned_local)
-        assert np.array_equal(exchange.owned_ids, exchange.send_ids)  # no ghost cells: every cell is sent once
-        assert np.array_equal(back, field[glb[exchange.send_ids]] * 10.0)
+        assert np.array_equal(np.sort(exchange.owned_ids), owned_local)
+        assert np.array_equal(exchange.owned_ids, exchange.send_ids.numpy())  # no ghost cells: every cell is sent once
+        assert np.array_equal(back, field[glb[exchange.owned_ids]] * 10.0)
     assert np.array_equal(np.sort(np.concatenate(covered)), np.arange(n_fine))
 
 
@@ -195,8 +198,8 @@ def test_exchange_fills_ghost_cells_and_returns_only_owned_cells():
         glb = rng_local[rank]
         owned = np.flatnonzero(owner == rank)
         backbone = np.concatenate([owned, ghost_cells(owned, touching)])
-        exchange = CellExchange.build(comm, np.arange(len(glb)), glb, owner, backbone, refinement, touching)
-        patch = exchange.to_patch(comm, field[glb])
+        exchange = CellExchange.build(comm, np.arange(len(glb)), glb, owner, backbone, refinement, CPU, touching)
+        patch = exchange.to_patch(comm, torch.from_numpy(field[glb]))
         return owned, backbone, patch, exchange, exchange.from_patch(comm, patch * 10.0)
 
     rng_local = [rng.permutation(np.flatnonzero(rank_of_cell == r)) for r in range(size)]  # local order of the owned cells

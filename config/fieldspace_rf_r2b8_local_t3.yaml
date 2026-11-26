@@ -1,0 +1,82 @@
+# RF plugin (comin_plugin_torch/fieldspace_RF_plugin.py) at R2B8: fieldspace_rf_r2b8_neighbours_local_pos.yaml
+# (job 28880044) with a forecaster that attends locally in space and over time:
+#   - attention: local (was global): each R2B4 token attends to itself + its 12 neighbouring R2B4 tokens;
+#   - token_len_time: 3 (was all slots packed in one token), so a token holds 3 consecutive time slots
+#     and the time tokens attend to each other;
+#   - n_context: 11 (was 10), so that the 12 slots split into 4 time tokens.
+# Everything else, the reconstructor included, is unchanged. The runscript points to a config file with
+# MESSE_RF_CONFIG. Every key is required and unknown keys stop the run at startup. A copy goes to the
+# experiment folder.
+
+run:
+  icon_var: uas                  # AES 10 m zonal wind (u_10m in NWP)
+  sample_seconds: 600            # forecast lead and context spacing; rounded to whole ICON steps
+  dry_run_seconds: 86400         # per-cell mean/std of the field
+  save_interval_seconds: 86400
+  log_seconds: 3600              # one log line, the mean over its sample steps
+
+grid:
+  dir: /pool/data/ICON/grids/mpim   # Earth_IcosS_* files, nested at every level
+  levels: [4, 6, 7, 8]           # R2B levels, backbone first; the last must be ICON's grid
+  latent_level: 6                # each residual level finer than this is folded into the next coarser one
+  canonical_order: true          # every R2B4 cell has its cells at the same places, 12 neighbours per cell
+  ghost_rings: 1                 # a patch also holds the R2B4 cells of other ranks that touch its own
+
+forcings:                        # condition the blocks, not compressed; one global mean/std each
+  icon_fields: [ts_wtr, sic]     # SST (water tile) and sea ice from ICON's GPU memory, each sample step
+  insolation: true               # TOA incoming shortwave, computed from time and cell centres
+  statics: [oromea]              # from static_file, once at startup (ComIn's orog reads zero)
+  static_file: bc_land_sso.nc    # relative to the run directory, comin bug, we use comin instead of reading in the v1.00
+  position: true                 # cell centre as a unit vector, columns cos_lat_cos_lon, cos_lat_sin_lon, sin_lat
+  orientation: true              # which way each R2B4 cell is turned, columns frame_north, frame_east
+  reconstructor: [ts_wtr, sic, oromea, cos_lat_cos_lon, cos_lat_sin_lon, sin_lat, frame_north, frame_east]   # no clock: job 28418236; the forecaster gets all of them
+
+blocks:                          # every attention and compress block of both models
+  att_dim: 128
+  n_head_channels: 8
+  hidden_dim: 64                 # MLP of the compress/decompress layers
+  embed_dim: 8                   # time embedding and each cell's forcing embedding; at least 6
+
+training:
+  grad_clip: 1.0                 # per model
+
+reconstructor:
+  n_blocks: 2                    # attention blocks before and after each compression stage
+  latent_channels: 4             # at latent_level: 1 + 16 x 4 = 65 values per 256 R2B8 values
+  inner_channels: 8              # at the levels in between (R2B7'); does not change the latent size of compressed states
+  time_input: false              # false: a constant time, no clock
+  token_overlap_space: true      # a token also sees the cells that touch it from outside
+  attention: local               # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
+  ema_decay: 0.99                # frozen copy: encodes every latent, decodes every forecast
+  lr: 1.0e-3
+  lr_warmup_seconds: 180000      # linear ramp, 300 updates at 600 s
+
+# Forecaster attention, on the latent levels R2B4 (1 channel) and r6' (latent_channels):
+#   SLOTS    = n_context context latents + 1 future slot F (a copy of the newest latent; its output is the forecast):
+#              c_{t-11} ... c_{t-1}, F  = 12 slots.
+#   TOKEN    = one R2B4 cell x token_len_time = 3 consecutive slots (FieldSpaceNN token_zoom 0, token_len_time 3),
+#              no time overlap (token_overlap_time false):
+#                [c_{t-11} c_{t-10} c_{t-9}] [c_{t-8} c_{t-7} c_{t-6}] [c_{t-5} c_{t-4} c_{t-3}] [c_{t-2} c_{t-1} F]
+#              The forecast token holds the two newest real latents, so its projections and MLP see the tendency
+#              c_{t-1} - c_{t-2}. Per slot: own 1 + 16 x 4 = 65 values, ring 12 + 30 x 4 = 132.
+#   SEQUENCE = space x time:
+#                space: `attention` (FieldSpaceNN seq_len_zoom / seq_overlap_space): local (0, True), the token
+#                       and its 12 neighbouring R2B4 tokens; global (-1, False) would be every R2B4 token of the patch
+#                time:  all (n_context + 1) / token_len_time = 4 time tokens (FieldSpaceNN seq_len_time -1, fixed)
+#              So each token sends one query against 13 cells x 4 time tokens = 52 keys.
+#   Weights are shared by all cells and all 4 time tokens (no FieldSpaceNN n_times); the time tokens differ
+#   only in content and in their time embedding.
+forecaster:
+  n_blocks: 2                    # FieldSpaceNN attention blocks
+  n_context: 11                  # frozen latents it sees: 110 min at 600 s; n_context + 1 must be divisible by token_len_time
+  token_len_time: 3              # slots per token: 3 -> 4 time tokens; n_context + 1 = all in one token (packed)
+  token_overlap_space: true      # a token also holds the ring of cells touching it: R2B4 12, r6 30 per slot
+  attention: local               # global: all tokens of the patch; local: itself + its 12 neighbouring R2B4 cells
+  lr: 2.0e-4
+  replay_seconds: 864000         # model time of windows kept: 10 days; 0 = off
+  replay_warmup_seconds: 172800  # windows touching the first 2 days after the dry run are never drawn
+  replay_batch: 10               # windows drawn per update, on top of the live one
+  memory_seconds: 0              # key/value memory (last block) searched before each window's context; 0 = off
+  memory_warmup_seconds: 0       # updates in this first model time are not stored in the memory
+  memory_topk: 32                # entries read per cell and head
+  memory_gate_lr: 1.0e-2         # learning rate of the memory gates and score scales

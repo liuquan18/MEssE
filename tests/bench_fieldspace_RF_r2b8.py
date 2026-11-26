@@ -20,6 +20,17 @@ forcing embedding and of the time embedding.
 canonical cell order, the ghost cells of the patch, token overlap in both
 models and two more forcing columns (the orientation). ``--device cpu`` runs
 without a GPU, e.g. to count parameters.
+
+``--reconstructor-attention``/``--forecaster-attention`` (global or local) and
+``--token-len-time`` (forecaster time slots per token, default all) set the
+attention layout. ``--memory-seconds`` turns on the key/value memory of the
+last forecaster block (kv_memory.py; needs local forecaster attention and one
+time token) with that span, sized for ``--replay-size``, and fills it with
+random entries first, so that every timed step reads a full memory, as late in
+a run. The configuration of ``config/fieldspace_rf_r2b8_kv_memory_local.yaml``:
+
+    --neighbours --forcings 7 --n-context 2 --replay-size 1440 --reconstructor-attention local \\
+    --forecaster-attention local --memory-seconds 86400
 """
 
 import argparse
@@ -50,6 +61,11 @@ def main():
     parser.add_argument("--embed-dim", type=int, default=8)
     parser.add_argument("--inner-channels", type=int, default=None)
     parser.add_argument("--neighbours", action="store_true")
+    parser.add_argument("--reconstructor-attention", default="global")
+    parser.add_argument("--forecaster-attention", default="global")
+    parser.add_argument("--token-len-time", type=int, default=None)
+    parser.add_argument("--memory-seconds", type=float, default=0.0, help="key/value memory span; 0 = off")
+    parser.add_argument("--memory-topk", type=int, default=32)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--grid-dir", default="/pool/data/ICON/grids/mpim")
     args = parser.parse_args()
@@ -77,16 +93,27 @@ def main():
     print(f"setup {time.perf_counter() - t:.1f}s: backbone cells per rank {per_rank.min()}-{per_rank.max()}, "
           f"largest patch {len(owned)} owned + {len(ghosts)} ghost backbone cells = {len(coords)} R2B{levels[-1]} cells", flush=True)
 
+    memory_steps = int(args.memory_seconds // 600)
     trainer = OnlineReconstructorForecaster(mgrids, levels, args.latent_level, nlev=1, n_context=args.n_context,
                                             n_forcings=args.forcings, reconstructor_forcings=range(args.forcings - 1),
                                             embed_dim=args.embed_dim, inner_channels=args.inner_channels,
                                             reconstructor_overlap=args.neighbours, forecaster_overlap=args.neighbours,
                                             n_owned=len(owned), device=device,
-                                            replay_size=args.replay_size, replay_batch=args.replay_batch)
+                                            replay_size=args.replay_size, replay_batch=args.replay_batch,
+                                            reconstructor_attention=args.reconstructor_attention,
+                                            forecaster_attention=args.forecaster_attention,
+                                            forecaster_token_len_time=args.token_len_time,
+                                            memory_size=args.n_context + args.replay_size + memory_steps if memory_steps else 0,
+                                            memory_seconds=args.memory_seconds, memory_topk=args.memory_topk)
     print(f"{args.forcings} forcings, reconstructor "
           f"{sum(p.numel() for p in trainer.model.reconstructor.parameters()):,} / forecaster "
           f"{sum(p.numel() for p in trainer.model.forecaster.parameters()):,} parameters", flush=True)
     t0 = 1577836800.0
+    memory = trainer.model.forecaster.memory
+    if memory is not None:  # full, oldest first, stamped before the first timed window
+        heads, cells = trainer.model.forecaster.memory_gate.shape[0], len(mgrids[0]["coords"])
+        for j in reversed(range(memory.size)):  # 8 = the default n_head_channels
+            memory.write(*torch.randn(2, heads, cells, 8, device=device), t0 - 600.0 * (j + 1))
 
     def forcing(k):  # (n, forcings)
         return torch.sin(10 * coords[:, 1:] * torch.arange(1, args.forcings + 1, device=coords.device) - 0.01 * k)

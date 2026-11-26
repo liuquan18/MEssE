@@ -248,3 +248,47 @@ def test_local_attention_links_a_token_to_its_12_neighbours_only(scope):
         assert reached == window
     else:
         assert len(reached) > 200
+
+
+@pytest.mark.parametrize("token_len_time", [3, 6])
+def test_local_forecaster_links_old_time_tokens_to_the_forecast_in_the_window_only(token_len_time):
+    """The forecaster with local attention, 5 context slots + the future slot, random weights (open
+    gates): a change in the oldest context slot of one cell reaches the forecast of exactly that
+    cell and its 12 neighbours. With token_len_time 3 the oldest slot is in the other time token
+    than the forecast, so it gets there only by attention over time tokens; with 6 (packed) it is
+    in the forecast's own token."""
+    from fieldspace_RF_online import Forecaster, _BlockConfigs
+    from fieldspacenn.src.models.mg_transformer.mg_base_model import MG_base_model
+
+    torch.manual_seed(0)
+    mgrid = canonical_mgrid(*icosahedral_grid(3), 2)  # zoom 0: 320 tokens, zoom 1: 1280 cells
+    layers = MG_base_model(mgrid).grid_layers
+    n_context = 5
+    model = Forecaster(layers, {0: 1, 1: 1}, n_context, 1, _BlockConfigs(16, 4, 16, 8, 0, attention="local"), token_len_time)
+    with torch.no_grad():
+        for p in model.parameters():
+            p.normal_(0, 0.3)
+
+    def run(context):
+        emb = {"TimeEmbedder": {z: torch.arange(n_context + 1.0).view(1, -1) / 144 for z in (0, 1)}}
+        with torch.no_grad():
+            return model({z: t.clone() for z, t in context.items()}, emb)
+
+    context = {z: torch.randn(1, 1, n_context, 320 * 4**z, 1, 1) for z in (0, 1)}
+    token = int(torch.nonzero(~mgrid[0]["adjc_mask"].any(1))[0])  # a token with all 12 neighbours
+    changed = {z: t.clone() for z, t in context.items()}
+    for z, t in changed.items():  # only the oldest slot
+        t[0, 0, 0, token * 4**z: (token + 1) * 4**z] += torch.randn(4**z, 1, 1)
+    a, b = run(context), run(changed)
+    assert a[0].shape == (1, 1, 1, 320, 1, 1)  # the future slot only
+    reached = set(torch.nonzero((a[0] - b[0]).abs().view(-1) > 1e-6).view(-1).tolist())
+    assert reached == set(mgrid[0]["adjc"][token].tolist())
+
+
+def test_forecaster_token_len_time_must_divide_the_slots():
+    from fieldspace_RF_online import Forecaster, _BlockConfigs
+    from fieldspacenn.src.models.mg_transformer.mg_base_model import MG_base_model
+
+    layers = MG_base_model(canonical_mgrid(*icosahedral_grid(2), 2)).grid_layers
+    with pytest.raises(ValueError, match="must divide n_context \\+ 1 = 6"):
+        Forecaster(layers, {0: 1, 1: 1}, 5, 1, _BlockConfigs(16, 4, 16, 8, 0), token_len_time=4)

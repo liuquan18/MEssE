@@ -356,7 +356,7 @@ def test_reconstructor_without_time_ignores_the_clock_but_the_forecaster_does_no
         assert all(torch.equal(decoded[0][z], decoded[1][z]) for z in decoded[0])
     _train(trainer, N_CONTEXT)
     seen, forecaster = [], model.forecaster.forward
-    model.forecaster.forward = lambda context, emb: seen.append(emb["TimeEmbedder"][0].clone()) or forecaster(context, emb)
+    model.forecaster.forward = lambda context, emb, times: seen.append(emb["TimeEmbedder"][0].clone()) or forecaster(context, emb, times)
     _predict(trainer, N_CONTEXT)
     expected = torch.tensor([[(T0 + k * DT) / 86400 for k in range(N_CONTEXT + 1)]])
     assert torch.allclose(seen[0], expected)  # context times then the forecast time, in days
@@ -462,6 +462,36 @@ def test_token_overlap_gives_each_model_the_ring_and_trains():
     assert any(not torch.equal(a, b) for a, b in zip(before, after))
 
 
+def test_local_forecaster_attention_keeps_the_parameters_and_trains():
+    """forecaster_attention only changes which tokens a token attends to, not the weights."""
+    plain = _neighbour_trainer(forecaster_overlap=True)
+    local = _neighbour_trainer(forecaster_overlap=True, forecaster_attention="local")
+    assert _n_parameters(local.model.forecaster) == _n_parameters(plain.model.forecaster)
+    overlaps = lambda model: [m.seq_overlap_space for m in model.modules() if hasattr(m, "seq_overlap_space")]  # noqa: E731
+    assert overlaps(local.model.forecaster) and all(overlaps(local.model.forecaster))
+    assert not any(overlaps(plain.model.forecaster))
+    stats = _train_patch(local, N_CONTEXT + 3)
+    assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
+    increment = local.predict_increment(T0 + (N_CONTEXT + 3) * DT, _patch_values(local, 99, N_FORCINGS))
+    assert torch.isfinite(increment).all()
+
+
+def test_forecaster_time_tokens_start_at_persistence_and_train():
+    """token_len_time 2: the N_CONTEXT + 1 = 4 slots form 2 time tokens that share their weights, so
+    the forecaster is smaller than the packed one; with local attention, the ring and ghost cells."""
+    packed = _neighbour_trainer(forecaster_overlap=True, forecaster_attention="local")
+    tokens = _neighbour_trainer(forecaster_overlap=True, forecaster_attention="local", forecaster_token_len_time=2)
+    assert _n_parameters(tokens.model.forecaster) < _n_parameters(packed.model.forecaster)
+    assert _n_parameters(tokens.model.reconstructor) == _n_parameters(packed.model.reconstructor)
+    _train_patch(tokens, N_CONTEXT)
+    increment = tokens.predict_increment(T0 + N_CONTEXT * DT, _patch_values(tokens, 99, N_FORCINGS))
+    assert increment.abs().max() < 1e-6  # closed gates: persistence
+    before = [p.detach().clone() for p in tokens.model.forecaster.parameters()]
+    stats = _train_patch(tokens, N_CONTEXT + 3)
+    assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
+    assert any(not torch.equal(a, b) for a, b in zip(before, tokens.model.forecaster.parameters()))
+
+
 def test_token_overlap_needs_a_token_with_all_its_neighbours():
     globe = icosahedral_mgrid(n_zooms=5, n_levels=5)
     pair = patch_mgrid(globe, globe[0]["adjc"][0, :2])  # two backbone cells: neither has all its neighbours
@@ -495,3 +525,120 @@ def test_training_with_ghost_cells_and_replay_runs_end_to_end():
     assert all(torch.isfinite(torch.tensor(list(part.values()))).all() for part in stats.values())
     increment = trainer.predict_increment(T0 + (N_CONTEXT + 3) * DT, _patch_values(trainer, 99, N_FORCINGS))
     assert increment.shape == (len(_patch_values(trainer, 0, NLEV)), NLEV)  # the plugin writes back the owned rows
+
+
+# --- key/value memory (local forecaster, one time token) ----------------------------------------
+
+MEMORY = dict(forecaster_overlap=True, forecaster_attention="local", forecaster_token_len_time=N_CONTEXT + 1,
+              memory_size=20, memory_seconds=20 * DT, memory_topk=4)
+
+
+def test_memory_needs_local_attention_and_one_time_token():
+    with pytest.raises(ValueError, match="local attention and one time token"):
+        _neighbour_trainer(**{**MEMORY, "forecaster_attention": "global"})
+    with pytest.raises(ValueError, match="local attention and one time token"):
+        _neighbour_trainer(**{**MEMORY, "forecaster_token_len_time": 2})
+
+
+def test_memory_is_in_the_last_block_and_stores_each_cells_own_key():
+    """The memory's windows are FieldSpaceNN's own 13-cell windows of the local attention, and the stored
+    key of a cell is the key its own query meets in slot 0 of its window."""
+    trainer = _neighbour_trainer(n_forecaster_blocks=2, **MEMORY)
+    forecaster = trainer.model.forecaster
+    _train_patch(trainer, N_CONTEXT + 1)
+    layer = forecaster.blocks[-1].blocks[0].grid_layer_att
+    assert torch.equal(forecaster.memory.window, layer.tokens_with_ring_0)
+    assert forecaster.memory.window.shape[1] == 13
+    seen = {}
+    block = forecaster.blocks[-1].blocks[0]
+    create_qkv = block.create_QKV
+    block.create_QKV = lambda *a, **kw: seen.setdefault("qkv", create_qkv(*a, **kw))
+    calls = []
+    first = forecaster.blocks[0].blocks[0]
+    first_create = first.create_QKV
+    first.create_QKV = lambda *a, **kw: calls.append(1) or first_create(*a, **kw)
+    _train_patch_from(trainer, N_CONTEXT + 1, N_CONTEXT + 2)
+    _, _, k, v, _, _ = seen["qkv"]
+    cells = forecaster.memory.window.shape[0]
+    assert torch.equal(forecaster.live_kv[0], k[:cells, :, 0].detach().transpose(0, 1))
+    assert forecaster.live_kv[0].shape == (4, cells, 4)  # heads (att_dim 16 / 4), cells, channels
+    assert calls  # the first block runs FieldSpaceNN's own forward, through its own create_QKV
+
+
+def _train_patch_from(trainer, start, stop):
+    for k in range(start, stop):
+        stats = trainer.train_step(_patch_values(trainer, k, NLEV), _patch_values(trainer, 50 + k, N_FORCINGS), T0 + k * DT)
+    return stats
+
+
+def test_memory_changes_nothing_until_an_entry_is_visible():
+    """The first entry is stamped with the first update's last context step; a window sees it once its
+    first context step is later, from step 2 * N_CONTEXT on. Before, the losses and every weight equal
+    those of the model without memory, bit for bit, and the gate stays at 0.5."""
+    plain = {key: value for key, value in MEMORY.items() if not key.startswith("memory")}
+    off, on = _neighbour_trainer(n_forecaster_blocks=2, **plain), _neighbour_trainer(n_forecaster_blocks=2, **MEMORY)
+    for k in range(2 * N_CONTEXT + 1):
+        s_off = _train_patch_from(off, k, k + 1)
+        s_on = _train_patch_from(on, k, k + 1)
+        if N_CONTEXT <= k < 2 * N_CONTEXT:
+            assert {key: s_on[key] for key in s_off} == s_off, k
+            assert s_on["memory"] == {"gate": 0.5, "scale": pytest.approx(10.0), "age_h": 0.0}
+            weights_on = on.model.state_dict()
+            assert all(torch.equal(v, weights_on[key]) for key, v in off.model.state_dict().items()), k
+    assert s_on["latent_mse"] != s_off["latent_mse"] and s_on["recon"] == s_off["recon"]
+    # The window of step 2 * N_CONTEXT starts at step N_CONTEXT; the one visible entry ends at N_CONTEXT - 1.
+    assert s_on["memory"]["age_h"] == pytest.approx((N_CONTEXT + 1) * DT / 3600)  # before the forecast time
+    assert s_on["memory"]["gate"] != 0.5
+    assert not on.model.forecaster.memory.keys.requires_grad
+
+
+@pytest.mark.parametrize("k", [N_CONTEXT + 2, 2 * N_CONTEXT + 1])  # before and after the first entry is visible
+def test_every_trainable_parameter_gets_a_gradient_with_memory(k):
+    """DDP (find_unused_parameters=False) needs this, with and without visible entries."""
+    trainer = _neighbour_trainer(n_forecaster_blocks=2, replay_size=4, **MEMORY)
+    _train_patch(trainer, k)
+    seen = {}
+    for name, p in trainer.model.named_parameters():
+        if p.requires_grad:
+            p.register_hook(lambda g, name=name: seen.__setitem__(name, True))
+    _train_patch_from(trainer, k, k + 1)
+    trainable = [n for n, p in trainer.model.named_parameters() if p.requires_grad]
+    assert "forecaster.memory_gate" in trainable and "forecaster.memory_log_scale" in trainable
+    assert sorted(seen) == sorted(trainable)
+
+
+def test_untrained_forecast_with_memory_is_persistence():
+    trainer = _neighbour_trainer(lr_forecast=0.0, lr_memory_gate=0.0, **MEMORY)
+    _train_patch(trainer, 2 * N_CONTEXT + 2)
+    k = 2 * N_CONTEXT + 2
+    increment = trainer.predict_increment(T0 + k * DT, _patch_values(trainer, 99, N_FORCINGS))
+    assert trainer.model.forecaster.memory_age is not None  # the forecast read the memory
+    assert increment.abs().max() < 1e-4
+
+
+def test_oldest_replayable_window_sees_its_whole_memory_span():
+    """A ring of n_context + replay + span steps (the config's size) still holds the span before the
+    context of the oldest window the replay buffer can draw."""
+    replay, span = 4, 3
+    trainer = _neighbour_trainer(**{**MEMORY, "memory_size": N_CONTEXT + replay + span, "memory_seconds": span * DT},
+                                 replay_size=replay, replay_batch=2)
+    _train_patch(trainer, 2 * N_CONTEXT + replay + span + 2)
+    buffer = trainer.replay_buffer
+    oldest = buffer.window(buffer.n_context)
+    memory = trainer.model.forecaster.memory
+    stamps = memory.seconds[memory.visible(oldest.seconds[0])]
+    assert sorted(stamps.tolist()) == [oldest.seconds[0] - j * DT for j in range(span, 0, -1)]
+
+
+def test_memory_gate_and_scale_have_their_own_learning_rate_and_are_checkpointed():
+    trainer = _neighbour_trainer(lr_forecast=2e-4, lr_memory_gate=1e-2, **MEMORY)
+    forecaster = trainer.model.forecaster
+    groups = trainer.optimizer.param_groups
+    assert [g["lr"] for g in groups] == [2e-4, 2e-4, 1e-2]
+    assert [id(p) for p in groups[2]["params"]] == [id(forecaster.memory_gate), id(forecaster.memory_log_scale)]
+    assert all(p is not forecaster.memory_gate and p is not forecaster.memory_log_scale for p in groups[1]["params"])
+    _train_patch(trainer, 2 * N_CONTEXT + 2)
+    restored = _neighbour_trainer(**MEMORY)
+    restored.model.load_state_dict(trainer.model.state_dict())
+    assert torch.equal(restored.model.forecaster.memory_gate, forecaster.memory_gate)
+    assert "forecaster.memory_gate" not in _neighbour_trainer().model.state_dict()

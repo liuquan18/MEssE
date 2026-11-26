@@ -25,7 +25,9 @@ cells are usually spread over several ranks. Each backbone cell is therefore
 given to the rank owning most of its fine cells, a rank's patch is the full
 descendant tree of its backbone cells (:func:`patch_mgrid`), and
 :class:`CellExchange` moves owned fine cells to the patch that holds them and
-predictions back (``Alltoallv``). ICON's halo cells are not used.
+predictions back (``Alltoallv``). ICON's halo cells are not used. The values
+stay torch tensors on the GPU and go to MPI as they are: Levante's OpenMPI
+(NVHPC, UCX) is CUDA-aware, so nothing is copied to the host.
 
 A patch may also hold *ghost* backbone cells (:func:`ghost_cells`): cells of
 other ranks that touch one of its own. They come after the owned ones, get
@@ -105,24 +107,27 @@ def _offsets(counts: np.ndarray) -> List[int]:
 class CellExchange:
     """Routing of fine-cell values between each rank's owned ICON cells and
     the model patches. :meth:`to_patch` and :meth:`from_patch` are collective
-    over the ranks of ``comm``."""
+    over the ranks of ``comm`` and take and return float32 tensors on the
+    exchange's device, which MPI reads and writes directly."""
 
-    send_ids: np.ndarray  # owned local cell ids, grouped by destination rank; once per patch that holds the cell
+    send_ids: torch.Tensor  # owned local cell ids, grouped by destination rank; once per patch that holds the cell
     send_counts: np.ndarray  # cells sent to each rank
     recv_counts: np.ndarray  # cells received from each rank
-    recv_pos: np.ndarray  # patch row of every received cell
-    home: np.ndarray  # of the sent cells: those going to the patch that owns them
-    owned: np.ndarray  # of the received cells: those this patch owns (the others are ghosts)
+    recv_pos: torch.Tensor  # patch row of every received cell
+    back_pos: torch.Tensor  # patch rows of the received cells this patch owns (not the ghosts): the way back
+    back_counts: np.ndarray  # of those, cells going back to each rank
+    home_counts: np.ndarray  # cells coming back from each rank: those this rank sent to their owning patch
+    owned_ids: np.ndarray  # owned local cell ids in the order from_patch returns them (ICON's write-back index)
 
     @classmethod
-    def build(cls, comm, owned_local, owned_glb, owner, backbone_ids, refinement, touching: Optional[np.ndarray] = None):
+    def build(cls, comm, owned_local, owned_glb, owner, backbone_ids, refinement, device, touching: Optional[np.ndarray] = None):
         """``owned_local``/``owned_glb``: this rank's owned fine cells as local
         flat ids and 0-based global ids in the grids' cell order; ``owner``:
         rank of every backbone cell; ``backbone_ids``: this rank's patch;
-        ``refinement``: fine cells per backbone cell. With ``touching``
-        ((n_backbone, k) neighbours of every backbone cell, the cell itself
-        where one is missing) a cell also goes to the patches that hold its
-        backbone cell as a ghost."""
+        ``refinement``: fine cells per backbone cell; ``device``: where the
+        exchanged values live. With ``touching`` ((n_backbone, k) neighbours
+        of every backbone cell, the cell itself where one is missing) a cell
+        also goes to the patches that hold its backbone cell as a ghost."""
         n_ranks = comm.Get_size()
         backbone = owned_glb // refinement
         # A patch holds a backbone cell if its rank owns the cell or one that touches it.
@@ -145,47 +150,43 @@ class CellExchange:
         row = np.full(len(owner), -1)  # patch row of every backbone cell
         row[backbone_ids] = np.arange(len(backbone_ids))
         recv_pos = row[recv_glb // refinement] * refinement + recv_glb % refinement
+        owned = owner[recv_glb // refinement] == comm.Get_rank()  # of the received cells (the others are ghosts)
+        home = dest == owner[backbone[cell]]  # of the sent cells: those going to the patch that owns them
+        source = np.repeat(np.arange(n_ranks), recv_counts)  # rank of every received cell
         return cls(
-            owned_local[cell],
-            send_counts,
-            recv_counts,
-            recv_pos,
-            home=dest == owner[backbone[cell]],
-            owned=owner[recv_glb // refinement] == comm.Get_rank(),
+            send_ids=torch.as_tensor(owned_local[cell], device=device),
+            send_counts=send_counts,
+            recv_counts=recv_counts,
+            recv_pos=torch.as_tensor(recv_pos, device=device),
+            back_pos=torch.as_tensor(recv_pos[owned], device=device),
+            back_counts=np.bincount(source[owned], minlength=n_ranks),
+            home_counts=np.bincount(dest[home], minlength=n_ranks),
+            owned_ids=owned_local[cell][home],
         )
 
-    @property
-    def owned_ids(self) -> np.ndarray:
-        """Owned local cell ids in the order :meth:`from_patch` returns them."""
-        return self.send_ids[self.home]
-
-    def _alltoallv(self, comm, values, send_counts, recv_counts):
-        nlev = values.shape[1]
-        recv = np.empty((recv_counts.sum(), nlev), dtype=np.float32)
+    @staticmethod
+    def _alltoallv(comm, values: torch.Tensor, send_counts, recv_counts) -> torch.Tensor:
+        """Rows of ``values`` to the ranks, ``send_counts`` each, as float32."""
+        send = values.float().contiguous()
+        nlev = send.shape[1]
+        recv = send.new_empty((int(recv_counts.sum()), nlev))
+        if send.is_cuda:  # MPI does not wait for the CUDA stream that wrote send
+            torch.cuda.current_stream(send.device).synchronize()
         comm.Alltoallv(
-            [np.ascontiguousarray(values, dtype=np.float32), (send_counts * nlev, _offsets(send_counts * nlev))],
+            [send, (send_counts * nlev, _offsets(send_counts * nlev))],
             [recv, (recv_counts * nlev, _offsets(recv_counts * nlev))],
         )
         return recv
 
-    def to_patch(self, comm, local_values: np.ndarray) -> np.ndarray:
+    def to_patch(self, comm, local_values: torch.Tensor) -> torch.Tensor:
         """(n_local_cells, nlev) ICON cells of this rank -> (n_patch, nlev)
         patch in nested order, ghost cells included."""
         recv = self._alltoallv(comm, local_values[self.send_ids], self.send_counts, self.recv_counts)
-        patch = np.empty_like(recv)
+        patch = torch.empty_like(recv)
         patch[self.recv_pos] = recv
         return patch
 
-    def from_patch(self, comm, patch_values: np.ndarray) -> np.ndarray:
+    def from_patch(self, comm, patch_values: torch.Tensor) -> torch.Tensor:
         """The way back for the cells the patches own: (n_patch, nlev) ->
         values for the owned cells :attr:`owned_ids`, in that order."""
-        # Cells per rank on the way back: each rank's share of the owned and of the home cells.
-        from_ranks = np.repeat(np.arange(len(self.recv_counts)), self.recv_counts)[self.owned]
-        to_ranks = np.repeat(np.arange(len(self.send_counts)), self.send_counts)[self.home]
-        n_ranks = len(self.send_counts)
-        return self._alltoallv(
-            comm,
-            patch_values[self.recv_pos[self.owned]],
-            np.bincount(from_ranks, minlength=n_ranks),
-            np.bincount(to_ranks, minlength=n_ranks),
-        )
+        return self._alltoallv(comm, patch_values[self.back_pos], self.back_counts, self.home_counts)
