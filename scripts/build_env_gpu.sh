@@ -14,16 +14,13 @@ if [[ $# -ne 1 ]]; then
     exit 1
 fi
 
-INPUT="$1"
+BASEDIR="$1"
 # check directory exists
-if [[ ! -d "$INPUT" ]]; then
-    echo "Error: directory does not exist: $INPUT" >&2
+if [[ ! -d "$BASEDIR" ]]; then
+    echo "Error: directory does not exist: $BASEDIR" >&2
     exit 1
 fi
 
-# prepare environment
-BASE_DIR="$(readlink -f "$INPUT")/messe_env"
-echo "Preparing messe_env-levante environment here: $BASE_DIR"
 
 SRC_DIR=$BASE_DIR/src_code
 BUILD_DIR=$BASE_DIR/build_dir
