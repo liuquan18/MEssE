@@ -27,9 +27,10 @@ A framework for pretraining surrogate AI models online for km-scale ICON simulat
 ├── monitor/                            # web monitor of a run's log
 └── scripts/
     ├── build_env_gpu.sh                # builds ICON, ComIn, YAC and the python env
-    └── run_icon_gpu.sh                 # patches an ICON runscript and submits it
+    ├── amip-aes_R2B8_gpu.config        # mkexp experiment: AES R2B8 on GPUs with the plugin
+    └── run_icon_gpu.sh                 # creates the experiment with mkexp and submits it
 ```
-Each `plugin.py` is run by ComIn by its path, given in the runscript as `plugin_list(1)%options`.
+Each `plugin.py` is run by ComIn by its path, given in the mkexp config as `comin_plugin_nml` `options` (ComIn 1.0).
 It imports everything else as `messe.*`, so MEssE must be installed in the Python env.
 
 # Workflow
@@ -48,16 +49,27 @@ pip install --no-deps --no-build-isolation -e MEssE  # the package `messe` used 
 `build_env_gpu.sh` runs both installs if FieldSpaceNN sits next to MEssE.
 
 ## Run
-First copy the prepared template `exp.atm_nwp_jsbach_xpp_r2b4` to the `run` folder under the build directory of ICON, then create the run script using `./make_runscripts --all`.
+The experiment is made with ICON's mkexp from `scripts/amip-aes_R2B8_gpu.config`
+(standard experiment `amip-aes-R2B8` plus the plugin, its python env and the output stream):
 
-Run ICON with the plugin like so: `./scripts/run_icon_gpu.sh $ICON_BUILD_DIR $COMIN_PLUGIN_PATH $LEVANTE_ACCOUNT`
+```bash
+./scripts/run_icon_gpu.sh $ICON_DIR scripts/amip-aes_R2B8_gpu.config $COMIN_PLUGIN_PATH $LEVANTE_ACCOUNT $EXPERIMENT_NAME [NUM_NODES] [KEY=VALUE ...]
+```
 
-
-> `ICON_BUILD_DIR` is `${desired_path}/messe_env/build_dir/icon-model`  
+> `ICON_DIR` is the directory given to `build_env_gpu.sh` (with `src_code/`, `build_dir/`, `py_env/`)  
 > `COMIN_PLUGIN_PATH` is e.g. `$(pwd)/messe/reconstructor_forecaster/plugin.py`  
-> `LEVANTE_ACCOUNT` is your levante project id
+> `LEVANTE_ACCOUNT` is your levante project id  
+> `KEY=VALUE` are further mkexp settings, e.g. `jobs.run.time_limit=00:30:00` or `MESSE_RF_CONFIG_FILE=$(pwd)/config/<file>.yaml`  
+> `NO_SUBMIT=1` creates the experiment scripts without submitting them
 
-LOG file can be found in `${ICON_BUILD_DIR}/run/exp.atm_nwp_jsbach_xpp_r2b4*.o`
+The python adapter of ComIn must be linked against the Python of `py_env` (configure argument
+`PYTHON=$ICON_DIR/py_env/bin/python3`, as in `build_env_gpu.sh`); the script checks this.
+
+The job log is `<LOG_DIR>/<EXPERIMENT_NAME>.run.<jobid>.log`, linked as
+`<SCRIPT_DIR>/<EXPERIMENT_NAME>.run.log`; ICON runs (and writes its output and the plugin's
+`saved_models/`) in `<WORK_DIR>/run_<start>-<end>/`. Print the directories with
+`getexp -k SCRIPT_DIR -k WORK_DIR -k LOG_DIR scripts/amip-aes_R2B8_gpu.config EXP_ID=$EXPERIMENT_NAME`
+after `module use $ICON_DIR/src_code/icon-model/etc/Modules; module load icon-levante`.
 
 
 ## Online interface 

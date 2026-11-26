@@ -227,7 +227,7 @@ def _log_line() -> str:
 # Callbacks
 # ----------------------------------------------------------------------------
 comin.var_request_add(("var_predict", DOMAIN_ID), lmodexclusive=True)
-comin.metadata_set(("var_predict", DOMAIN_ID), zaxis_id=comin.COMIN_ZAXIS_2D)
+comin.request_metadata(("var_predict", DOMAIN_ID)).update(zaxis_id=comin.COMIN_ZAXIS_2D)
 
 
 @comin.register_callback(comin.EP_SECONDARY_CONSTRUCTOR)
