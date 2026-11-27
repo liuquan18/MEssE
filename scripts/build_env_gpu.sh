@@ -123,13 +123,20 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # MEssE (package `messe`) and FieldSpaceNN as editable installs: the plugins import
 # `messe.*` and `fieldspacenn.*` through the env, and ICON's embedded Python reads them
-# from the env's site-packages. FieldSpaceNN is expected next to MEssE.
-pip install --no-deps --no-build-isolation -e "$SCRIPTS_DIR/.."
-if [[ -d "$SCRIPTS_DIR/../../FieldSpaceNN" ]]; then
-    pip install --no-deps -e "$SCRIPTS_DIR/../../FieldSpaceNN"
+# from the env's site-packages. FieldSpaceNN is expected next to MEssE, on a branch with
+# ICON-grid support (icon_grids or one built on it).
+FIELDSPACENN_DIR="$(cd "$SCRIPTS_DIR/../.." && pwd)/FieldSpaceNN"
+if [[ ! -d "$FIELDSPACENN_DIR" ]]; then
+    echo "Error: FieldSpaceNN not found at $FIELDSPACENN_DIR" >&2
+    exit 1
 fi
-
-pushd $ICON_BUILD_DIR
+# --no-deps: FieldSpaceNN's own dependency list pins torch 2.4.0 (cu121), scipy, healpy, ...
+# and would downgrade the env. These are the packages the plugins' FieldSpaceNN imports
+# need that are not installed above.
+pip install einops==0.8.0 hydra-core==1.3.2 omegaconf lightning==2.4.0 pytorch-lightning tqdm
+pip install --no-deps --no-build-isolation -e "$SCRIPTS_DIR/.."
+pip install --no-deps -e "$FIELDSPACENN_DIR"
+python -c "import messe, fieldspacenn"
 
 
 echo "Setup complete."
