@@ -36,7 +36,6 @@ class Grid:
     dir: str
     levels: List[int]
     latent_level: int
-    canonical_order: bool
     ghost_rings: int
 
 
@@ -128,17 +127,6 @@ class Config:
             )
         if self.grid.ghost_rings not in (0, 1):
             raise ValueError(f"grid.ghost_rings must be 0 or 1, not {self.grid.ghost_rings}")
-        # These need the same cell order in every backbone cell and its 12 neighbours.
-        needs_order = {
-            "grid.ghost_rings": self.grid.ghost_rings,
-            "forcings.orientation": self.forcings.orientation,
-            "reconstructor.token_overlap_space": self.reconstructor.token_overlap_space,
-            "reconstructor.attention: local": self.reconstructor.attention == "local",
-            "forecaster.token_overlap_space": self.forecaster.token_overlap_space,
-            "forecaster.attention: local": self.forecaster.attention == "local",
-        }
-        if not self.grid.canonical_order and any(needs_order.values()):
-            raise ValueError(f"{[key for key, on in needs_order.items() if on]} need grid.canonical_order: true")
 
     def trainer_kwargs(self, sample_seconds: float) -> Dict:
         """Keywords of `OnlineReconstructorForecaster`, with model times turned

@@ -65,12 +65,12 @@ if rank == 0:
 assert comm.allreduce(int(has_gpu)) == comm.Get_size(), "every ICON work rank needs its own GPU"
 
 domain = comin.descrdata_get_domain(DOMAIN_ID)
-global_mgrid = load_global_mgrid(CONFIG.grid.dir, LEVELS[0], LEVELS[-1], canonical=CONFIG.grid.canonical_order)
+global_mgrid = load_global_mgrid(CONFIG.grid.dir, LEVELS[0], LEVELS[-1])
 assert len(global_mgrid[-1]["coords"]) == domain.cells.ncells_global, "finest level must be ICON's grid"
 REFINEMENT = 4 ** (LEVELS[-1] - LEVELS[0])  # fine cells per backbone cell
 N_BACKBONE = len(global_mgrid[0]["coords"])
-# The grids' cell order: ICON's, or the canonical one (same backbone cell, another place in it).
-_icon_id = global_mgrid[-1].get("file_index", torch.arange(domain.cells.ncells_global)).numpy()  # of every grid cell
+# The grids are in canonical order (same backbone cell as in ICON's order, another place in it).
+_icon_id = global_mgrid[-1]["file_index"].numpy()  # ICON's id of every grid cell
 _grid_id = np.empty_like(_icon_id)  # of every ICON cell
 _grid_id[_icon_id] = np.arange(len(_icon_id))
 

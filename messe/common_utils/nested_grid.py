@@ -13,10 +13,10 @@ Cell order
 ----------
 In the file's order the corner children of a cell come in any order, so a
 position inside a backbone cell is a different place in every one of them.
-With ``canonical=True`` the grids come from FieldSpaceNN's
-`icon_canonical_mgrid` instead: the same nesting, but every backbone cell has
-its cells at the same places, and every cell has its 12 neighbours in the same
-order. Each grid's ``file_index`` maps that order back to ICON's.
+The grids therefore always come from FieldSpaceNN's `icon_canonical_mgrid`:
+the same nesting, but every backbone cell has its cells at the same places,
+and every cell has its 12 neighbours in the same order. Each grid's
+``file_index`` maps that order back to ICON's.
 
 Patches
 -------
@@ -42,7 +42,6 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from fieldspacenn.src.modules.grids.grid_utils import icon_grid_to_mgrid
 from fieldspacenn.src.modules.grids.icon_grid import icon_canonical_mgrid
 
 GRID_FILES = {
@@ -56,20 +55,17 @@ GRID_FILES = {
 }
 
 # GridLayer's HEALPix polar fixup (run on adjacency columns 2 and 6) crashes
-# on masked entries, so those columns are never masked in the file-order
-# grids; the same neighbor is still masked in its other tiled columns.
+# on masked entries, so those columns are never masked in grids without a
+# ``grid_type`` (the tests' HEALPix-like grids); the same neighbor is still
+# masked in its other tiled columns.
 _POLAR_FIX_COLUMNS = [2, 6]
 
 
-def load_global_mgrid(grid_dir: str, base_level: int, fine_level: int, canonical: bool = False) -> List[Dict]:
+def load_global_mgrid(grid_dir: str, base_level: int, fine_level: int) -> List[Dict]:
     """FieldSpaceNN's ``mgrids`` for the whole globe, one entry per level from
-    ``base_level`` to ``fine_level`` (coarsest first): in the files' cell
-    order, or in canonical order (built from the finest file alone)."""
-    if canonical:
-        return icon_canonical_mgrid(os.path.join(grid_dir, GRID_FILES[fine_level]), fine_level - base_level + 1)
-    return icon_grid_to_mgrid(
-        {level: os.path.join(grid_dir, GRID_FILES[level]) for level in range(base_level, fine_level + 1)}
-    )
+    ``base_level`` to ``fine_level`` (coarsest first), in canonical order
+    (built from the finest file alone)."""
+    return icon_canonical_mgrid(os.path.join(grid_dir, GRID_FILES[fine_level]), fine_level - base_level + 1)
 
 
 def ghost_cells(owned: np.ndarray, touching: np.ndarray) -> np.ndarray:

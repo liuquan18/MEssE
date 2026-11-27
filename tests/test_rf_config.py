@@ -11,7 +11,6 @@ from messe.reconstructor_forecaster.config import ORIENTATION_NAMES, POSITION_NA
 from messe.reconstructor_forecaster.model import OnlineReconstructorForecaster
 from messe.common_utils.nested_grid import ghost_cells, patch_mgrid
 from icosahedron import icosahedral_mgrid
-from test_nested_grid import synthetic_global_mgrid
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config" / "fieldspace_rf_r2b8.yaml"
 LON_LAT_CONFIG = REPO_CONFIG.with_name("fieldspace_rf_r2b8_lon_lat.yaml")
@@ -40,12 +39,10 @@ def test_repository_config_builds_the_models(path):
     config = load_config(path)
     levels = config.grid.levels
     n_zooms = levels[-1] - levels[0] + 1
-    if config.grid.canonical_order:  # an owned backbone cell with all 12 neighbours, and these as ghost cells
-        globe = icosahedral_mgrid(n_zooms, n_zooms)
-        owned = torch.nonzero(~globe[0]["adjc_mask"].any(1))[:1, 0]
-        backbone = torch.cat([owned, torch.from_numpy(ghost_cells(owned.numpy(), globe[0]["adjc"].numpy()))])
-    else:
-        globe, owned, backbone = synthetic_global_mgrid(n_levels=n_zooms), torch.arange(10), torch.arange(10)
+    # An owned backbone cell with all 12 neighbours, and these as ghost cells.
+    globe = icosahedral_mgrid(n_zooms, n_zooms)
+    owned = torch.nonzero(~globe[0]["adjc_mask"].any(1))[:1, 0]
+    backbone = torch.cat([owned, torch.from_numpy(ghost_cells(owned.numpy(), globe[0]["adjc"].numpy()))])
     trainer = OnlineReconstructorForecaster(
         patch_mgrid(globe, backbone),
         levels,
@@ -85,7 +82,6 @@ def test_position_adds_three_columns_after_the_statics(tmp_path):
 
 def test_orientation_adds_two_columns_last(tmp_path):
     def change(raw):
-        raw["grid"]["canonical_order"] = True
         raw["forcings"].update(icon_fields=["a"], insolation=False, statics=[], position=True, orientation=True, reconstructor=ORIENTATION_NAMES)
 
     config = load_config(_write(tmp_path, change))
@@ -95,7 +91,7 @@ def test_orientation_adds_two_columns_last(tmp_path):
 
 def test_neighbours_config_differs_from_the_default_only_by_the_new_switches():
     default, neighbours = load_config(REPO_CONFIG), load_config(NEIGHBOURS_CONFIG)
-    assert neighbours.grid.canonical_order and neighbours.grid.ghost_rings == 1 and neighbours.forcings.orientation
+    assert neighbours.grid.ghost_rings == 1 and neighbours.forcings.orientation
     assert neighbours.reconstructor.token_overlap_space and neighbours.forecaster.token_overlap_space
     assert neighbours.forcings.reconstructor == default.forcings.reconstructor + ORIENTATION_NAMES
     kwargs = neighbours.trainer_kwargs(600.0)
@@ -170,10 +166,7 @@ def test_lon_lat_config_differs_from_the_default_only_by_the_position():
         (lambda raw: raw.pop("blocks"), "missing sections \\['blocks'\\]"),
         (lambda raw: raw["forcings"].update(reconstructor=["sst"]), "forcings.reconstructor"),
         (lambda raw: raw["grid"].update(ghost_rings=2), "grid.ghost_rings must be 0 or 1"),
-        (lambda raw: raw["grid"].update(ghost_rings=1), "\\['grid.ghost_rings'\\] need grid.canonical_order"),
-        (lambda raw: raw["forecaster"].update(token_overlap_space=True), "forecaster.token_overlap_space.* need grid.canonical_order"),
-        (lambda raw: raw["forcings"].update(orientation=True), "forcings.orientation.* need grid.canonical_order"),
-        (lambda raw: raw["reconstructor"].update(attention="local"), "reconstructor.attention: local.* need grid.canonical_order"),
+        (lambda raw: raw["grid"].update(canonical_order=True), "unknown keys \\['canonical_order'\\]"),
         (lambda raw: raw["reconstructor"].update(attention="regional"), "reconstructor.attention must be global or local"),
         (lambda raw: raw["reconstructor"].pop("attention"), "missing keys \\['attention'\\]"),
         (lambda raw: raw["forecaster"].pop("attention"), "missing keys \\['attention'\\]"),
@@ -184,7 +177,6 @@ def test_lon_lat_config_differs_from_the_default_only_by_the_position():
         (lambda raw: raw["forecaster"].update(token_len_time=0), "forecaster.token_len_time must divide"),
         (lambda raw: raw["forecaster"].update(token_len_time=22), "forecaster.token_len_time must divide"),
         (lambda raw: raw["forecaster"].update(attention="regional"), "forecaster.attention must be global or local"),
-        (lambda raw: raw["forecaster"].update(attention="local"), "forecaster.attention: local.* need grid.canonical_order"),
     ],
 )
 def test_wrong_files_stop_at_startup(tmp_path, change, message):

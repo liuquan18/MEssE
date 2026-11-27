@@ -15,7 +15,6 @@ grid:
   dir: /pool/data/ICON/grids/mpim   # Earth_IcosS_* files, nested at every level
   levels: [4, 6, 7, 8]           # R2B levels, backbone first; the last must be ICON's grid
   latent_level: 6                # each residual level finer than this is folded into the next coarser one
-  canonical_order: true          # every R2B4 cell has its cells at the same places, 12 neighbours per cell
   ghost_rings: 1                 # a patch also holds the R2B4 cells of other ranks that touch its own
 
 forcings:                        # condition the blocks, not compressed; one global mean/std each
